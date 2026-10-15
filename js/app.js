@@ -413,7 +413,14 @@ import './platform.js';
   }
   function currentChatPhone(){
     var o = STATE.orders.find(function(x){ return x.id===STATE.openOrderId; });
-    return o ? waPhone(o.phone) : null;
+    if(o) return waPhone(o.phone);
+    return (STATE.tab==='whatsapp' && STATE.inboxReply) ? STATE.inboxReply.phone : null;
+  }
+  // A stand-in "job" for an inbox conversation, so the customer chat box can be reused.
+  function inboxContact(phone, name){
+    var cust = STATE.customers.find(function(c){ return waPhone(c.phone)===phone; });
+    return {id:'', inbox:true, phone:phone, customerId:cust ? cust.id : null,
+      customerName:(cust && cust.name) || name || ('+'+phone), title:''};
   }
 
   function uid(){ return 'l' + Math.random().toString(36).slice(2,10) + Date.now().toString(36); }
@@ -1842,10 +1849,16 @@ import './platform.js';
       if(m && m.messageId && STATE.waHandled[m.messageId]) return false;
       return true;
     });
+    // keep the conversation you're replying to on screen, even once it's no longer "waiting"
+    var ir = STATE.inboxReply;
+    if(ir && !visible.some(function(c){ return c.phone===ir.phone; })){
+      visible.unshift({phone:ir.phone, name:ir.name, last_message_date:ir.date, replied:true});
+    }
 
     var cards = visible.length ? visible.map(function(c){
       var m = STATE.waMessages[c.phone];
-      var bodyHtml = !m ? 'Loading message…' : (m.error ? '(couldn\'t load this message — open WhatsApp to view it)' : escapeHtml(m.body));
+      var bodyHtml = !m ? (c.replied ? 'Replied — see the chat below.' : 'Loading message…') : (m.error ? '(couldn\'t load this message — open WhatsApp to view it)' : escapeHtml(m.body));
+      var replying = !!(STATE.inboxReply && STATE.inboxReply.phone===c.phone);
       var msgId = (m && m.messageId) ? m.messageId : '';
       return (
         '<div class="wa-card">' +
@@ -1853,8 +1866,10 @@ import './platform.js';
           '<div class="wa-body">'+bodyHtml+'</div>' +
           '<div class="wa-actions">' +
             '<button class="btn btn-primary btn-sm" data-action="log-wa-order" data-phone="'+escapeHtml(c.phone)+'" data-name="'+escapeHtml(c.name||'')+'" data-msgid="'+escapeHtml(msgId)+'" '+(m?'':'disabled')+'>Log as order</button>' +
-            '<button class="btn btn-ghost btn-sm" data-action="dismiss-wa-order" data-phone="'+escapeHtml(c.phone)+'" data-msgid="'+escapeHtml(msgId)+'" '+(msgId?'':'disabled')+'>Not an order</button>' +
+            '<button class="btn btn-sm" data-action="inbox-reply" data-phone="'+escapeHtml(c.phone)+'" data-name="'+escapeHtml(c.name||'')+'" data-date="'+escapeHtml(c.last_message_date||'')+'">'+(replying ? 'Close reply' : 'Reply')+'</button>' +
+            '<button class="btn btn-ghost btn-sm" data-action="dismiss-wa-order" data-phone="'+escapeHtml(c.phone)+'" data-msgid="'+escapeHtml(msgId)+'" '+((msgId||replying)?'':'disabled')+'>'+(replying ? 'Done — not an order' : 'Not an order')+'</button>' +
           '</div>' +
+          (replying ? '<div class="wa-reply">'+renderChatSection(inboxContact(c.phone, c.name))+'</div>' : '') +
         '</div>'
       );
     }).join('') : '<div class="panel"><div class="empty-note">Nothing waiting — new WhatsApp messages will show up here within a couple of minutes.</div></div>';
@@ -3110,7 +3125,7 @@ import './platform.js';
       if(!el) return;
       var action = el.getAttribute('data-action');
 
-      if(action==='tab'){ var tt = el.getAttribute('data-tab'); if(canAccess(tt)){ STATE.tab = tt; } STATE.viewCustomerId=null; render(); }
+      if(action==='tab'){ if(el.getAttribute('data-tab')!=='whatsapp') STATE.inboxReply = null; var tt = el.getAttribute('data-tab'); if(canAccess(tt)){ STATE.tab = tt; } STATE.viewCustomerId=null; render(); }
       else if(action==='lock-app'){ lockApp(''); }
       else if(action==='cust-ex-preset'){ STATE.custExportFrom = el.getAttribute('data-from'); STATE.custExportTo = el.getAttribute('data-to'); render(); }
       else if(action==='export-customers-xero'){ if(isOwnerRole()) exportCustomersXero(); }
@@ -3164,6 +3179,16 @@ import './platform.js';
         if(ord && STATE.mcp){ openOrderChat(waPhone(ord.phone)); }
       }
       else if(action==='chat-refresh'){ openOrderChat(el.getAttribute('data-phone')); }
+      else if(action==='inbox-reply'){
+        var ip = el.getAttribute('data-phone');
+        if(STATE.inboxReply && STATE.inboxReply.phone===ip){ STATE.inboxReply = null; render(); }
+        else {
+          STATE.inboxReply = {phone:ip, name:el.getAttribute('data-name')||'', date:el.getAttribute('data-date')||''};
+          var ie = STATE.chatMessages[ip];
+          if(!ie || !ie.list) openOrderChat(ip); else render();
+          setTimeout(function(){ var t = document.getElementById('chatCompose'); if(t) t.focus(); }, 50);
+        }
+      }
       else if(action==='chat-prepare-send'){
         var cphone = el.getAttribute('data-phone');
         var ctext = (STATE.chatDraft[cphone]||'').trim();
@@ -3259,7 +3284,8 @@ import './platform.js';
         STATE.newOrderOpen = true;
         render();
       }
-      else if(action==='dismiss-wa-order'){
+      else if(action==='dismiss-wa-order' && STATE.inboxReply && STATE.inboxReply.phone===el.getAttribute('data-phone') && !el.getAttribute('data-msgid')){ STATE.inboxReply = null; render(); }
+      else if(action==='dismiss-wa-order'){ if(STATE.inboxReply && STATE.inboxReply.phone===el.getAttribute('data-phone')) STATE.inboxReply = null;
         var dphone = el.getAttribute('data-phone'), dmsg = el.getAttribute('data-msgid');
         if(dmsg){ markWaHandled(dphone, dmsg, 'dismissed'); render(); }
       }
@@ -4529,7 +4555,9 @@ import './platform.js';
   ];
   function fillTemplate(text, params){ return text.replace(/\{\{(\w+)\}\}/g, function(m, k){ return params[k]!=null ? params[k] : m; }); }
   function prepareTemplate(phone, slug){
-    var o = STATE.orders.find(function(x){ return x.id===STATE.openOrderId; }); if(!o) return;
+    var o = STATE.orders.find(function(x){ return x.id===STATE.openOrderId; });
+    if(!o && STATE.inboxReply && STATE.inboxReply.phone===phone) o = inboxContact(phone, STATE.inboxReply.name);
+    if(!o) return;
     var t = WA_TEMPLATES.find(function(x){ return x.slug===slug; }); if(!t) return;
     var why = t.needs ? t.needs(o) : '';
     if(why){ toast(why); return; }
