@@ -450,6 +450,9 @@ img{max-width:100%}
   .pay-unpaid{background:#F6E3E3; color:#8A1C1C;}
   .pay-part{background:#FBF0D9; color:#7A5300;}
   .pay-paid{background:#E2F0E4; color:#1E6B34;}
+  .quote-only-chip{background:#E7E3F3; color:#4A3B7A; margin-left:4px;}
+  .quote-only-banner{background:var(--warning-soft, #FBF0D9); color:var(--ink); border-radius:var(--radius-s); padding:10px 12px; margin:-6px 0 14px; font-size:12.5px; line-height:1.9;}
+  .status-quote{background:#E7E3F3; color:#4A3B7A;}
   .pay-row{display:grid; grid-template-columns:auto auto 1fr auto auto; gap:10px; align-items:center; font-size:12.5px; padding:5px 0; border-top:1px solid var(--line);}
   .pay-row.voided{opacity:.55; text-decoration:line-through;}
   .pay-row .pay-actions{display:flex; gap:2px; justify-content:flex-end;}

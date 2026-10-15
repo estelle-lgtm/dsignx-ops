@@ -36,7 +36,7 @@ import './platform.js';
   var DEFAULT_TEMPLATE = "Hi DsignX! I'd like to order:\n\nItem / product:\nQuantity:\nSize / details:\nNeeded by (date):\nMy name:\nCollection or delivery:";
 
   function catMeta(k){ for(var i=0;i<CATEGORIES.length;i++){ if(CATEGORIES[i].key===k) return CATEGORIES[i]; } return CATEGORIES[4]; }
-  function statusMeta(k){ for(var i=0;i<STATUSES.length;i++){ if(STATUSES[i].key===k) return STATUSES[i]; } return STATUSES[0]; }
+  function statusMeta(k){ if(k==='quote') return {key:'quote', label:'Quotation only'}; for(var i=0;i<STATUSES.length;i++){ if(STATUSES[i].key===k) return STATUSES[i]; } return STATUSES[0]; }
 
   /* ============================ state ============================ */
   var STATE = {
@@ -488,7 +488,7 @@ import './platform.js';
   }
 
   /* ============================ data access layer ============================ */
-  function ordersActive(){ return STATE.orders.filter(function(o){ return o.status!=='invoiced'; }); }
+  function ordersActive(){ return STATE.orders.filter(function(o){ return o.status!=='invoiced' && !o.quoteOnly; }); }
 
   function findCustomerByName(name){
     var n = name.trim().toLowerCase();
@@ -920,7 +920,7 @@ import './platform.js';
     var info = isQuote ?
       [['Quote Number', number, true], ['Date', fullDate(issued)], ['Valid Until', fullDate(until)], ['Reference', o.title||jobNo(o.id)]] :
       [['Invoice Number', number, true], ['Invoice Date', fullDate(issued)], ['Due Date', fullDate(until)], ['Reference', o.title||jobNo(o.id)]];
-    var acct = [['Job Number', jobNo(o.id)]];
+    var acct = (o.quoteOnly && !o.jobNumber) ? [] : [['Job Number', jobNo(o.id)]];
     var boxH = 8 + info.length*4.7 + 2 + acct.length*4.7;
     doc.setFillColor(PANEL[0],PANEL[1],PANEL[2]); doc.rect(bx, by, R-bx, boxH, 'F');
     doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(bx, by, R-bx, 0.7, 'F');
@@ -1643,6 +1643,7 @@ import './platform.js';
       '</div>' +
       (STATE.openOrderId ? renderOrderModal() : '') +
       (STATE.newOrderOpen && !isTechnician() ? renderNewOrderModal() : '') +
+      (STATE.newQuoteOpen && canAccess('quotes') ? renderNewQuoteModal() : '') +
       (STATE.newTeamOpen && isOwnerRole() ? renderNewTeamModal() : '') +
       (STATE.customerForm && canAccess('customers') ? renderCustomerForm() : '') +
       (STATE.quoteModalOrderId && canAccess('quotes') ? renderQuoteModal() : '') +
@@ -1950,12 +1951,18 @@ import './platform.js';
     return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
   }
 
-  // Designers and technicians each earn on the full value of the jobs they're assigned to.
+  // The designer earns on the full value of a job. Technicians do too, unless two technicians
+  // share the job: then each is credited half (50/50).
+  function creditShare(o, id){
+    if(o.designerId===id) return 1;
+    if(o.technicianId && o.technician2Id && o.technicianId!==o.technician2Id && isTechOn(o, id)) return 0.5;
+    return isTechOn(o, id) ? 1 : 0;
+  }
   function commissionRows(r){
     var sales = salesInRange(r.from, r.to);
     var rows = STATE.team.map(function(m){
       var jobs = sales.filter(function(o){ return onJob(o, m.id); });
-      var total = round2(jobs.reduce(function(s,o){ return s + saleExVat(o); }, 0));
+      var total = round2(jobs.reduce(function(s,o){ return s + saleExVat(o) * creditShare(o, m.id); }, 0));
       var c = commissionFor(total);
       return {member:m, jobs:jobs, total:total, rate:c.rate, tier:c.tier, commission:c.amount, next:c.next};
     });
@@ -1998,10 +2005,11 @@ import './platform.js';
       var detail = '';
       if(open){
         var jr = r.jobs.length ? r.jobs.slice().sort(function(a,b){ return String(saleDate(a)).localeCompare(String(saleDate(b))); }).map(function(o){
-          var asRole = (o.designerId===r.member.id && isTechOn(o, r.member.id)) ? 'Designer & technician' : (o.designerId===r.member.id ? 'Designer' : 'Technician'+(o.technicianId && o.technician2Id ? ' (shared)' : ''));
-          return '<tr><td>'+shortDate(String(saleDate(o)).slice(0,10))+'</td><td>'+escapeHtml(o.invoiceNumber||jobNo(o.id))+'</td><td>'+escapeHtml(o.title)+'<div style="font-size:11px; color:var(--ink-faint);">'+escapeHtml(o.customerName||'')+' &middot; '+asRole+'</div></td><td class="num">'+money(saleExVat(o))+'</td></tr>';
+          var asRole = (o.designerId===r.member.id && isTechOn(o, r.member.id)) ? 'Designer & technician' : (o.designerId===r.member.id ? 'Designer' : 'Technician'+(creditShare(o, r.member.id)===0.5 ? ' (shared 50/50 with '+escapeHtml(firstName(o.technicianId===r.member.id ? o.technician2Name : o.technicianName))+')' : ''));
+          var credit = creditShare(o, r.member.id);
+          return '<tr><td>'+shortDate(String(saleDate(o)).slice(0,10))+'</td><td>'+escapeHtml(o.invoiceNumber||jobNo(o.id))+'</td><td>'+escapeHtml(o.title)+'<div style="font-size:11px; color:var(--ink-faint);">'+escapeHtml(o.customerName||'')+' &middot; '+asRole+'</div></td><td class="num">'+money(round2(saleExVat(o)*credit))+(credit<1 ? '<div style="font-size:11px; color:var(--ink-faint);">of '+money(saleExVat(o))+'</div>' : '')+'</td></tr>';
         }).join('') : '<tr><td colspan="4" class="empty-note">No invoiced jobs in this '+periodWord+'.</td></tr>';
-        detail = '<tr><td colspan="5" style="padding:0 0 4px;"><div class="breakdown"><table><thead><tr><th>Date</th><th>Invoice</th><th>Job</th><th style="text-align:right;">Excl. VAT</th></tr></thead><tbody>'+jr+'</tbody></table></div></td></tr>';
+        detail = '<tr><td colspan="5" style="padding:0 0 4px;"><div class="breakdown"><table><thead><tr><th>Date</th><th>Invoice</th><th>Job</th><th style="text-align:right;">Credited (excl. VAT)</th></tr></thead><tbody>'+jr+'</tbody></table></div></td></tr>';
       }
       return main + detail;
     }).join('');
@@ -2051,7 +2059,7 @@ import './platform.js';
         '</div>' +
         '<div class="panel"><div class="panel-head"><h2>Sliding scale</h2></div>' +
           '<div class="tier-list">'+tiers+'</div>' +
-          '<div class="hint" style="margin-top:10px;">Each person’s total invoiced sales excl. VAT for the period sets their bracket, and that rate is paid on the whole total. Designers and technicians each earn on the full value of jobs they’re assigned to. A job counts on the date it was invoiced.</div>' +
+          '<div class="hint" style="margin-top:10px;">Each person’s total invoiced sales excl. VAT for the period sets their bracket, and that rate is paid on the whole total. Designers and technicians earn on the full value of jobs they’re assigned to; when two technicians share a job, each is credited half. A job counts on the date it was invoiced.</div>' +
         '</div>' +
       '</div>'
     );
@@ -2554,7 +2562,8 @@ import './platform.js';
 
   /* ============================ quotes & invoicing ============================ */
   function renderQuotesTab(){
-    var list = STATE.orders.filter(function(o){ return o.quoteAmount!==null && o.quoteAmount!==undefined && o.quoteAmount!==''; });
+    var list = STATE.orders.filter(function(o){ return o.quoteOnly || (o.quoteAmount!==null && o.quoteAmount!==undefined && o.quoteAmount!==''); });
+    if(STATE.quoteFilter==='quoteonly') list = list.filter(function(o){ return o.quoteOnly; });
     if(STATE.quoteFilter==='pending') list = list.filter(function(o){ return !o.invoiced; });
     if(STATE.quoteFilter==='invoiced') list = list.filter(function(o){ return o.invoiced; });
     list = list.slice().sort(function(a,b){ return (b.updatedAt||'').localeCompare(a.updatedAt||''); });
@@ -2566,21 +2575,24 @@ import './platform.js';
       return (
         '<tr>' +
           '<td><input type="checkbox" data-action="select-export" data-id="'+o.id+'" '+(checked?'checked':'')+'></td>' +
-          '<td class="row-btn" data-action="open-order" data-id="'+o.id+'">'+escapeHtml(o.customerName)+'</td>' +
-          '<td class="row-btn" data-action="open-order" data-id="'+o.id+'">'+escapeHtml(o.title)+'</td>' +
-          '<td class="num">'+money(o.quoteAmount)+'</td>' +
-          '<td>'+(o.invoiced ? ('<span class="status-chip status-invoiced">'+escapeHtml(o.invoiceNumber||'Invoiced')+'</span>') : '<button class="btn btn-ghost btn-sm" data-action="open-invoice" data-id="'+o.id+'">Generate</button>')+'</td>' +
+          '<td class="row-btn" data-action="'+(o.quoteOnly?'open-quote':'open-order')+'" data-id="'+o.id+'">'+escapeHtml(o.customerName)+'</td>' +
+          '<td class="row-btn" data-action="'+(o.quoteOnly?'open-quote':'open-order')+'" data-id="'+o.id+'">'+escapeHtml(o.title)+(o.quoteOnly ? ' <span class="pay-chip quote-only-chip">Quote only</span>' : (o.jobNumber ? '<div class="mono" style="font-size:11px; color:var(--ink-faint);">'+escapeHtml(o.jobNumber)+'</div>' : ''))+'</td>' +
+          '<td class="num">'+money(o.quoteAmount||0)+'</td>' +
+          '<td>'+(o.quoteOnly ? '<button class="btn btn-ghost btn-sm" data-action="quote-convert" data-id="'+o.id+'">Convert to job</button>' : o.invoiced ? ('<span class="status-chip status-invoiced">'+escapeHtml(o.invoiceNumber||'Invoiced')+'</span>') : '<button class="btn btn-ghost btn-sm" data-action="open-invoice" data-id="'+o.id+'">Generate</button>')+'</td>' +
           '<td>'+shortDate(o.dueDate)+'</td>' +
           '<td>'+(o.quoteNumber ? ('<span class="mono" style="font-size:11.5px;">'+escapeHtml(o.quoteNumber)+'</span>') : '<button class="btn btn-ghost btn-sm" data-action="open-quote" data-id="'+o.id+'">Generate</button>')+'</td>' +
-          '<td>'+(function(){ var st = payStatus(o); return '<span class="pay-chip pay-'+st.key+'">'+st.label+'</span>'; })()+'</td>' +
+          '<td>'+(o.quoteOnly ? '<span style="color:var(--ink-faint);">—</span>' : '')+(o.quoteOnly ? '' : (function(){ var st = payStatus(o); return '<span class="pay-chip pay-'+st.key+'">'+st.label+'</span>'; })())+'</td>' +
         '</tr>'
       );
-    }).join('') : '<tr><td colspan="8" class="empty-note">No quoted jobs yet — set a quote amount from any job card.</td></tr>';
+    }).join('') : '<tr><td colspan="8" class="empty-note">No quotations yet — use “+ New quotation”, or set a quote amount on any job card.</td></tr>';
 
     return (
-      '<div class="topline"><div><h1>Quotes &amp; invoicing</h1><div class="sub">Export selected jobs as a Xero-ready invoice CSV</div></div>' + exampleBadge() + '</div>' +
+      '<div class="topline"><div><h1>Quotes &amp; invoicing</h1><div class="sub">Quote a customer without opening a job, or export selected jobs as a Xero-ready invoice CSV</div></div>' + exampleBadge() +
+        '<button class="btn btn-primary" data-action="open-new-quote">+ New quotation</button>' +
+      '</div>' +
       '<div class="filterbar" style="margin-bottom:14px;">' +
         '<button class="chip-toggle '+(STATE.quoteFilter==='all'?'active':'')+'" data-action="quote-filter" data-filter="all">All</button>' +
+        '<button class="chip-toggle '+(STATE.quoteFilter==='quoteonly'?'active':'')+'" data-action="quote-filter" data-filter="quoteonly">Quotes only (no job yet)</button>' +
         '<button class="chip-toggle '+(STATE.quoteFilter==='pending'?'active':'')+'" data-action="quote-filter" data-filter="pending">Not yet invoiced</button>' +
         '<button class="chip-toggle '+(STATE.quoteFilter==='invoiced'?'active':'')+'" data-action="quote-filter" data-filter="invoiced">Invoiced</button>' +
         '<span style="flex:1"></span>' +
@@ -2736,6 +2748,7 @@ import './platform.js';
 
           '<div class="modal-foot">' +
             '<button class="btn btn-ghost" data-action="close-quote-modal">Cancel</button>' +
+            (o.quoteOnly ? '<button class="btn btn-ghost" data-action="quote-convert" data-id="'+o.id+'" title="Put this on the job board">Convert to job</button>' : '') +
             '<button class="btn" data-action="quote-save" data-id="'+o.id+'">Save</button>' +
             '<button class="btn" data-action="quote-save-download" data-id="'+o.id+'">Save &amp; download PDF</button>' +
             (waPhone(o.phone) ? '<button class="btn btn-primary" data-action="quote-save-whatsapp" data-id="'+o.id+'">Save &amp; send via WhatsApp</button>' : '') +
@@ -2849,7 +2862,8 @@ import './platform.js';
     } else {
       var draft = STATE.chatDraft[phone] || '';
       composeArea =
-        (!waWindowOpen(phone) && !entry.loading ? '<div class="hint" style="margin-bottom:6px;">The 24-hour reply window is closed. Send an approved template to restart the conversation; once the customer replies you can chat normally again.</div>' : '') +
+        (!waWindowOpen(phone) && !entry.loading && !(entry.list && entry.list.length) ? '<div class="hint" style="margin-bottom:6px;">No WhatsApp chat with this customer yet (e.g. a walk-in). Start with the <strong>Walk-in customer</strong> template below — once they reply, you can send quotes, proofs and files here.</div>' : '') +
+        (!waWindowOpen(phone) && !entry.loading && (entry.list && entry.list.length) ? '<div class="hint" style="margin-bottom:6px;">The 24-hour reply window is closed. Send an approved template to restart the conversation; once the customer replies you can chat normally again.</div>' : '') +
         templatePicker(phone) +
         '<div class="chat-compose">' +
           '<label class="btn btn-sm chat-attach" title="Attach a photo, PDF or document" aria-label="Attach a file">'+CLIP_ICON+'<input type="file" id="chatAttach" data-phone="'+phone+'" accept="image/jpeg,image/png,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt" style="display:none"></label>' +
@@ -2867,7 +2881,7 @@ import './platform.js';
   function renderOrderModal(){
     var o = STATE.orders.find(function(x){return x.id===STATE.openOrderId;});
     if(!o) return '';
-    var statusOpts = STATUSES.map(function(s){ return '<option value="'+s.key+'" '+(o.status===s.key?'selected':'')+'>'+s.label+'</option>'; }).join('');
+    var statusOpts = o.quoteOnly ? '<option value="quote" selected>Quotation only (not a job yet)</option>' : STATUSES.map(function(s){ return '<option value="'+s.key+'" '+(o.status===s.key?'selected':'')+'>'+s.label+'</option>'; }).join('');
     var catOpts = CATEGORIES.map(function(c){ return '<option value="'+c.key+'" '+(o.category===c.key?'selected':'')+'>'+c.label+'</option>'; }).join('');
     var attach = (o.attachmentIds||[]).map(function(id){
       return '<div class="attach-item" style="position:relative; display:inline-block;">' +
@@ -2879,7 +2893,8 @@ import './platform.js';
     return (
       '<div class="overlay" data-action="close-modal-bg">' +
         '<div class="modal" role="dialog" aria-modal="true" aria-label="Job details">' +
-          '<div class="modal-head"><div><div class="jobno mono">'+jobNo(o.id)+'</div><h2>'+escapeHtml(o.title)+'</h2></div><button class="modal-close" data-action="close-order" aria-label="Close">&times;</button></div>' +
+          '<div class="modal-head"><div><div class="jobno mono">'+(o.quoteOnly ? 'Quotation only' : jobNo(o.id))+'</div><h2>'+escapeHtml(o.title)+'</h2></div><button class="modal-close" data-action="close-order" aria-label="Close">&times;</button></div>' +
+          (o.quoteOnly ? quoteOnlyBanner(o) : '') +
           '<div class="field"><label for="ofTitle">Job title</label><input type="text" id="ofTitle" value="'+escapeHtml(o.title)+'"></div>' +
           '<div class="field-row">' +
             '<div class="field"><label for="ofStatus">Status</label><select id="ofStatus">'+statusOpts+'</select></div>' +
@@ -2926,6 +2941,74 @@ import './platform.js';
   }
 
   /* ============================ new order modal ============================ */
+  function quoteOnlyBanner(o){
+    return '<div class="hint quote-only-banner">This is a quotation only — it isn’t on the job board and has no job number yet. ' +
+      '<button class="btn btn-primary btn-sm" data-action="quote-convert" data-id="'+o.id+'">Convert to job</button> ' +
+      '<button class="btn btn-ghost btn-sm" data-action="open-quote" data-id="'+o.id+'">Edit quotation</button></div>';
+  }
+  function renderNewQuoteModal(){
+    var dl = STATE.customers.map(function(c){ return '<option value="'+escapeHtml(c.name)+'">'; }).join('');
+    var catOpts = CATEGORIES.map(function(c){ return '<option value="'+c.key+'">'+c.label+'</option>'; }).join('');
+    return (
+      '<div class="overlay" data-action="close-modal-bg">' +
+        '<div class="modal" role="dialog" aria-modal="true" aria-label="New quotation" style="max-width:480px;">' +
+          '<div class="modal-head"><h2>New quotation</h2><button class="modal-close" data-action="close-new-quote" aria-label="Close">&times;</button></div>' +
+          '<div class="hint" style="margin:-8px 0 14px;">Quote a customer without opening a job. If they accept, use “Convert to job” to put it on the job board.</div>' +
+          '<div class="field"><label for="nqCustomer">Customer name</label><input type="text" id="nqCustomer" list="nqCustomerNames" autocomplete="off" placeholder="e.g. Riaan Pretorius"><datalist id="nqCustomerNames">'+dl+'</datalist></div>' +
+          '<div class="field"><label for="nqPhone">Phone number (for WhatsApp)</label><input type="tel" id="nqPhone" placeholder="Filled in for existing customers"></div>' +
+          '<div class="field-row">' +
+            '<div class="field"><label for="nqTitle">What is it for?</label><input type="text" id="nqTitle" placeholder="e.g. A1 banners x4"></div>' +
+            '<div class="field"><label for="nqCategory">Category</label><select id="nqCategory">'+catOpts+'</select></div>' +
+          '</div>' +
+          '<div class="modal-foot">' +
+            '<button class="btn btn-ghost" data-action="close-new-quote">Cancel</button>' +
+            '<button class="btn btn-primary" data-action="submit-new-quote">Next: add items</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+  function nqCustomerPicked(){
+    var el = document.getElementById('nqCustomer'), ph = document.getElementById('nqPhone');
+    if(!el || !ph || ph.value) return;
+    var c = findCustomerByName(el.value||''); if(c && c.phone) ph.value = c.phone;
+  }
+  function submitNewQuote(){
+    var name = (document.getElementById('nqCustomer').value||'').trim();
+    if(!name){ toast('Add a customer name first'); return; }
+    var phone = (document.getElementById('nqPhone').value||'').trim();
+    var title = (document.getElementById('nqTitle').value||'').trim() || 'Quotation';
+    var category = document.getElementById('nqCategory').value;
+    var existing = findCustomerByName(name);
+    var cp = existing ? Promise.resolve(existing) : persistCustomer({name:name, phone:phone, email:'', notes:''});
+    cp.then(function(cust){
+      return persistOrder({
+        quoteOnly:true, status:'quote', customerId:cust.id, customerName:cust.name, phone:phone || cust.phone || '',
+        category:category, title:title, description:'', qty:1, quoteAmount:0, lineItems:[{description:title, qty:1, unitPrice:0}],
+        invoiced:false, invoiceNumber:'', dueDate:'', notes:'', source:'Quotation', attachmentIds:[],
+        designerId:null, designerName:'', technicianId:null, technicianName:'', technician2Id:null, technician2Name:'',
+        createdAt:todayIso(), updatedAt:todayIso()
+      });
+    }).then(function(o){
+      STATE.newQuoteOpen = false;
+      if(STATE.orders.indexOf(o)<0 && !STATE.orders.find(function(x){ return x.id===o.id; })) STATE.orders.unshift(o);
+      openQuoteModal(o.id);
+    }).catch(function(){ toast('Could not create the quotation — try again'); });
+  }
+  function convertQuoteToJob(id){
+    var o = STATE.orders.find(function(x){ return x.id===id; }); if(!o || !o.quoteOnly) return;
+    if(!confirm('Convert this quotation for '+(o.customerName||'the customer')+' into a job? It gets a job number and goes on the job board as “Quoted”.')) return;
+    reserveNumbers('nextJobNumber', 1).then(function(n){
+      var jn = 'DSX-J'+pad4(n);
+      return updateOrder(id, {quoteOnly:false, status:'quoted', jobNumber:jn, convertedAt:todayIso(), createdAt:todayIso()}).then(function(){ return jn; });
+    }).then(function(jn){
+      STATE.quoteModalOrderId = null; STATE.quoteDraft = null;
+      STATE.openOrderId = id;
+      render();
+      toast('Job '+jn+' added to the board');
+    }).catch(function(){ toast('Could not convert — try again'); });
+  }
+
   function renderNewOrderModal(){
     var pf = STATE.newOrderPrefill || {};
     var catOpts = CATEGORIES.map(function(c){ return '<option value="'+c.key+'">'+c.label+'</option>'; }).join('');
@@ -3101,7 +3184,7 @@ import './platform.js';
         render();
       }
       else if(action==='close-order'){ STATE.openOrderId = null; render(); }
-      else if(action==='close-modal-bg'){ if(e.target===el && STATE.receiptForm){ STATE.receiptForm = null; render(); } else if(e.target===el){ STATE.openOrderId=null; STATE.newOrderOpen=false; STATE.newOrderPrefill=null; STATE.newTeamOpen=false; STATE.quoteModalOrderId=null; STATE.quoteDraft=null; STATE.invoiceModalOrderId=null; STATE.invoiceDraft=null; render(); } }
+      else if(action==='close-modal-bg'){ if(e.target===el && STATE.newQuoteOpen){ STATE.newQuoteOpen = false; render(); } else if(e.target===el && STATE.receiptForm){ STATE.receiptForm = null; render(); } else if(e.target===el){ STATE.openOrderId=null; STATE.newOrderOpen=false; STATE.newOrderPrefill=null; STATE.newTeamOpen=false; STATE.quoteModalOrderId=null; STATE.quoteDraft=null; STATE.invoiceModalOrderId=null; STATE.invoiceDraft=null; render(); } }
       else if(action==='open-add-team'){ if(isOwnerRole()){ STATE.newTeamOpen = true; render(); } }
       else if(action==='close-new-team'){ STATE.newTeamOpen = false; render(); }
       else if(action==='submit-new-team'){ submitNewTeamMember(); }
@@ -3194,6 +3277,10 @@ import './platform.js';
       else if(action==='cf-type'){ if(STATE.customerForm){ STATE.customerForm.draft.type = el.getAttribute('data-type'); STATE.customerForm.errors = {}; render(); } }
       else if(action==='cf-add-contact'){ var cd = STATE.customerForm && STATE.customerForm.draft; if(cd && cd.contacts.length < MAX_EXTRA_CONTACTS){ cd.contacts.push(blankPerson()); render(); var ni = cd.contacts.length-1; setTimeout(function(){ var x = document.getElementById('cfc'+ni+'f'); if(x) x.focus(); }, 0); } }
       else if(action==='cf-remove-contact'){ var rd = STATE.customerForm && STATE.customerForm.draft; if(rd){ rd.contacts.splice(Number(el.getAttribute('data-i')), 1); render(); } }
+      else if(action==='open-new-quote' && canAccess('quotes')){ STATE.newQuoteOpen = true; render(); var nq = document.getElementById('nqCustomer'); if(nq) nq.focus(); }
+      else if(action==='close-new-quote'){ STATE.newQuoteOpen = false; render(); }
+      else if(action==='submit-new-quote'){ submitNewQuote(); }
+      else if(action==='quote-convert' && canAccess('quotes')){ convertQuoteToJob(el.getAttribute('data-id')); }
       else if(action==='quote-filter'){ STATE.quoteFilter = el.getAttribute('data-filter'); render(); }
       else if(action==='product-new'){ STATE.productForm = {code:'', description:'', unit:'', price:''}; render(); }
       else if(action==='product-edit'){ var pe = STATE.products.find(function(x){ return x.id===el.getAttribute('data-id'); }); if(pe){ STATE.productForm = Object.assign({}, pe); render(); } }
@@ -3250,6 +3337,7 @@ import './platform.js';
       if(e.target.id==='cuDate' && e.target.value){ STATE.cashupDate = e.target.value; STATE.cashupForm = null; render(); }
       if((e.target.id==='rxFrom' || e.target.id==='rxTo') && e.target.value){ STATE[e.target.id] = e.target.value; render(); }
       if(e.target.id==='rxMethod'){ STATE.rxMethod = e.target.value; render(); }
+      if(e.target.id==='nqCustomer'){ nqCustomerPicked(); }
       if(e.target.id==='tplPick' && e.target.value){ prepareTemplate(e.target.getAttribute('data-phone'), e.target.value); }
       if(e.target.id==='boardAssignee'){ STATE.boardAssigneeFilter = e.target.value; render(); }
       if(e.target.id==='custExFrom'){ STATE.custExportFrom = e.target.value; render(); }
@@ -3381,6 +3469,8 @@ import './platform.js';
     patch.technicianName = techMember ? techMember.name : '';
     patch.technician2Id = tech2Id || null;
     patch.technician2Name = tech2Member ? tech2Member.name : '';
+    var cur = STATE.orders.find(function(x){ return x.id===id; });
+    if(cur && cur.quoteOnly){ patch.status = 'quote'; delete patch.invoiced; }
     updateOrder(id, patch);
     STATE.openOrderId = null;
     render();
@@ -3749,7 +3839,7 @@ import './platform.js';
   var _jobBackfillDone = false;
   function backfillJobNumbers(){
     if(_jobBackfillDone || !STATE.isLive || !isOwnerRole()) return;
-    var missing = STATE.orders.filter(function(o){ return !o.jobNumber; });
+    var missing = STATE.orders.filter(function(o){ return !o.jobNumber && !o.quoteOnly; });
     _jobBackfillDone = true;
     if(!missing.length) return;
     missing.sort(function(a,b){ return String(a.createdAt||'').localeCompare(String(b.createdAt||'')) || String(a.id).localeCompare(String(b.id)); });
@@ -4419,6 +4509,9 @@ import './platform.js';
     return o.customerName || 'there';
   }
   var WA_TEMPLATES = [
+    {slug:'dsignx_walk_in', label:'Walk-in customer (first message)',
+      text:'Hi {{customer_name}}, thank you for visiting DsignX. We will use this WhatsApp number to send you the quotation, proofs and updates for {{job_title}}. Please reply to this message so we can send your documents here.',
+      params:function(o){ return {customer_name:custFirstName(o), job_title:(o.title && o.title!=='Quotation' && o.title!=='Untitled job') ? o.title : 'your order'}; }},
     {slug:'dsignx_follow_up', label:'General follow-up',
       text:'Hi {{customer_name}}, this is DsignX following up on your recent enquiry with us. Please reply to this message so we can continue helping you.',
       params:function(o){ return {customer_name:custFirstName(o)}; }},
