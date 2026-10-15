@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-10-15.16';
+import './platform.js?v=2026-10-15.17';
 
 (function(){
   "use strict";
@@ -1712,7 +1712,7 @@ import './platform.js?v=2026-10-15.16';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-15.16</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-15.17</span></div>' +
       '</div>'
     );
   }
@@ -4980,6 +4980,22 @@ import './platform.js?v=2026-10-15.16';
         totalDiff:Number(c.totalDifference)||0, by:c.closedBy||'', notes:c.notes||'', late:recs.filter(function(r){ return (c.receiptIds||[]).indexOf(r.id)<0; }).length};
     });
   }
+  function receiptsInRange(from, to, includeVoid){
+    return STATE.receipts.filter(function(r){ return r.date && (includeVoid || !r.voided) && (!from || r.date>=from) && (!to || r.date<=to); })
+      .sort(function(a,b){ return String(a.date+a.createdAt).localeCompare(String(b.date+b.createdAt)); });
+  }
+  function receiptStatus(r){ return r.voided ? 'VOID' : (r.cashupDate ? 'Cashed up' : 'Open'); }
+  function receiptsByUser(list){
+    var m = {};
+    list.forEach(function(r){
+      var k = r.receivedBy || 'Unknown';
+      var u = m[k] || (m[k] = {name:k, count:0, cash:0, card:0, total:0, voided:0});
+      if(r.voided){ u.voided++; return; }
+      var a = Number(r.amount)||0; u.count++; u.total += a; if(r.method==='card') u.card += a; else u.cash += a;
+    });
+    return Object.keys(m).map(function(k){ var u = m[k]; u.cash = round2(u.cash); u.card = round2(u.card); u.total = round2(u.total); return u; })
+      .sort(function(a,b){ return b.total - a.total || a.name.localeCompare(b.name); });
+  }
   function cashupReportTotals(rows){
     var t = {days:rows.length, done:0, open:0, counted:0, float:0, takings:0, cashRec:0, cashDiff:0, card:0, cardRec:0, cardDiff:0, totalDiff:0, openRec:0};
     rows.forEach(function(r){
@@ -5023,7 +5039,28 @@ import './platform.js?v=2026-10-15.16';
         tile('Not cashed up', String(t.open), t.open ? (money(t.openRec)+' in receipts') : 'Every day is done') +
       '</div>' +
       '<div class="panel"><div class="tbl-wrap"><table class="cashrep-table"><thead><tr><th>Day</th><th>Status</th><th class="num">Cash counted</th><th class="num">Float</th><th class="num">Cash takings</th><th class="num">Cash receipts</th><th class="num">Cash diff.</th><th class="num">Card machine</th><th class="num">Card receipts</th><th class="num">Card diff.</th><th class="num">Total diff.</th><th>Cashed up by</th></tr></thead><tbody>'+body+'</tbody></table></div>' +
-      '<div class="hint" style="margin-top:8px;">Click a day to open its cash-up. Cash takings = cash counted less the float.</div></div>';
+      '<div class="hint" style="margin-top:8px;">Click a day to open its cash-up. Cash takings = cash counted less the float.</div></div>' +
+      renderReceiptsIssued(range);
+  }
+  function renderReceiptsIssued(range){
+    var list = receiptsInRange(range.from, range.to, true), users = receiptsByUser(list);
+    if(!list.length) return '';
+    var rows = list.map(function(r){
+      var st = receiptStatus(r);
+      return '<tr class="'+(r.voided?'cr-void':'')+'"><td>'+fullDate(r.date)+'</td><td class="mono">'+escapeHtml(String(r.createdAt||'').slice(11,16))+'</td><td class="mono">'+escapeHtml(r.number||'')+'</td><td>'+escapeHtml(r.customerName||'')+'</td>' +
+        '<td class="mono">'+escapeHtml(r.jobNumber||'')+'</td><td class="mono">'+escapeHtml(r.invoiceNumber||'')+'</td><td>'+(r.method==='card'?'Card':'Cash')+'</td><td>'+(r.kind==='prepayment'?'Deposit':'Payment')+'</td>' +
+        '<td class="num">'+money(r.amount)+'</td><td><strong>'+escapeHtml(r.receivedBy||'—')+'</strong></td>' +
+        '<td>'+(r.voided ? '<span class="pay-chip pay-unpaid" title="'+escapeHtml(r.voidReason||'')+'">Void</span>'+(r.voidReason?' <span class="cr-reason">'+escapeHtml(r.voidReason)+'</span>':'') : (r.cashupDate ? '<span class="pay-chip pay-paid">Cashed up</span>' : '<span class="pay-chip pay-part">Open</span>'))+'</td></tr>';
+    }).join('');
+    var valid = list.filter(function(r){ return !r.voided; });
+    var tot = round2(valid.reduce(function(s,r){ return s+(Number(r.amount)||0); },0));
+    var urows = users.map(function(u){ return '<tr><td><strong>'+escapeHtml(u.name)+'</strong></td><td class="num">'+u.count+'</td><td class="num">'+money(u.cash)+'</td><td class="num">'+money(u.card)+'</td><td class="num"><strong>'+money(u.total)+'</strong></td><td class="num">'+(u.voided||'')+'</td></tr>'; }).join('');
+    return '<div class="panel"><div class="panel-head"><h2>Receipts issued</h2><span class="hint" style="margin:0;">'+valid.length+' receipt'+(valid.length===1?'':'s')+' &middot; '+money(tot)+(list.length>valid.length?(' &middot; '+(list.length-valid.length)+' voided'):'')+'</span></div>' +
+      '<div class="section-label">By user</div>' +
+      '<div class="tbl-wrap" style="margin-bottom:14px;"><table class="cashrep-table"><thead><tr><th>Issued by</th><th class="num">Receipts</th><th class="num">Cash</th><th class="num">Card</th><th class="num">Total</th><th class="num">Voided</th></tr></thead><tbody>'+urows+'</tbody></table></div>' +
+      '<div class="section-label">All receipts</div>' +
+      '<div class="tbl-wrap"><table class="cashrep-table"><thead><tr><th>Date</th><th>Time</th><th>Receipt</th><th>Customer</th><th>Job</th><th>Invoice</th><th>Method</th><th>Type</th><th class="num">Amount</th><th>Issued by</th><th>Status</th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
+      '<div class="hint" style="margin-top:8px;">Voided receipts are listed for the record but not counted in any totals.</div></div>';
   }
 
   /* ---- PDF (A4 landscape) ---- */
@@ -5033,6 +5070,7 @@ import './platform.js?v=2026-10-15.16';
     var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4', orientation:'landscape'});
     var L = 12, R = 285, MAROON = [78,9,40];
     var cols = [['DAY',L+1,'l'],['STATUS',L+31,'l'],['COUNTED',L+90,'r'],['FLOAT',L+109,'r'],['TAKINGS',L+131,'r'],['CASH REC.',L+153,'r'],['CASH DIFF',L+173,'r'],['CARD',L+195,'r'],['CARD REC.',L+217,'r'],['CARD DIFF',L+237,'r'],['TOTAL DIFF',L+258,'r'],['BY',L+261,'l']];
+    var curCols = cols, sectionLabel = '';
     var header = function(){
       try { doc.addImage(LOGO_PDF_DATA_URL, 'PNG', L, 8, 36, 36*(358/800)); } catch(e){}
       doc.setFont('helvetica','bold'); doc.setFontSize(10.5); doc.setTextColor(MAROON[0],MAROON[1],MAROON[2]); doc.text(lh('docCompanyName'), R, 13, {align:'right'});
@@ -5041,9 +5079,10 @@ import './platform.js?v=2026-10-15.16';
       doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.setTextColor(MAROON[0],MAROON[1],MAROON[2]); doc.text('DAILY CASH-UP REPORT', L, 35);
       doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(60,60,60); doc.text(rangeLabel(range)+'   ·   Generated '+fullDate(todayIso()), L, 40.5);
       var y = 45;
+      if(sectionLabel){ doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(MAROON[0],MAROON[1],MAROON[2]); doc.text(sectionLabel, L, y+3); y += 6; }
       doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, y, R-L, 7.5, 'F');
       doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(255,255,255);
-      cols.forEach(function(c){ doc.text(c[0], c[1], y+5, c[2]==='r'?{align:'right'}:{}); });
+      curCols.forEach(function(c){ doc.text(c[0], c[1], y+5, c[2]==='r'?{align:'right'}:{}); });
       return y + 7.5;
     };
     var num = function(v){ return pdfNum(v); };
@@ -5074,6 +5113,53 @@ import './platform.js?v=2026-10-15.16';
     if(t.open){ if(y > 185){ doc.addPage(); y = header(); } doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(150,30,30); doc.text(t.open+' day'+(t.open===1?' has':'s have')+' receipts ('+money(t.openRec)+') but no saved cash-up.', L, y); y += 6; }
     doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(95,99,88);
     doc.text('Cash takings = cash counted less the float. Differences: positive = over, negative = short. Amounts in '+(STATE.config.currency||'ZAR')+'.', L, Math.min(y, 192));
+
+    /* receipts issued: by user, then every receipt */
+    var rlist = receiptsInRange(range.from, range.to, true);
+    if(rlist.length){
+      var users = receiptsByUser(rlist);
+      curCols = [['ISSUED BY',L+1,'l'],['RECEIPTS',L+80,'r'],['CASH',L+115,'r'],['CARD',L+150,'r'],['TOTAL',L+185,'r'],['VOIDED',L+210,'r']];
+      sectionLabel = 'RECEIPTS ISSUED — BY USER';
+      doc.addPage(); y = header();
+      users.forEach(function(u, i){
+        if(i%2===1){ doc.setFillColor(246,245,241); doc.rect(L, y, R-L, 7, 'F'); }
+        doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(43,43,43);
+        [u.name, String(u.count), num(u.cash), num(u.card), num(u.total), u.voided?String(u.voided):''].forEach(function(v, k){ if(k===0||k===4) doc.setFont('helvetica','bold'); doc.text(v, curCols[k][1], y+4.8, curCols[k][2]==='r'?{align:'right'}:{}); doc.setFont('helvetica','normal'); });
+        y += 7;
+      });
+      y += 8;
+      curCols = [['DATE',L+1,'l'],['TIME',L+25,'l'],['RECEIPT',L+38,'l'],['CUSTOMER',L+62,'l'],['JOB',L+118,'l'],['INVOICE',L+140,'l'],['METHOD',L+165,'l'],['TYPE',L+181,'l'],['AMOUNT',L+218,'r'],['ISSUED BY',L+222,'l'],['STATUS',L+252,'l']];
+      sectionLabel = 'RECEIPTS ISSUED — ALL RECEIPTS';
+      var tableTop = function(){
+        doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(MAROON[0],MAROON[1],MAROON[2]); doc.text(sectionLabel, L, y+3); y += 6;
+        doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, y, R-L, 7.5, 'F');
+        doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(255,255,255);
+        curCols.forEach(function(c){ doc.text(c[0], c[1], y+5, c[2]==='r'?{align:'right'}:{}); });
+        y += 7.5;
+      };
+      if(y + 30 > 190){ doc.addPage(); y = header(); } else tableTop();
+      rlist.forEach(function(r, i){
+        var rh = (r.voided && r.voidReason) ? 10.5 : 7;
+        if(y + rh > 192){ doc.addPage(); y = header(); }
+        if(i%2===1){ doc.setFillColor(246,245,241); doc.rect(L, y, R-L, rh, 'F'); }
+        doc.setFont('helvetica','normal'); doc.setFontSize(7.8); doc.setTextColor(r.voided?150:43, r.voided?150:43, r.voided?140:43);
+        var v = [fullDate(r.date), String(r.createdAt||'').slice(11,16), r.number||'', doc.splitTextToSize(String(r.customerName||''), 54)[0], r.jobNumber||'', r.invoiceNumber||'', r.method==='card'?'Card':'Cash', r.kind==='prepayment'?'Deposit':'Payment', num(r.amount), r.receivedBy||'', r.voided ? 'VOID' : (r.cashupDate?'Cashed up':'Open')];
+        v.forEach(function(val, k){
+          if(k===9) doc.setFont('helvetica','bold');
+          if(k===10 && r.voided){ doc.setTextColor(150,30,30); doc.setFont('helvetica','bold'); }
+          doc.text(String(val), curCols[k][1], y+4.8, curCols[k][2]==='r'?{align:'right'}:{});
+          doc.setFont('helvetica','normal');
+        });
+        if(r.voided && r.voidReason){ doc.setFont('helvetica','italic'); doc.setFontSize(7.2); doc.setTextColor(150,30,30); doc.text(doc.splitTextToSize('Void reason: '+r.voidReason, R-curCols[3][1]-4)[0], curCols[3][1], y+8.6); doc.setFont('helvetica','normal'); }
+        y += rh;
+      });
+      var valid = rlist.filter(function(r){ return !r.voided; });
+      if(y + 9 > 192){ doc.addPage(); y = header(); }
+      doc.setDrawColor(MAROON[0],MAROON[1],MAROON[2]); doc.setLineWidth(0.4); doc.line(L, y+0.5, R, y+0.5);
+      doc.setFont('helvetica','bold'); doc.setFontSize(8.2); doc.setTextColor(43,43,43);
+      doc.text(valid.length+' receipts (voided receipts not counted)', L+1, y+5.5);
+      doc.text(num(valid.reduce(function(s,r){ return s+(Number(r.amount)||0); },0)), curCols[8][1], y+5.5, {align:'right'});
+    }
     var n = doc.getNumberOfPages();
     for(var i=1;i<=n;i++){ doc.setPage(i); doc.setFontSize(7.5); doc.setTextColor(140,140,132); doc.text('Page '+i+' of '+n, R, 203, {align:'right'}); }
     var name = 'DsignX-cash-up-report-'+(range.from||'start')+'-to-'+(range.to||todayIso())+'.pdf';
@@ -5153,13 +5239,18 @@ import './platform.js?v=2026-10-15.16';
     var B = function(v){ return {v:v, s:3}; };
     days.push([]);
     days.push([{v:'Total', s:1}, {v:t.done+' of '+t.days+' days cashed up', s:1}, B(t.counted), B(t.float), B(t.takings), B(t.cashRec), B(t.cashDiff), B(t.card), B(t.cardRec), B(t.cardDiff), B(t.totalDiff)]);
-    var recs = [[H('Date'),H('Time'),H('Receipt'),H('Customer'),H('Job'),H('Invoice'),H('Method'),H('Type'),H('Amount'),H('Cash-up')]];
-    STATE.receipts.filter(function(r){ return !r.voided && r.date && (!range.from || r.date>=range.from) && (!range.to || r.date<=range.to); })
-      .sort(function(a,b){ return String(a.date+a.createdAt).localeCompare(String(b.date+b.createdAt)); })
-      .forEach(function(r){ recs.push([r.date, String(r.createdAt||'').slice(11,16), r.number, r.customerName||'', r.jobNumber||'', r.invoiceNumber||'', r.method==='card'?'Card':'Cash', r.kind==='prepayment'?'Deposit':'Payment', Number(r.amount)||0, r.cashupDate ? 'Cashed up' : 'Open']); });
+    var recs = [[H('Date'),H('Time'),H('Receipt'),H('Customer'),H('Job'),H('Invoice'),H('Method'),H('Type'),H('Amount'),H('Issued by'),H('Status'),H('Void reason'),H('Note')]];
+    var rlist = receiptsInRange(range.from, range.to, true);
+    rlist.forEach(function(r){ recs.push([r.date, String(r.createdAt||'').slice(11,16), r.number, r.customerName||'', r.jobNumber||'', r.invoiceNumber||'', r.method==='card'?'Card':'Cash', r.kind==='prepayment'?'Deposit':'Payment', Number(r.amount)||0, r.receivedBy||'', receiptStatus(r), r.voided?(r.voidReason||''):'', r.note||'']); });
+    var validR = rlist.filter(function(r){ return !r.voided; });
+    recs.push([]); recs.push([{v:'Total (excl. voided)', s:1}, '', {v:validR.length+' receipts', s:1}, '', '', '', '', '', B(round2(validR.reduce(function(s,r){ return s+(Number(r.amount)||0); },0)))]);
+    var byUser = [[H('Issued by'),H('Receipts'),H('Cash'),H('Card'),H('Total'),H('Voided')]];
+    receiptsByUser(rlist).forEach(function(u){ byUser.push([{v:u.name, s:1}, u.count, u.cash, u.card, B(u.total), u.voided]); });
+    byUser.forEach(function(row, i){ if(i>0) row[1] = {v:row[1], s:0}; if(i>0) row[5] = {v:row[5], s:0}; });
     var blob = buildXlsx([
       {name:'Daily cash-ups', widths:[12,26,14,10,14,14,15,14,14,15,15,16,40], rows:days},
-      {name:'Receipts', widths:[12,7,13,28,12,14,8,10,13,11], rows:recs}
+      {name:'Receipts', widths:[12,7,13,28,12,14,8,10,13,18,11,26,30], rows:recs},
+      {name:'Receipts by user', widths:[22,10,14,14,14,9], rows:byUser}
     ]);
     var name = 'DsignX-cash-up-report-'+(range.from||'start')+'-to-'+(range.to||todayIso())+'.xlsx';
     if(STATE.downloads){ STATE.downloads.save({filename:name, data:blob}).catch(function(){ fallbackDownload(blob, name); }); } else fallbackDownload(blob, name);

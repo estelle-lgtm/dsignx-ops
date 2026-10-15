@@ -476,6 +476,9 @@ img{max-width:100%}
   .cashrep-table .pay-chip{font-size:9.5px;}
   .cashrep-table tr.cr-note td{white-space:normal; font-style:italic; color:var(--ink-soft, #5d5a55); padding-top:0; border-top:none;}
   .cashrep-table tr.cr-open td{background:#fbf3f1;}
+  .cashrep-table tr.cr-void td{color:var(--ink-faint, #9a968e); text-decoration:line-through;}
+  .cashrep-table tr.cr-void td:last-child{text-decoration:none;}
+  .cashrep-table .cr-reason{font-size:11px; font-style:italic; color:var(--ink-soft, #5d5a55);}
   textarea.li-note{width:100%; min-height:30px; font-size:12px; padding:5px 8px; font-style:italic; resize:vertical; background:var(--surface-2, #f6f3ee);}
   @media (max-width:640px){ .pay-row{grid-template-columns:1fr 1fr; } .pay-row .pay-actions{grid-column:1 / -1; justify-content:flex-start;} }
   .chat-attach{cursor:pointer; padding:6px 9px; align-self:flex-end; display:inline-flex; align-items:center;}
