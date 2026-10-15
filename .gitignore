@@ -1,0 +1,19 @@
+# Private data — never commit
+*backup*.json
+*.backup.json
+.env
+.env.*
+.runtimeconfig.json
+
+# Firebase / Node
+.firebase/
+firebase-debug.log*
+firestore-debug.log*
+ui-debug.log*
+functions/node_modules/
+node_modules/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db

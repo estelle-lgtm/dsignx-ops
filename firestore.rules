@@ -1,0 +1,92 @@
+rules_version = '2';
+
+// DsignX Ops — who may read and write what.
+//
+// Access is granted by a document at links/{uid}:
+//   • the owner's link ({role: 'owner'}) is created once, during first-time setup;
+//   • team members' links ({memberId}) are created by the redeemInvite function when
+//     they enter a valid invite code. Their role comes from team/{memberId}.
+// Deleting a link (Team → Revoke) removes access immediately.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // The only email address allowed to become the owner. Keep in sync with
+    // ownerEmail in js/firebase-config.js.
+    function ownerEmail() { return 'estelle@dsignx.co.za'; }
+
+    function signedIn() { return request.auth != null; }
+    function linkPath() { return /databases/$(database)/documents/links/$(request.auth.uid); }
+    function hasLink() { return signedIn() && exists(linkPath()); }
+    function lnk() { return get(linkPath()).data; }
+    function isOwner() { return hasLink() && lnk().get('role', '') == 'owner'; }
+    function memberPath() { return /databases/$(database)/documents/team/$(lnk().get('memberId', '')); }
+    function memberOk() {
+      return hasLink() && lnk().get('role', '') != 'owner' && lnk().get('memberId', null) is string
+        && exists(memberPath()) && get(memberPath()).data.get('active', true) != false;
+    }
+    function role() { return isOwner() ? 'owner' : (memberOk() ? get(memberPath()).data.get('role', 'none') : 'none'); }
+    function isTeam() { return role() in ['owner', 'designer', 'technician']; }
+    function isStaff() { return role() in ['owner', 'designer']; }
+
+    // First-time setup marker: who the owner is.
+    match /meta/owner {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email.lower() == ownerEmail()
+        && request.resource.data.uid == request.auth.uid
+        && getAfter(linkPath()).data.get('role', '') == 'owner';
+      allow update, delete: if false;
+    }
+
+    // Access links. Members' links are written by Cloud Functions (which bypass these rules).
+    match /links/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isOwner());
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.role == 'owner'
+        && !exists(/databases/$(database)/documents/meta/owner)
+        && existsAfter(/databases/$(database)/documents/meta/owner);
+      allow delete: if isOwner() && uid != request.auth.uid;
+      allow update: if false;
+    }
+
+    match /team/{id} {
+      allow read: if isTeam();
+      allow write: if isOwner();
+    }
+
+    match /config/{id} {
+      allow read: if isTeam();
+      allow write: if isStaff();  // designers advance quote/invoice numbers
+    }
+
+    match /customers/{id} {
+      allow read, write: if isStaff();
+    }
+
+    match /orders/{id} {
+      allow read: if isTeam();
+      allow create, delete: if isStaff();
+      allow update: if isStaff()
+        || (role() == 'technician'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'title', 'status', 'category', 'description', 'qty', 'dueDate', 'notes',
+              'designerId', 'designerName', 'technicianId', 'technicianName',
+              'updatedAt', 'invoicedAt'
+            ])
+            && (!('status' in request.resource.data.diff(resource.data).affectedKeys())
+                || (request.resource.data.status != 'invoiced' && resource.data.status != 'invoiced')));
+    }
+
+    match /wa_handled/{id} {
+      allow read, write: if isStaff();
+    }
+
+    // Everything else (including the functions' rate-limit records) is closed.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,3628 @@
+/* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
+import './platform.js';
+
+(function(){
+  "use strict";
+
+  /* ============================ brand assets ============================ */
+
+  /* ============================ constants ============================ */
+  var CATEGORIES = [
+    {key:'signage', label:'Signage', dot:'var(--dot-signage)'},
+    {key:'printing', label:'Printing', dot:'var(--dot-printing)'},
+    {key:'sublimation', label:'Sublimation', dot:'var(--dot-sublimation)'},
+    {key:'design', label:'Design', dot:'var(--dot-design)'},
+    {key:'other', label:'Other', dot:'var(--dot-other)'}
+  ];
+  var STATUSES = [
+    {key:'new', label:'New'},
+    {key:'quoted', label:'Quoted'},
+    {key:'in_progress', label:'In Progress'},
+    {key:'ready', label:'Ready'},
+    {key:'delivered', label:'Delivered'},
+    {key:'invoiced', label:'Invoiced'}
+  ];
+  var SOURCES = ['WhatsApp','Phone call','Instagram DM','Walk-in','Email','Other'];
+  var TEAM_ROLES = [
+    {key:'designer', label:'Designer', plural:'Designers'},
+    {key:'technician', label:'Technician', plural:'Technicians'}
+  ];
+  function roleLabel(k){ for(var i=0;i<TEAM_ROLES.length;i++){ if(TEAM_ROLES[i].key===k) return TEAM_ROLES[i].label; } return k; }
+  function initials(name){
+    var parts = String(name||'').trim().split(/\s+/);
+    if(!parts[0]) return '?';
+    return (parts[0][0] + (parts[1]?parts[1][0]:'')).toUpperCase();
+  }
+  var DEFAULT_TEMPLATE = "Hi DsignX! I'd like to order:\n\nItem / product:\nQuantity:\nSize / details:\nNeeded by (date):\nMy name:\nCollection or delivery:";
+
+  function catMeta(k){ for(var i=0;i<CATEGORIES.length;i++){ if(CATEGORIES[i].key===k) return CATEGORIES[i]; } return CATEGORIES[4]; }
+  function statusMeta(k){ for(var i=0;i<STATUSES.length;i++){ if(STATUSES[i].key===k) return STATUSES[i]; } return STATUSES[0]; }
+
+  /* ============================ state ============================ */
+  var STATE = {
+    tab:'dashboard',
+    isLive:false,
+    customers:[],
+    orders:[],
+    config:{
+      businessName:'DsignX', whatsappNumber:'', messageTemplate:DEFAULT_TEMPLATE, accountCode:'200', taxType:'Output', currency:'ZAR',
+      businessAddress:'', businessEmail:'', quoteValidityDays:14, vatRate:15,
+      quoteTerms:'A 50% deposit is required before work begins, with the balance due on collection or delivery. Prices are valid for the period shown above and may change thereafter.',
+      nextQuoteNumber:1,
+      businessVatNumber:'', invoiceDueDays:7, nextInvoiceNumber:1,
+      invoiceTerms:'Payment due within 7 days of invoice date via EFT, using the invoice number as reference.',
+      bankName:'', bankAccountHolder:'', bankAccountNumber:'', bankBranchCode:'',
+      appShareLink:''
+    },
+    quoteFilter:'all',
+    customerQuery:'',
+    boardQuery:'',
+    openOrderId:null,
+    newOrderOpen:false,
+    newOrderPrefill:null,
+    selectedForExport:{},
+    db:null, assets:null, downloads:null,
+    mcp:null,
+    waStatus:'idle', waError:null, waConversations:[], waMessages:{}, waHandled:{}, waLastChecked:null, waLastInbound:{}, waUnwatch:null,
+    chatMessages:{}, chatDraft:{},
+    team:[], newTeamOpen:false, boardAssigneeFilter:'all',
+    quoteModalOrderId:null, quoteDraft:null, waMediaCheck:null,
+    invoiceModalOrderId:null, invoiceDraft:null,
+    currentUserId:null,
+    inviteMemberId:null, inviteDraftText:'', inviteCode:null,
+    reportFrom:'', reportTo:'', reportOpenMember:null,
+    invExportFrom:'', invExportTo:'', invExportStatus:'Draft',
+    custExportFrom:'', custExportTo:'', custExportMode:'added',
+    customerForm:null,
+    user:null, links:{},
+    auth:{phase:'checking', uid:null, isOwner:false, memberId:null, role:null, error:'', busy:false, myAuth:null, myLink:null, teamLoaded:false, fails:0, lockUntil:0}
+  };
+
+  /* ============================ access control ============================ */
+  // Who can open what. Owner = the account that completed first-time setup; everyone else must be
+  // a team member who redeemed an invite code. The same rules are enforced in firestore.rules.
+  var ROLE_TABS = {
+    owner:      ['dashboard','board','whatsapp','customers','team','quotes','reports','settings'],
+    designer:   ['dashboard','board','whatsapp','customers','team','quotes','reports'],
+    technician: ['board']
+  };
+  var PASSWORD_ITER = 210000, CODE_ITER = 100000, CODE_TTL_DAYS = 7;
+  var IDLE_LOCK_MS = 30*60*1000, SESSION_MS = 12*60*60*1000;
+
+  function currentRole(){ return STATE.auth.role || null; }
+  function isOwnerRole(){ return currentRole()==='owner'; }
+  function isTechnician(){ return currentRole()==='technician'; }
+  function canAccess(tab){ var r = currentRole(); return !!(r && ROLE_TABS[r] && ROLE_TABS[r].indexOf(tab)>=0); }
+  function firstAllowedTab(){ var r = currentRole(); return (r && ROLE_TABS[r]) ? ROLE_TABS[r][0] : 'board'; }
+  function currentTeamMember(){
+    if(!STATE.currentUserId) return null;
+    return STATE.team.find(function(m){ return m.id===STATE.currentUserId; }) || null;
+  }
+
+  /* ---- crypto helpers (PBKDF2-SHA256 via WebCrypto) ---- */
+  function b64(buf){ var b = new Uint8Array(buf), s = ''; for(var i=0;i<b.length;i++){ s += String.fromCharCode(b[i]); } return btoa(s); }
+  function unb64(str){ var s = atob(str), b = new Uint8Array(s.length); for(var i=0;i<s.length;i++){ b[i] = s.charCodeAt(i); } return b; }
+  function randomSalt(){ var a = new Uint8Array(16); crypto.getRandomValues(a); return b64(a); }
+  function pbkdf2(secret, saltB64, iterations){
+    var enc = new TextEncoder();
+    return crypto.subtle.importKey('raw', enc.encode(secret), 'PBKDF2', false, ['deriveBits']).then(function(key){
+      return crypto.subtle.deriveBits({name:'PBKDF2', hash:'SHA-256', salt:unb64(saltB64), iterations:iterations}, key, 256);
+    }).then(b64);
+  }
+  var CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  function generateInviteCode(){
+    var a = new Uint8Array(8); crypto.getRandomValues(a);
+    var c = ''; for(var i=0;i<8;i++){ c += CODE_ALPHABET[a[i] % CODE_ALPHABET.length]; }
+    return c.slice(0,4) + '-' + c.slice(4);
+  }
+  function normalizeCode(c){ c = String(c||'').toUpperCase().replace(/[^A-Z0-9]/g,''); return c.length===8 ? c.slice(0,4)+'-'+c.slice(4) : c; }
+  var _codeCache = {};
+  function codeMatches(code, member){
+    if(!code || !member || !member.inviteHash || !member.inviteSalt) return Promise.resolve(false);
+    var k = code+'|'+member.inviteSalt+'|'+member.inviteHash;
+    if(_codeCache[k]!==undefined) return Promise.resolve(_codeCache[k]);
+    return pbkdf2(code, member.inviteSalt, member.inviteIter||CODE_ITER).then(function(h){ _codeCache[k] = (h===member.inviteHash); return _codeCache[k]; });
+  }
+
+  /* ---- signed-in session (Firebase Authentication, this browser tab only) ---- */
+  var _lastActivity = Date.now();
+  function noteActivity(){ _lastActivity = Date.now(); }
+  ['click','keydown','pointerdown','scroll'].forEach(function(ev){ document.addEventListener(ev, noteActivity, true); });
+  setInterval(function(){
+    if(STATE.auth.phase==='unlocked' && Date.now()-_lastActivity > IDLE_LOCK_MS){ lockApp('Signed out after 30 minutes without activity.'); }
+  }, 60000);
+
+  // Signing out reloads the page so no business data stays in memory.
+  function lockApp(msg){
+    try{ if(msg) sessionStorage.setItem('dsx_signout_msg', msg); }catch(e){}
+    STATE.auth.busy = true; render();
+    window.DSX.auth.signOut().then(function(){ location.reload(); }, function(){ location.reload(); });
+  }
+
+  /* ---- deciding what this person may do ---- */
+  var _unwatchLink = null, _unwatchMember = null;
+  function onAuthUser(user){
+    var A = STATE.auth;
+    if(_unwatchLink){ _unwatchLink(); _unwatchLink = null; }
+    if(_unwatchMember){ _unwatchMember(); _unwatchMember = null; }
+    if(!user){
+      if(A.phase==='unlocked'){ location.reload(); return; }
+      A.uid = null; A.email = ''; A.role = null; A.memberId = null; A.isOwner = false;
+      settle(A.mode==='join' ? 'join' : (A.mode==='setup' ? 'setup' : 'signin'));
+      return;
+    }
+    A.uid = user.uid; A.email = user.email || '';
+    if(A.phase!=='unlocked'){ A.phase = 'checking'; render(); }
+    _unwatchLink = STATE.db.doc('links/'+user.uid).onSnapshot(function(snap){
+      if(snap.exists){
+        var link = snap.data();
+        if(link.role==='owner'){
+          A.isOwner = true; A.role = 'owner'; A.memberId = null; STATE.currentUserId = null;
+          A.pendingCode = ''; A.busy = false; A.error = '';
+          settle('unlocked');
+          return;
+        }
+        watchMember(link.memberId);
+        return;
+      }
+      // No link: access was never granted, or it has just been removed.
+      if(A.phase==='unlocked'){ lockApp('Your access to DsignX Ops has been removed. Ask the owner if this is a mistake.'); return; }
+      A.role = null; A.memberId = null;
+      if(A.pendingCode){ var c = A.pendingCode; A.pendingCode = ''; redeemInviteCode(c); return; }
+      window.DSX.ownerClaimable().then(function(ok){ A.busy = false; settle(ok ? 'claim-owner' : 'need-code'); },
+                                        function(){ A.busy = false; settle('need-code'); });
+    }, function(){ A.busy = false; settle('need-code'); });
+  }
+
+  // A team member's role comes from their team record, so changing it in Team applies at once.
+  function watchMember(memberId){
+    var A = STATE.auth;
+    if(_unwatchMember){ _unwatchMember(); _unwatchMember = null; }
+    _unwatchMember = STATE.db.doc('team/'+memberId).onSnapshot(function(snap){
+      var m = snap.exists ? Object.assign({id:memberId}, snap.data()) : null;
+      if(!m || m.active===false){
+        if(A.phase==='unlocked'){ lockApp('Your access to DsignX Ops has been removed. Ask the owner if this is a mistake.'); return; }
+        A.busy = false; settle('need-code'); return;
+      }
+      if(A.phase==='unlocked' && A.role && A.role!==m.role){ A.role = m.role; if(!canAccess(STATE.tab)) STATE.tab = firstAllowedTab(); render(); return; }
+      A.role = m.role; A.memberId = m.id; STATE.currentUserId = m.id; A.isOwner = false;
+      A.busy = false; A.error = '';
+      settle('unlocked');
+    }, function(){ A.busy = false; settle('need-code'); });
+  }
+
+  function settle(phase){
+    var A = STATE.auth, was = A.phase;
+    A.phase = phase;
+    if(phase==='unlocked' && was!=='unlocked'){
+      _lastActivity = Date.now();
+      if(!canAccess(STATE.tab)){ STATE.tab = firstAllowedTab(); }
+      if(A.memberId){ STATE.boardAssigneeFilter = A.memberId; }
+      startDataFeeds();
+    }
+    render();
+  }
+
+  /* ---- sign-in actions ---- */
+  function authBusy(on, err){ STATE.auth.busy = on; if(err!==undefined) STATE.auth.error = err; render(); }
+
+  function authErrorText(e){
+    var c = (e && e.code) || '';
+    if(/invalid-credential|wrong-password|user-not-found|invalid-login/.test(c)) return 'Wrong email or password.';
+    if(/too-many-requests/.test(c)) return 'Too many tries. Wait a few minutes and try again.';
+    if(/invalid-email/.test(c)) return 'That email address doesn’t look right.';
+    if(/weak-password/.test(c)) return 'Choose a stronger password (at least 8 characters).';
+    if(/email-already-in-use/.test(c)) return 'An account with this email already exists. Sign in instead.';
+    if(/network-request-failed/.test(c)) return 'No connection. Check your internet and try again.';
+    if(/requires-recent-login/.test(c)) return 'For safety, sign out and sign in again, then change your password.';
+    if(/user-disabled/.test(c)) return 'This account has been disabled.';
+    return 'Something went wrong. Try again.';
+  }
+
+  function signIn(email, pw){
+    email = String(email||'').trim();
+    if(!email || !pw){ authBusy(false, 'Enter your email and password.'); return; }
+    authBusy(true, '');
+    window.DSX.auth.signIn(email, pw).catch(function(e){ authBusy(false, authErrorText(e)); });
+  }
+
+  // New account for a team member (with an invite code) or the owner's first setup.
+  function createAccount(email, pw, pw2, code){
+    var A = STATE.auth;
+    email = String(email||'').trim();
+    if(!email){ authBusy(false, 'Enter your email address.'); return; }
+    if(String(pw).length < 8){ authBusy(false, 'Use at least 8 characters for your password.'); return; }
+    if(pw!==pw2){ authBusy(false, 'The two passwords don’t match.'); return; }
+    if(A.mode==='join'){
+      code = normalizeCode(code);
+      if(code.length!==9){ authBusy(false, 'Invite codes have 8 letters and numbers, like ABCD-2345.'); return; }
+      A.pendingCode = code;
+    }
+    authBusy(true, '');
+    window.DSX.auth.create(email, pw).catch(function(e){
+      if(e && /email-already-in-use/.test(e.code||'')){
+        // Already has an account (e.g. re-invited): sign in with the password they typed.
+        return window.DSX.auth.signIn(email, pw).catch(function(e2){ A.pendingCode = ''; authBusy(false, authErrorText(e2)); });
+      }
+      A.pendingCode = '';
+      authBusy(false, authErrorText(e));
+    });
+  }
+
+  function redeemInviteCode(raw){
+    var code = normalizeCode(raw);
+    if(code.length!==9){ authBusy(false, 'Invite codes have 8 letters and numbers, like ABCD-2345.'); settle('need-code'); return; }
+    authBusy(true, '');
+    window.DSX.call('redeemInvite', {code:code}).then(function(){
+      // The link snapshot listener takes it from here.
+    }).catch(function(e){
+      STATE.auth.busy = false;
+      STATE.auth.error = (e && e.message) ? e.message : 'That code isn’t valid. Check it, or ask the owner for a new one.';
+      settle('need-code');
+    });
+  }
+
+  function sendOwnerVerification(){
+    authBusy(true, '');
+    window.DSX.auth.sendVerification().then(function(){
+      STATE.auth.verifySent = true; authBusy(false, '');
+      toast('Verification email sent to '+STATE.auth.email);
+    }).catch(function(e){ authBusy(false, authErrorText(e)); });
+  }
+
+  function claimOwner(){
+    authBusy(true, '');
+    window.DSX.auth.refresh().then(function(verified){
+      if(!verified){ authBusy(false, 'Your email isn’t verified yet. Open the email we sent, click the link, then tap the button again.'); return; }
+      return window.DSX.claimOwner().then(function(){});
+    }).catch(function(){
+      authBusy(false, 'Couldn’t set up the owner account. Check that you signed in with the owner email in firebase-config.js and firestore.rules.');
+    });
+  }
+
+  function forgotPassword(email){
+    email = String(email||'').trim();
+    if(!email){ authBusy(false, 'Type your email address above first, then tap “Forgot password”.'); return; }
+    authBusy(true, '');
+    window.DSX.auth.reset(email).then(function(){
+      authBusy(false, '');
+      toast('If that email has an account, a reset link is on its way.');
+    }).catch(function(e){ authBusy(false, authErrorText(e)); });
+  }
+
+  function setNewPassword(pw, pw2){
+    if(String(pw).length < 8){ authBusy(false, 'Use at least 8 characters.'); return; }
+    if(pw!==pw2){ authBusy(false, 'The two passwords don’t match.'); return; }
+    authBusy(true, '');
+    window.DSX.auth.updatePassword(pw).then(function(){
+      STATE.auth.busy = false; STATE.auth.error = ''; STATE.auth.changing = false;
+      settle('unlocked');
+      toast('Password changed');
+    }).catch(function(e){ authBusy(false, authErrorText(e)); });
+  }
+
+  function changePassword(){ STATE.auth.phase = 'set-password'; STATE.auth.error = ''; STATE.auth.changing = true; render(); }
+
+  /* ---- sign-in screens ---- */
+  var LOCK_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
+  function renderAuthScreen(){
+    var A = STATE.auth, member = currentTeamMember();
+    var err = A.error ? '<div class="auth-error" role="alert">'+escapeHtml(A.error)+'</div>' : '';
+    var dis = A.busy ? ' disabled' : '';
+    var link = function(action, label){ return '<a href="#" data-auth-action="'+action+'">'+label+'</a>'; };
+    var body;
+    if(A.phase==='checking'){
+      body = '<h1>Checking access…</h1><div class="sub">One moment.</div>';
+    } else if(A.phase==='error'){
+      body = '<h1>Can’t start</h1><div class="sub">'+escapeHtml(A.error||'DsignX Ops couldn’t connect. Check your internet connection and reload the page.')+'</div>';
+    } else if(A.phase==='join' || A.phase==='setup'){
+      var join = A.phase==='join';
+      body = '<h1>'+(join ? 'Join DsignX Ops' : 'Owner setup')+'</h1><div class="sub">'+(join
+          ? 'Create your account with your email, a password and the invite code the owner sent you.'
+          : 'First-time setup only. Create the owner account with the owner email address.')+'</div>' + err +
+        '<form data-auth="create">' +
+          '<div class="field"><label for="authEmail">Email</label><input type="email" id="authEmail" autocomplete="email" value="'+escapeHtml(A.email||'')+'" autofocus></div>' +
+          '<div class="field"><label for="authPw1">Password</label><input type="password" id="authPw1" autocomplete="new-password" minlength="8"><div class="hint">At least 8 characters.</div></div>' +
+          '<div class="field"><label for="authPw2">Type it again</label><input type="password" id="authPw2" autocomplete="new-password"></div>' +
+          (join ? '<div class="field"><label for="authCode">Invite code</label><input class="code" id="authCode" autocomplete="one-time-code" placeholder="ABCD-2345" maxlength="9"></div>' : '') +
+          '<button class="btn btn-primary" type="submit"'+dis+'>'+(A.busy?'One moment…':(join?'Create account':'Create owner account'))+'</button>' +
+        '</form>' +
+        '<div class="hint" style="margin-top:12px;">Already have an account? '+link('to-signin','Sign in')+'</div>';
+    } else if(A.phase==='need-code'){
+      body = '<h1>Enter your invite code</h1><div class="sub">You’re signed in as <strong>'+escapeHtml(A.email)+'</strong>, but this account hasn’t been given access yet. Type the code the owner sent you.</div>' + err +
+        '<form data-auth="code"><div class="field"><label for="authCode">Invite code</label><input class="code" id="authCode" autocomplete="one-time-code" placeholder="ABCD-2345" maxlength="9" autofocus></div>' +
+        '<button class="btn btn-primary" type="submit"'+dis+'>'+(A.busy?'Checking…':'Continue')+'</button></form>' +
+        '<div class="hint" style="margin-top:12px;">'+link('sign-out','Sign out')+'</div>';
+    } else if(A.phase==='claim-owner' && !window.DSX.auth.emailVerified()){
+      body = '<h1>Verify your email</h1><div class="sub">To protect the owner account, confirm that <strong>'+escapeHtml(A.email)+'</strong> is yours. '+(A.verifySent?'We sent you an email with a link. Click it, then come back here.':'Tap the button to get a verification email.')+'</div>' + err +
+        (A.verifySent
+          ? '<button class="btn btn-primary" type="button" data-auth-action="claim-owner"'+dis+'>'+(A.busy?'Checking…':'I’ve clicked the link — continue')+'</button>' +
+            '<div class="hint" style="margin-top:10px;">No email? Check your spam folder, or '+link('send-verify','send it again')+'.</div>'
+          : '<button class="btn btn-primary" type="button" data-auth-action="send-verify"'+dis+'>'+(A.busy?'Sending…':'Send verification email')+'</button>') +
+        '<div class="hint" style="margin-top:12px;">'+link('sign-out','Sign out')+'</div>';
+    } else if(A.phase==='claim-owner'){
+      body = '<h1>Set up DsignX Ops</h1><div class="sub">No owner has been set up yet. Signed in as <strong>'+escapeHtml(A.email)+'</strong>. Make this account the owner? This can only be done once.</div>' + err +
+        '<button class="btn btn-primary" type="button" data-auth-action="claim-owner"'+dis+'>'+(A.busy?'Setting up…':'Make me the owner')+'</button>' +
+        '<div class="hint" style="margin-top:12px;">'+link('sign-out','Sign out')+'</div>';
+    } else if(A.phase==='set-password'){
+      var who = A.role==='owner' ? 'Owner' : (member ? member.name : '');
+      body = '<h1>Change your password</h1><div class="sub">'+(who?('Signed in as <strong>'+escapeHtml(who)+'</strong>. '):'')+'Choose a new password for '+escapeHtml(A.email)+'.</div>' + err +
+        '<form data-auth="setpw"><div class="field"><label for="authPw1">New password</label><input type="password" id="authPw1" autocomplete="new-password" minlength="8" autofocus><div class="hint">At least 8 characters.</div></div>' +
+        '<div class="field"><label for="authPw2">Type it again</label><input type="password" id="authPw2" autocomplete="new-password"></div>' +
+        '<button class="btn btn-primary" type="submit"'+dis+'>'+(A.busy?'Saving…':'Save password')+'</button>' +
+        '<button class="btn btn-ghost" type="button" data-auth-action="cancel-change">Cancel</button></form>';
+    } else { // signin
+      body = '<h1>Sign in</h1><div class="sub">DsignX Ops is for invited team members only.</div>' + err +
+        '<form data-auth="signin">' +
+          '<div class="field"><label for="authEmail">Email</label><input type="email" id="authEmail" autocomplete="email" value="'+escapeHtml(A.email||'')+'" autofocus></div>' +
+          '<div class="field"><label for="authPw">Password</label><input type="password" id="authPw" autocomplete="current-password"></div>' +
+          '<button class="btn btn-primary" type="submit"'+dis+'>'+(A.busy?'Signing in…':'Sign in')+'</button>' +
+        '</form>' +
+        '<div class="hint" style="margin-top:12px; line-height:1.9;">'+link('forgot','Forgot password?')+'<br>New team member? '+link('to-join','I have an invite code')+'<br>'+link('to-setup','First-time owner setup')+'</div>';
+    }
+    return '<div class="auth-wrap"><div class="auth-card">' +
+      '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="tag">Ops</div></div></div>' +
+      body +
+      '<div class="auth-foot">'+LOCK_ICON+'Private workspace &middot; invited team members only</div>' +
+    '</div></div>';
+  }
+  function bindAuthEvents(){
+    var app = document.getElementById('app');
+    var A = STATE.auth;
+    app.onclick = function(e){
+      var el = e.target.closest('[data-auth-action]');
+      if(!el) return;
+      e.preventDefault();
+      var act = el.getAttribute('data-auth-action');
+      var emailEl = document.getElementById('authEmail');
+      if(emailEl) A.email = emailEl.value.trim();
+      if(act==='cancel-change'){ A.changing = false; A.error=''; settle('unlocked'); }
+      else if(act==='to-join'){ A.mode = 'join'; A.error = ''; settle('join'); }
+      else if(act==='to-setup'){ A.mode = 'setup'; A.error = ''; settle('setup'); }
+      else if(act==='to-signin'){ A.mode = ''; A.error = ''; settle('signin'); }
+      else if(act==='forgot'){ forgotPassword(A.email); }
+      else if(act==='claim-owner'){ if(!A.busy) claimOwner(); }
+      else if(act==='send-verify'){ if(!A.busy) sendOwnerVerification(); }
+      else if(act==='sign-out'){ lockApp(''); }
+    };
+    app.onchange = null; app.oninput = null;
+    app.onsubmit = function(e){
+      e.preventDefault();
+      var f = e.target.getAttribute('data-auth');
+      if(A.busy) return;
+      var v = function(id){ var el = document.getElementById(id); return el ? el.value : ''; };
+      if(f==='signin'){ A.email = v('authEmail').trim(); signIn(A.email, v('authPw')); }
+      else if(f==='create'){ A.email = v('authEmail').trim(); createAccount(A.email, v('authPw1'), v('authPw2'), v('authCode')); }
+      else if(f==='code'){ redeemInviteCode(v('authCode')); }
+      else if(f==='setpw'){ setNewPassword(v('authPw1'), v('authPw2')); }
+    };
+    var af = app.querySelector('[autofocus]'); if(af){ try{ af.focus(); }catch(err){} }
+  }
+
+  // Digits only, in international form: South African local numbers (0xx xxx xxxx)
+  // become 27xxxxxxxxx so WhatsApp gets a valid E.164 number.
+  function waPhone(p){
+    var d = String(p||'').replace(/\D/g,'');
+    if(/^0\d{9}$/.test(d)) d = '27'+d.slice(1);
+    if(/^270\d{9}$/.test(d)) d = '27'+d.slice(3);
+    return d;
+  }
+  function currentChatPhone(){
+    var o = STATE.orders.find(function(x){ return x.id===STATE.openOrderId; });
+    return o ? waPhone(o.phone) : null;
+  }
+
+  function uid(){ return 'l' + Math.random().toString(36).slice(2,10) + Date.now().toString(36); }
+
+  /* ============================ sample data (shown only when db is unavailable) ============================ */
+  function seedSample(){
+    var today = new Date();
+    function iso(daysFromNow){ var d = new Date(today); d.setDate(d.getDate()+daysFromNow); return d.toISOString().slice(0,10); }
+    STATE.customers = [
+      {id:'c1', name:'Riaan Pretorius', phone:'+27821234567', email:'', notes:'Regular — owns the tyre shop on Reitz Rd.', createdAt:iso(-40)},
+      {id:'c2', name:'Kroonstad Primary School', phone:'+27827654321', email:'admin@kpschool.example', notes:'Orders sports day banners every term.', createdAt:iso(-90)},
+      {id:'c3', name:'Lindiwe Mokoena', phone:'+27835558899', email:'', notes:'', createdAt:iso(-5)}
+    ];
+    STATE.orders = [
+      {id:'o1', customerId:'c1', customerName:'Riaan Pretorius', phone:'+27821234567', category:'signage', title:'Shopfront fascia sign', description:'3m x 0.6m light box fascia, existing logo file', qty:1, status:'in_progress', quoteAmount:4200, invoiced:false, invoiceNumber:'', dueDate:iso(3), notes:'Confirm bracket colour with Riaan.', source:'WhatsApp', attachmentIds:[], designerId:'t1', designerName:'Thabo Nkosi', technicianId:'t2', technicianName:'Sipho Mahlangu', createdAt:iso(-6), updatedAt:iso(-1)},
+      {id:'o2', customerId:'c2', customerName:'Kroonstad Primary School', phone:'+27827654321', category:'printing', title:'Sports day banners x6', description:'A1 PVC banners, house colours, eyelets', qty:6, status:'quoted', quoteAmount:2350, invoiced:false, invoiceNumber:'', dueDate:iso(8), notes:'', source:'Email', attachmentIds:[], designerId:'t3', designerName:'Naledi Dlamini', technicianId:null, technicianName:'', createdAt:iso(-3), updatedAt:iso(-2)},
+      {id:'o3', customerId:'c3', customerName:'Lindiwe Mokoena', phone:'+27835558899', category:'sublimation', title:'Mug set — 12x sublimated mugs', description:'Family reunion design, proof already approved', qty:12, status:'ready', quoteAmount:960, invoiced:false, invoiceNumber:'', dueDate:iso(1), notes:'Collecting Friday afternoon.', source:'WhatsApp', attachmentIds:[], designerId:null, designerName:'', technicianId:'t4', technicianName:'Johan van Wyk', createdAt:iso(-4), updatedAt:iso(0)},
+      {id:'o4', customerId:'c1', customerName:'Riaan Pretorius', phone:'+27821234567', category:'design', title:'New logo refresh', description:'Vector cleanup of old logo for signage + socials', qty:1, status:'new', quoteAmount:null, invoiced:false, invoiceNumber:'', dueDate:'', notes:'', source:'WhatsApp', attachmentIds:[], designerId:null, designerName:'', technicianId:null, technicianName:'', createdAt:iso(-1), updatedAt:iso(-1)},
+      {id:'o5', customerId:'c2', customerName:'Kroonstad Primary School', phone:'+27827654321', category:'printing', title:'Prize-giving certificates x40', description:'A4 certificates, printed on card', qty:40, status:'delivered', quoteAmount:680, invoiced:false, invoiceNumber:'', dueDate:iso(-2), notes:'', source:'Phone call', attachmentIds:[], designerId:'t1', designerName:'Thabo Nkosi', technicianId:'t2', technicianName:'Sipho Mahlangu', createdAt:iso(-14), updatedAt:iso(-2)},
+      {id:'o6', customerId:'c3', customerName:'Lindiwe Mokoena', phone:'+27835558899', category:'sublimation', title:'Anniversary photo canvas', description:'40x60cm stretched canvas print', qty:1, status:'invoiced', quoteAmount:550, invoiced:true, invoiceNumber:'DSX-1042', dueDate:iso(-10), notes:'', source:'Instagram DM', attachmentIds:[], designerId:null, designerName:'', technicianId:'t4', technicianName:'Johan van Wyk', createdAt:iso(-20), updatedAt:iso(-9)}
+    ];
+    STATE.team = [
+      {id:'t1', name:'Thabo Nkosi', role:'designer', phone:'+27831112222', email:'', invited:true, invitedAt:iso(-40), createdAt:iso(-120)},
+      {id:'t3', name:'Naledi Dlamini', role:'designer', phone:'', email:'', invited:false, invitedAt:null, createdAt:iso(-60)},
+      {id:'t2', name:'Sipho Mahlangu', role:'technician', phone:'+27834445555', email:'', invited:true, invitedAt:iso(-40), createdAt:iso(-120)},
+      {id:'t4', name:'Johan van Wyk', role:'technician', phone:'', email:'', invited:false, invitedAt:null, createdAt:iso(-30)}
+    ];
+    STATE.config.whatsappNumber = '27821112222';
+  }
+
+  /* ============================ formatting ============================ */
+  function money(n){
+    if(n===null || n===undefined || n==='') return '—';
+    try{ return new Intl.NumberFormat('en-ZA',{style:'currency',currency:STATE.config.currency||'ZAR',maximumFractionDigits:2}).format(n); }
+    catch(e){ return 'R ' + Number(n).toFixed(2); }
+  }
+  function shortDate(iso){
+    if(!iso) return '—';
+    var d = new Date(iso+'T00:00:00');
+    if(isNaN(d)) return iso;
+    return d.toLocaleDateString('en-ZA',{day:'2-digit',month:'short'});
+  }
+  function fullDate(iso){
+    if(!iso) return '—';
+    var d = new Date(iso+'T00:00:00');
+    if(isNaN(d)) return iso;
+    return d.toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});
+  }
+  function localIso(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+  function todayIso(){ return localIso(new Date()); }
+  function daysUntil(iso){
+    if(!iso) return null;
+    var d = new Date(iso+'T00:00:00'), t = new Date(todayIso()+'T00:00:00');
+    return Math.round((d-t)/86400000);
+  }
+  function jobNo(id){ return 'DSX-' + String(id).replace(/[^a-zA-Z0-9]/g,'').slice(-5).toUpperCase(); }
+  function escapeHtml(s){
+    return String(s==null?'':s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+  function toast(msg){
+    var t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toast._h);
+    toast._h = setTimeout(function(){ t.classList.remove('show'); }, 2200);
+  }
+
+  /* ============================ data access layer ============================ */
+  function ordersActive(){ return STATE.orders.filter(function(o){ return o.status!=='invoiced'; }); }
+
+  function findCustomerByName(name){
+    var n = name.trim().toLowerCase();
+    for(var i=0;i<STATE.customers.length;i++){
+      if(STATE.customers[i].name.trim().toLowerCase()===n) return STATE.customers[i];
+    }
+    return null;
+  }
+
+  function addCustomerLocal(data){
+    var c = {id:uid(), name:data.name, phone:data.phone||'', email:data.email||'', notes:data.notes||'', createdAt:todayIso()};
+    STATE.customers.unshift(c);
+    return c;
+  }
+
+  function persistCustomer(data){
+    if(STATE.isLive && STATE.db){
+      if(!data.createdAt){ data = Object.assign({}, data, {createdAt:todayIso()}); }
+      return STATE.db.collection('customers').add(data).then(function(ref){
+        var c = Object.assign({id:ref.id}, data);
+        return c;
+      });
+    }
+    return Promise.resolve(addCustomerLocal(data));
+  }
+
+  function updateCustomerRecord(id, data){
+    var c = STATE.customers.find(function(x){ return x.id===id; });
+    if(c) Object.assign(c, data);
+    if(STATE.isLive && STATE.db){
+      var rec = Object.assign({}, c||{}, data); delete rec.id;
+      return STATE.db.collection('customers').doc(id).set(rec).then(function(){ return c; });
+    }
+    return Promise.resolve(c);
+  }
+
+  function persistOrder(data){
+    if(STATE.isLive && STATE.db){
+      return STATE.db.collection('orders').add(data).then(function(ref){
+        return Object.assign({id:ref.id}, data);
+      });
+    }
+    var o = Object.assign({id:uid()}, data);
+    STATE.orders.unshift(o);
+    return Promise.resolve(o);
+  }
+
+  function updateOrder(id, patch){
+    patch = Object.assign({}, patch, {updatedAt:todayIso()});
+    var before = STATE.orders.find(function(x){ return x.id===id; });
+    if(before && !before.invoicedAt && !before.invoiced && (patch.invoiced===true || patch.status==='invoiced')){ patch.invoicedAt = todayIso(); }
+    if(STATE.isLive && STATE.db){
+      return STATE.db.collection('orders').doc(id).update(patch).then(function(){
+        var o = STATE.orders.find(function(x){return x.id===id;});
+        if(o) Object.assign(o, patch);
+        render();
+      }).catch(function(e){ toast('Could not save — try again'); });
+    }
+    var o = STATE.orders.find(function(x){return x.id===id;});
+    if(o) Object.assign(o, patch);
+    render();
+    return Promise.resolve();
+  }
+
+  function deleteOrder(id){
+    if(STATE.isLive && STATE.db){
+      STATE.db.collection('orders').doc(id).delete().catch(function(){ toast('Could not delete — try again'); });
+    }
+    STATE.orders = STATE.orders.filter(function(x){return x.id!==id;});
+    STATE.openOrderId = null;
+    render();
+  }
+
+  function persistTeamMember(data){
+    if(STATE.isLive && STATE.db){
+      return STATE.db.collection('team').add(data).then(function(ref){
+        return Object.assign({id:ref.id}, data);
+      });
+    }
+    var m = Object.assign({id:uid()}, data);
+    STATE.team.unshift(m);
+    return Promise.resolve(m);
+  }
+
+  function deleteTeamMember(id){
+    if(STATE.isLive && STATE.db){
+      STATE.db.collection('team').doc(id).delete().catch(function(){ toast('Could not remove — try again'); });
+      linksFor(id).forEach(function(uid){ STATE.db.doc('links/'+uid).delete().catch(function(){}); });
+    }
+    STATE.team = STATE.team.filter(function(x){ return x.id!==id; });
+    render();
+  }
+
+  /* ============================ team invites ============================ */
+  function inviteMessageFor(m, code){
+    var saved = (STATE.config.appShareLink||'').trim();
+    var link = (saved && !/claude\.ai/.test(saved)) ? saved : (location.origin + location.pathname);
+    var biz = STATE.config.businessName || 'DsignX';
+    return 'Hi '+m.name+', you\'ve been added to '+biz+' Ops as a '+roleLabel(m.role).toLowerCase()+'. Open this link to get started:\n'+link+'\n\nYour invite code: '+(code||'(code)')+'\n(valid for '+CODE_TTL_DAYS+' days, only works for you — please don\'t share it)\n\nTap “I have an invite code”, then enter your email address, choose a password and type the code. After that you just sign in with your email and password.';
+  }
+
+  function expiryIso(){ var d = new Date(); d.setDate(d.getDate()+CODE_TTL_DAYS); return d.toISOString().slice(0,10); }
+
+  // Commits the code shown in the invite panel: stores only its salted hash. A new code replaces the
+  // old one, which also signs out anyone who linked with the previous code.
+  function markTeamInvited(id){
+    var code = STATE.inviteCode;
+    if(!code || !isOwnerRole()) return Promise.resolve();
+    var salt = randomSalt();
+    return pbkdf2(code, salt, CODE_ITER).then(function(hash){
+      var patch = {invited:true, invitedAt:todayIso(), inviteHash:hash, inviteSalt:salt, inviteIter:CODE_ITER, inviteExpires:expiryIso(), active:true};
+      var idx = STATE.team.findIndex(function(x){ return x.id===id; });
+      if(idx>=0){ STATE.team[idx] = Object.assign({}, STATE.team[idx], patch); }
+      if(STATE.isLive && STATE.db){
+        // A new code replaces the old one and removes any account linked with an earlier code.
+        return STATE.db.collection('team').doc(id).update(patch).then(function(){
+          return Promise.all(linksFor(id).map(function(uid){ return STATE.db.doc('links/'+uid).delete().catch(function(){}); }));
+        });
+      }
+    });
+  }
+
+  function linksFor(memberId){
+    return Object.keys(STATE.links).filter(function(uid){ return STATE.links[uid] && STATE.links[uid].memberId===memberId; });
+  }
+  function revokeAccess(id){
+    var m = STATE.team.find(function(x){ return x.id===id; });
+    if(!m || !isOwnerRole()) return;
+    var patch = {active:false, inviteHash:null, inviteSalt:null, inviteExpires:null};
+    if(STATE.isLive && STATE.db){
+      STATE.db.collection('team').doc(id).update(patch).catch(function(){ toast('Could not revoke — try again'); });
+      linksFor(id).forEach(function(uid){ STATE.db.doc('links/'+uid).delete().catch(function(){}); });
+    }
+    Object.assign(m, patch);
+    render();
+    toast(m.name+' can no longer open DsignX Ops');
+  }
+
+  function sendTeamInvite(id){
+    var m = STATE.team.find(function(x){ return x.id===id; });
+    if(!m) return;
+    var phone = waPhone(m.phone);
+    if(!phone){ toast('Add a phone number for '+m.name+' first, or copy the invite message instead'); return; }
+    if(!STATE.mcp){ toast('WhatsApp isn\'t connected right now — copy the invite message instead'); return; }
+    var text = (STATE.inviteDraftText || inviteMessageFor(m, STATE.inviteCode)).trim();
+    if(!text){ toast('Write an invite message first'); return; }
+    if(STATE.inviteCode && text.indexOf(STATE.inviteCode)<0){ toast('Keep the invite code '+STATE.inviteCode+' in the message'); return; }
+    markTeamInvited(id).then(function(){
+      return waSendCall(phone, {text:{body:text}}, 'invite-'+id+'-'+(STATE.inviteCode||Date.now()));
+    }).then(function(){
+      STATE.inviteCode = null;
+      STATE.inviteMemberId = null;
+      STATE.inviteDraftText = '';
+      render();
+      toast('Invite sent to '+m.name+' via WhatsApp');
+    }).catch(function(err){
+      var n = waErrorNotice(err||{});
+      toast('Could not send the invite — ' + n.text + (n.action?(' '+n.action):'') + ' You can copy the invite message instead.');
+    });
+  }
+
+  function copyInviteMessage(id){
+    var m = STATE.team.find(function(x){ return x.id===id; });
+    if(!m) return;
+    var text = (STATE.inviteDraftText || inviteMessageFor(m, STATE.inviteCode)).trim();
+    if(!text){ toast('Write an invite message first'); return; }
+    if(STATE.inviteCode && text.indexOf(STATE.inviteCode)<0){ toast('Keep the invite code '+STATE.inviteCode+' in the message'); return; }
+    markTeamInvited(id).then(function(){
+      copyText(text, 'Invite copied — the code is now active. Paste it into WhatsApp, email, or SMS');
+      STATE.inviteCode = null;
+      STATE.inviteMemberId = null;
+      STATE.inviteDraftText = '';
+      render();
+    }).catch(function(){ toast('Could not save the invite code — try again'); });
+  }
+
+  function updateConfig(patch){
+    STATE.config = Object.assign({}, STATE.config, patch);
+    if(STATE.isLive && STATE.db){
+      STATE.db.doc('config/business').set(STATE.config).catch(function(){});
+    }
+    render();
+  }
+
+  /* ============================ quotations ============================ */
+  function quoteTotals(draft){
+    var subtotal = draft.items.reduce(function(s,li){ return s + (Number(li.qty)||0) * (Number(li.unitPrice)||0); }, 0);
+    var vat = draft.vatEnabled ? subtotal * (Number(STATE.config.vatRate)||0) / 100 : 0;
+    return {subtotal:subtotal, vat:vat, total:subtotal+vat};
+  }
+
+  function openQuoteModal(orderId){
+    var o = STATE.orders.find(function(x){ return x.id===orderId; });
+    if(!o) return;
+    var items = (o.lineItems && o.lineItems.length) ? o.lineItems.map(function(li){ return Object.assign({}, li); }) : [{
+      description: o.title || 'Job',
+      qty: o.qty || 1,
+      unitPrice: (o.quoteAmount!=null && o.qty) ? Number((o.quoteAmount/o.qty).toFixed(2)) : (o.quoteAmount || 0)
+    }];
+    STATE.quoteDraft = {
+      items: items,
+      terms: (o.quoteTerms!=null ? o.quoteTerms : STATE.config.quoteTerms) || '',
+      validDays: o.quoteValidDays || STATE.config.quoteValidityDays || 14,
+      vatEnabled: (o.quoteVatEnabled!=null ? !!o.quoteVatEnabled : true)
+    };
+    STATE.quoteModalOrderId = orderId;
+    STATE.openOrderId = null;
+    render();
+  }
+
+  function closeQuoteModal(){
+    STATE.quoteModalOrderId = null;
+    STATE.quoteDraft = null;
+    render();
+  }
+
+  function addQuoteLine(){
+    STATE.quoteDraft.items.push({description:'', qty:1, unitPrice:0});
+    render();
+  }
+  function removeQuoteLine(i){
+    STATE.quoteDraft.items.splice(i,1);
+    if(!STATE.quoteDraft.items.length){ STATE.quoteDraft.items.push({description:'', qty:1, unitPrice:0}); }
+    render();
+  }
+
+  function refreshQuoteTotals(){
+    if(!STATE.quoteDraft) return;
+    var t = quoteTotals(STATE.quoteDraft);
+    STATE.quoteDraft.items.forEach(function(li, i){
+      var el = document.getElementById('qliLineTotal-'+i);
+      if(el) el.textContent = money((Number(li.qty)||0) * (Number(li.unitPrice)||0));
+    });
+    var sub = document.getElementById('qSubtotal'); if(sub) sub.textContent = money(t.subtotal);
+    var vatRow = document.getElementById('qVatAmount'); if(vatRow) vatRow.textContent = money(t.vat);
+    var tot = document.getElementById('qTotal'); if(tot) tot.textContent = money(t.total);
+  }
+
+  function ensureQuoteNumber(o){
+    if(o.quoteNumber) return Promise.resolve(o.quoteNumber);
+    var n = STATE.config.nextQuoteNumber || 1;
+    var num = 'DSX-Q' + String(n).padStart(4,'0');
+    updateConfig({nextQuoteNumber: n+1});
+    return updateOrder(o.id, {quoteNumber:num}).then(function(){ return num; });
+  }
+
+  function saveQuoteDraft(orderId, mode){
+    // mode: false/'save' = just save; true/'download' = save + download PDF;
+    // 'whatsapp' = save + download PDF + hand off to the customer chat compose box.
+    if(mode===true) mode = 'download';
+    if(!mode) mode = 'save';
+    var o = STATE.orders.find(function(x){ return x.id===orderId; });
+    if(!o || !STATE.quoteDraft) return;
+    var draft = STATE.quoteDraft;
+    var totals = quoteTotals(draft);
+    var patch = {
+      lineItems: draft.items.map(function(li){ return {description:li.description||'', qty:Number(li.qty)||0, unitPrice:Number(li.unitPrice)||0}; }),
+      quoteAmount: totals.subtotal,
+      quoteTerms: draft.terms,
+      quoteValidDays: Number(draft.validDays)||14,
+      quoteVatEnabled: !!draft.vatEnabled,
+      quoteGeneratedAt: todayIso()
+    };
+    ensureQuoteNumber(o).then(function(num){
+      return updateOrder(o.id, patch).then(function(){ return num; });
+    }).then(function(num){
+      var finalOrder = Object.assign({}, o, patch, {quoteNumber:num});
+      if(mode==='whatsapp'){
+        var built = buildQuotePdfBlob(finalOrder);
+        closeQuoteModal();
+        openQuoteWhatsappHandoff(finalOrder, built);
+        return;
+      }
+      if(mode==='download'){ generateQuotePdf(finalOrder); }
+      toast(mode==='download' ? 'Quote saved — downloading PDF' : 'Quote saved');
+      closeQuoteModal();
+    });
+  }
+
+  // After a quote is saved for WhatsApp, reopen the job's customer chat and stage the
+  // PDF as a pending send — Cloudinary hosts it and Bird sends it, so
+  // the person just reviews the preview and hits Send. Falls back to the older
+  // download-and-attach-yourself flow if WhatsApp isn't connected on this view.
+  function openQuoteWhatsappHandoff(o, built){
+    var phone = waPhone(o.phone);
+    STATE.openOrderId = o.id;
+    if(!phone){
+      toast('No phone number on file to message');
+      render();
+      return;
+    }
+    var totals = quoteTotals({items:o.lineItems||[], vatEnabled:o.quoteVatEnabled});
+    var validUntil = addDays(o.quoteGeneratedAt || todayIso(), Number(o.quoteValidDays)||14);
+    var caption = 'Hi '+(o.customerName||'there')+'! Your quotation '+(o.quoteNumber||'')+' for '+(o.title||'your job')+' comes to '+money(totals.total)+' (valid until '+fullDate(validUntil)+').';
+    if(STATE.mcp && built){
+      openOrderChat(phone);
+      attachFileToChat(phone, built.blob, built.filename, 'application/pdf', caption);
+    } else if(STATE.mcp){
+      openOrderChat(phone);
+      toast('Could not build the PDF — try again');
+    } else {
+      if(built){ if(STATE.downloads){ STATE.downloads.save({filename:built.filename, data:built.blob}).catch(function(err){ if(!err||err.code!=='declined'){ fallbackDownload(built.blob, built.filename); } }); } else { fallbackDownload(built.blob, built.filename); } }
+      STATE.chatDraft[phone] = caption + ' I\'m attaching the PDF here now.';
+      toast('Quote PDF downloading — attach it below and hit Send');
+    }
+    render();
+  }
+
+  // Builds the quote PDF and returns {blob, filename} — no side effects (no download,
+  // no upload). generateQuotePdf() below wraps this for the "download to this device"
+  // button; the WhatsApp send flow uses this directly to upload the blob to Cloudinary instead.
+  function buildQuotePdfBlob(o){ return buildBrandedPdf('quote', o); }
+
+  function generateQuotePdf(o){
+    var built = buildQuotePdfBlob(o);
+    if(!built) return;
+    if(STATE.downloads){
+      STATE.downloads.save({filename:built.filename, data:built.blob}).catch(function(err){
+        if(err && err.code==='declined'){ return; }
+        fallbackDownload(built.blob, built.filename);
+      });
+    } else {
+      fallbackDownload(built.blob, built.filename);
+    }
+  }
+
+  function fallbackDownload(blob, filename){
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = filename; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  /* ============================ branded quote / invoice PDF (DsignX Word templates) ============================ */
+  var LETTERHEAD_DEFAULTS = {
+    docCompanyName:'DSIGNX (PTY) LTD',
+    docAddress:'36A Reitz Street, Central, Kroonstad, 9499',
+    docTel:'056 004 0037',
+    docWhatsapp:'060 083 3111',
+    docEmail:'info@dsignx.co.za',
+    docWebsite:'dsignx.co.za',
+    docRegNo:'2025/197059/07',
+    bankAccountType:'Business Account',
+    bankSwift:'CABLZAJJ'
+  };
+  function lh(key){ var v = STATE.config[key]; return (v!=null && String(v).trim()!=='') ? String(v).trim() : (LETTERHEAD_DEFAULTS[key]||''); }
+  function pdfNum(n){
+    var v = (Math.round((Number(n)||0)*100)/100).toFixed(2).split('.');
+    return v[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '.' + v[1];
+  }
+  function pdfQty(n){ n = Number(n)||0; return (Math.round(n*100)/100).toFixed(2); }
+
+  // kind: 'quote' | 'invoice'. Mirrors the layout of "DsignX Quote.docx" / "DsignX Invoice.docx".
+  function buildBrandedPdf(kind, o){
+    if(!window.jspdf || !window.jspdf.jsPDF){
+      toast('PDF tools are still loading — try again in a moment');
+      return null;
+    }
+    var isQuote = kind==='quote';
+    var cfg = STATE.config;
+    var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
+    var L = 15, R = 195, W = R - L;
+    var MAROON = [78,9,40], INK = [43,43,43], GREY = [95,99,88], SAGE = [121,128,110], PANEL = [244,245,242], RULE = [222,222,216];
+    function color(c){ doc.setTextColor(c[0],c[1],c[2]); }
+    function font(style, size){ doc.setFont('helvetica', style); doc.setFontSize(size); }
+    function spaced(txt, x, y, opts, cs){ doc.setCharSpace(cs==null?0.6:cs); doc.text(txt, x, y, opts||{}); doc.setCharSpace(0); }
+
+    var vatNo = String(cfg.businessVatNumber||'').trim();
+    var vatOn = isQuote ? (!!o.quoteVatEnabled && isVatVendor()) : (!!o.invoiceVatEnabled && isVatVendor());
+    var rate = Number(cfg.vatRate)||15;
+    var items = (isQuote ? o.lineItems : o.invoiceLineItems) || [];
+    var totals = isQuote ? quoteTotals({items:items, vatEnabled:vatOn}) : invoiceTotals({items:items, vatEnabled:vatOn});
+    var number = (isQuote ? o.quoteNumber : o.invoiceNumber) || '—';
+    var issued = (isQuote ? o.quoteGeneratedAt : o.invoiceGeneratedAt) || todayIso();
+    var until = isQuote ? addDays(issued, Number(o.quoteValidDays)||Number(cfg.quoteValidityDays)||14)
+                        : addDays(issued, o.invoiceDueDays!=null ? Number(o.invoiceDueDays) : (Number(cfg.invoiceDueDays)||7));
+    var title = isQuote ? 'QUOTE' : (isVatVendor() ? 'TAX INVOICE' : 'INVOICE');
+    var currency = cfg.currency || 'ZAR';
+    var cust = STATE.customers.find(function(c){ return c.id===o.customerId; }) || {};
+
+    function footer(){
+      doc.setDrawColor(RULE[0],RULE[1],RULE[2]); doc.setLineWidth(0.25); doc.line(L, 277, R, 277);
+      font('bold', 8.5); color(MAROON); doc.text('Thank you for your business!', 105, 281.5, {align:'center'});
+      font('normal', 6.8); color(GREY);
+      var biz = /\(PTY\)\s*LTD/i.test(lh('docCompanyName')) ? ((cfg.businessName||'DsignX')+' (Pty) Ltd') : lh('docCompanyName');
+      var l1 = [biz, 'Reg No '+lh('docRegNo')].concat(vatNo ? ['VAT No '+vatNo] : []).concat([lh('docAddress')]).join('  ·  ');
+      var l2 = ['Tel '+lh('docTel'), 'WhatsApp '+lh('docWhatsapp'), lh('docEmail'), lh('docWebsite')].join('  ·  ');
+      doc.text(l1, 105, 285, {align:'center'});
+      doc.text(l2, 105, 288.3, {align:'center'});
+    }
+
+    /* ---- letterhead ---- */
+    var logoW = 56, logoH = logoW * (358/800);
+    doc.addImage(LOGO_PDF_DATA_URL, 'PNG', L, 12, logoW, logoH);
+    font('bold', 11.5); color(MAROON); spaced(lh('docCompanyName'), R, 18.5, {align:'right'}, 0.12);
+    font('normal', 8.3); color(GREY);
+    doc.text(lh('docAddress'), R, 23, {align:'right'});
+    doc.text('Tel '+lh('docTel')+'   |   WhatsApp '+lh('docWhatsapp'), R, 27.2, {align:'right'});
+    doc.text(lh('docEmail')+'   |   '+lh('docWebsite'), R, 31.4, {align:'right'});
+    // "Reg No x | VAT No y" with bold labels, right-aligned
+    var parts = [['Reg No ', lh('docRegNo')]].concat(vatNo ? [['   |   ',''],['VAT No ', vatNo]] : []);
+    var widths = parts.map(function(p){ font('bold', 8.3); var a = doc.getTextWidth(p[0]); font('normal', 8.3); return a + doc.getTextWidth(p[1]); });
+    var x = R - widths.reduce(function(a,b){ return a+b; }, 0);
+    parts.forEach(function(p){
+      var isSep = p[0].trim()==='|';
+      font(isSep ? 'normal' : 'bold', 8.3); color(GREY); doc.text(p[0], x, 35.6); x += doc.getTextWidth(p[0]);
+      font('normal', 8.3); doc.text(p[1], x, 35.6); x += doc.getTextWidth(p[1]);
+    });
+    doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, 40.5, W, 0.9, 'F');
+
+    /* ---- title + bill to ---- */
+    font('bold', 25); color(MAROON); spaced(title, L, 55, null, 0.35);
+    font('bold', 7.2); color(SAGE); spaced(isQuote ? 'QUOTE FOR' : 'BILL TO', L, 62, null, 0.6);
+    font('bold', 10.5); color(INK); doc.text(o.customerName || cust.name || 'Customer', L, 67.5);
+    font('normal', 8.8); color(GREY);
+    var cy = 72;
+    var billLines = [];
+    if(personName(cust) && cust.type==='business') billLines.push('Attn: '+personName(cust));
+    if(addrHasData(cust.postalAddress)) billLines = billLines.concat(formatAddress(cust.postalAddress).split('\n'));
+    if(cust.vatNumber) billLines.push('VAT No: '+cust.vatNumber);
+    billLines = billLines.concat([o.phone || cust.phone, cust.email]);
+    billLines.filter(Boolean).forEach(function(line){
+      doc.splitTextToSize(String(line), 95).forEach(function(t){ doc.text(t, L, cy); cy += 4.2; });
+    });
+
+    /* ---- info box ---- */
+    var bx = 115.5, by = 46;
+    var info = isQuote ?
+      [['Quote Number', number, true], ['Date', fullDate(issued)], ['Valid Until', fullDate(until)], ['Reference', o.title||jobNo(o.id)]] :
+      [['Invoice Number', number, true], ['Invoice Date', fullDate(issued)], ['Due Date', fullDate(until)], ['Reference', o.title||jobNo(o.id)]];
+    var acct = [['Job Number', jobNo(o.id)]];
+    var boxH = 8 + info.length*4.7 + 2 + acct.length*4.7;
+    doc.setFillColor(PANEL[0],PANEL[1],PANEL[2]); doc.rect(bx, by, R-bx, boxH, 'F');
+    doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(bx, by, R-bx, 0.7, 'F');
+    var iy = by + 6.2;
+    info.forEach(function(r){
+      font('bold', 8.3); color([140,140,132]); doc.text(r[0], bx+3, iy);
+      font(r[2] ? 'bold' : 'normal', 8.6); color(INK);
+      var v = doc.splitTextToSize(String(r[1]), 44)[0];
+      doc.text(v, R-3, iy, {align:'right'}); iy += 4.7;
+    });
+    doc.setDrawColor(RULE[0],RULE[1],RULE[2]); doc.setLineWidth(0.2); doc.line(bx+3, iy-2.4, R-3, iy-2.4);
+    iy += 2.2;
+    acct.forEach(function(r){
+      font('bold', 8.3); color([140,140,132]); doc.text(r[0], bx+3, iy);
+      font('normal', 8.6); color(INK); doc.text(String(r[1]), R-3, iy, {align:'right'}); iy += 4.7;
+    });
+
+    var y = Math.max(cy, by + boxH) + 7;
+
+    /* ---- quote title + summary ---- */
+    if(isQuote){
+      font('bold', 11); color(MAROON); doc.text(o.title || 'Quotation', L, y); y += 4.6;
+      if(o.description){
+        font('normal', 8.6); color(GREY);
+        var sl = doc.splitTextToSize(o.description, W);
+        doc.text(sl, L, y); y += sl.length*3.9;
+      }
+      y += 4;
+    }
+
+    /* ---- line items ---- */
+    var C = {desc:L+2, qty:98, price:123, disc:142.5, tax:160, amt:R-1.5};
+    function tableHead(){
+      doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, y, W, 9.5, 'F');
+      font('bold', 7.4); doc.setTextColor(255,255,255);
+      spaced('DESCRIPTION', C.desc, y+5.9, null, 0.35);
+      spaced('QTY', C.qty, y+5.9, {align:'right'}, 0.35);
+      spaced('UNIT PRICE', C.price, y+5.9, {align:'right'}, 0.35);
+      spaced('DISC %', C.disc, y+5.9, {align:'right'}, 0.35);
+      spaced('VAT', C.tax, y+5.9, {align:'right'}, 0.35);
+      spaced('AMOUNT', C.amt, y+4.3, {align:'right'}, 0.35);
+      font('bold', 6.6); spaced(currency, C.amt, y+7.6, {align:'right'}, 0.35);
+      y += 9.5 + 5;
+    }
+    tableHead();
+    items.forEach(function(li){
+      font('normal', 8.8);
+      var dl = doc.splitTextToSize(String(li.description||''), 74);
+      var rowH = Math.max(8, dl.length*4 + 4);
+      if(y + rowH > 262){ footer(); doc.addPage(); y = 18; tableHead(); }
+      color(INK); doc.text(dl, C.desc, y);
+      doc.text(pdfQty(li.qty), C.qty, y, {align:'right'});
+      doc.text(pdfNum(li.unitPrice), C.price, y, {align:'right'});
+      doc.text('0.00', C.disc, y, {align:'right'});
+      doc.text(vatOn ? (rate+'%') : 'No VAT', C.tax, y, {align:'right'});
+      doc.text(pdfNum((Number(li.qty)||0)*(Number(li.unitPrice)||0)), C.amt, y, {align:'right'});
+      y += rowH;
+      doc.setDrawColor(RULE[0],RULE[1],RULE[2]); doc.setLineWidth(0.2); doc.line(L, y-4, R, y-4);
+    });
+
+    /* ---- totals ---- */
+    if(y > 225){ footer(); doc.addPage(); y = 20; }
+    var lx = 158, vx = R-1.5, band = 108.5;
+    y += 2;
+    font('normal', 8.8); color(GREY);
+    doc.text('Subtotal', lx, y, {align:'right'}); color(INK); doc.text(pdfNum(totals.subtotal), vx, y, {align:'right'});
+    if(vatOn){
+      y += 6; color(GREY);
+      doc.text('Total VAT '+rate+'%', lx, y, {align:'right'}); color(INK); doc.text(pdfNum(totals.vat), vx, y, {align:'right'});
+    }
+    y += 3.5;
+    if(isQuote){
+      doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(band, y, R-band, 11, 'F');
+      font('bold', 11); doc.setTextColor(255,255,255);
+      spaced('TOTAL '+currency, lx, y+7, {align:'right'}, 0.15);
+      doc.text(pdfNum(totals.total), vx, y+7, {align:'right'});
+      y += 11 + 5;
+    } else {
+      doc.setDrawColor(MAROON[0],MAROON[1],MAROON[2]); doc.setLineWidth(0.3); doc.line(band, y, R, y);
+      y += 5.5;
+      font('bold', 9.5); color(MAROON); doc.text('Invoice Total '+currency, lx, y, {align:'right'}); doc.text(pdfNum(totals.total), vx, y, {align:'right'});
+      y += 6.5;
+      font('normal', 8.8); color(GREY); doc.text('Total Net Payments '+currency, lx, y, {align:'right'}); color(INK); doc.text('0.00', vx, y, {align:'right'});
+      y += 3.5;
+      doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(band, y, R-band, 11, 'F');
+      font('bold', 11); doc.setTextColor(255,255,255);
+      spaced('AMOUNT DUE '+currency, lx, y+7, {align:'right'}, 0.15);
+      doc.text(pdfNum(totals.total), vx, y+7, {align:'right'});
+      y += 11 + 5;
+    }
+    font('bold', 8); color([140,140,132]);
+    doc.text('Total Discount Given', lx, y, {align:'right'}); doc.text('0.00', vx, y, {align:'right'});
+    y += 12;
+
+    /* ---- banking + payment / terms ---- */
+    var termsTxt = isQuote ? (o.quoteTerms || cfg.quoteTerms || '') : (o.invoiceTerms || cfg.invoiceTerms || '');
+    font('normal', 8.6);
+    var termLines = termsTxt ? doc.splitTextToSize(termsTxt, R - 110.6) : [];
+    var bank = [
+      ['Bank', cfg.bankName||'', false],
+      ['Account Name', lh('docCompanyName'), true],
+      ['Account Type', lh('bankAccountType'), false],
+      ['Account Number', cfg.bankAccountNumber||'', true],
+      ['Branch Code', cfg.bankBranchCode||'', false],
+      ['SWIFT Code', lh('bankSwift'), false],
+      ['Reference', number, true, true]
+    ].filter(function(r){ return r[1]; });
+    var bankH = 11 + bank.length*4.3 + 2;
+    var rightH = 16 + termLines.length*3.9;
+    var blockH = Math.max(bankH, rightH);
+    if(y + blockH > 272){ footer(); doc.addPage(); y = 20; }
+    doc.setFillColor(PANEL[0],PANEL[1],PANEL[2]); doc.rect(12.7, y, 101-12.7, bankH, 'F');
+    doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(12.7, y, 1.2, bankH, 'F');
+    font('bold', 7.6); color(MAROON); spaced('BANKING DETAILS', 17.3, y+5.5, null, 0.6);
+    var ry = y + 11;
+    bank.forEach(function(r){
+      font('bold', 8.2); color([140,140,132]); doc.text(r[0], 17.3, ry);
+      font(r[2] ? 'bold' : 'normal', 8.6); color(r[3] ? MAROON : INK); doc.text(String(r[1]), 48, ry); ry += 4.3;
+    });
+    doc.setDrawColor(140,140,132); doc.setLineWidth(0.5); doc.line(106.6, y, 106.6, y+blockH);
+    var tx = 110.6;
+    font('bold', 7.6); color(MAROON); spaced(isQuote ? 'TERMS' : 'PAYMENT', tx, y+5.5, null, 0.6);
+    font('bold', 8.6); color(INK);
+    doc.text(isQuote ? ('This quote is valid until '+fullDate(until)+'.') : ('Due Date: '+fullDate(until)), tx, y+11);
+    var py = y + 16;
+    if(!isQuote){
+      font('normal', 8.4); color(GREY);
+      var pay = doc.splitTextToSize('Please use your invoice number as the payment reference and send proof of payment to '+lh('docEmail')+'.', R - tx);
+      doc.text(pay, tx, py); py += pay.length*3.9 + 2;
+    }
+    if(termLines.length){ font('normal', 8.4); color(GREY); doc.text(termLines, tx, py); }
+
+    footer();
+    var blob = doc.output('blob');
+    var filename = (isQuote ? (o.quoteNumber||'dsignx-quote') : (o.invoiceNumber||'dsignx-invoice')) + '.pdf';
+    return {blob:blob, filename:filename};
+  }
+
+  function addDays(iso, days){
+    var d = new Date((iso||todayIso())+'T00:00:00');
+    d.setDate(d.getDate()+(Number(days)||0));
+    return localIso(d);
+  }
+
+  /* ============================ tax invoices ============================ */
+  // A "Tax Invoice" (the words matter under South African VAT law) may only be issued by
+  // a VAT-registered vendor with a VAT number on it — so we only offer VAT on the invoice,
+  // and only call it a Tax Invoice, once a business VAT number is on file. Without one this
+  // generates a plain Invoice instead, with no VAT line — never a fabricated VAT number.
+  function isVatVendor(){ return !!(STATE.config.businessVatNumber && String(STATE.config.businessVatNumber).trim()); }
+
+  function invoiceTotals(draft){
+    var subtotal = draft.items.reduce(function(s,li){ return s + (Number(li.qty)||0) * (Number(li.unitPrice)||0); }, 0);
+    var vat = (draft.vatEnabled && isVatVendor()) ? subtotal * (Number(STATE.config.vatRate)||0) / 100 : 0;
+    return {subtotal:subtotal, vat:vat, total:subtotal+vat};
+  }
+
+  function openInvoiceModal(orderId){
+    var o = STATE.orders.find(function(x){ return x.id===orderId; });
+    if(!o) return;
+    var source = (o.invoiceLineItems && o.invoiceLineItems.length) ? o.invoiceLineItems
+      : (o.lineItems && o.lineItems.length) ? o.lineItems
+      : null;
+    var items = source ? source.map(function(li){ return Object.assign({}, li); }) : [{
+      description: o.title || 'Job',
+      qty: o.qty || 1,
+      unitPrice: (o.quoteAmount!=null && o.qty) ? Number((o.quoteAmount/o.qty).toFixed(2)) : (o.quoteAmount || 0)
+    }];
+    STATE.invoiceDraft = {
+      items: items,
+      terms: (o.invoiceTerms!=null ? o.invoiceTerms : STATE.config.invoiceTerms) || '',
+      dueDays: o.invoiceDueDays || STATE.config.invoiceDueDays || 7,
+      vatEnabled: isVatVendor() ? (o.invoiceVatEnabled!=null ? !!o.invoiceVatEnabled : (o.quoteVatEnabled!=null ? !!o.quoteVatEnabled : true)) : false
+    };
+    STATE.invoiceModalOrderId = orderId;
+    STATE.openOrderId = null;
+    render();
+  }
+
+  function closeInvoiceModal(){
+    STATE.invoiceModalOrderId = null;
+    STATE.invoiceDraft = null;
+    render();
+  }
+
+  function addInvoiceLine(){
+    STATE.invoiceDraft.items.push({description:'', qty:1, unitPrice:0});
+    render();
+  }
+  function removeInvoiceLine(i){
+    STATE.invoiceDraft.items.splice(i,1);
+    if(!STATE.invoiceDraft.items.length){ STATE.invoiceDraft.items.push({description:'', qty:1, unitPrice:0}); }
+    render();
+  }
+
+  function refreshInvoiceTotals(){
+    if(!STATE.invoiceDraft) return;
+    var t = invoiceTotals(STATE.invoiceDraft);
+    STATE.invoiceDraft.items.forEach(function(li, i){
+      var el = document.getElementById('iliLineTotal-'+i);
+      if(el) el.textContent = money((Number(li.qty)||0) * (Number(li.unitPrice)||0));
+    });
+    var sub = document.getElementById('iSubtotal'); if(sub) sub.textContent = money(t.subtotal);
+    var vatRow = document.getElementById('iVatAmount'); if(vatRow) vatRow.textContent = money(t.vat);
+    var tot = document.getElementById('iTotal'); if(tot) tot.textContent = money(t.total);
+  }
+
+  function ensureInvoiceNumber(o){
+    if(o.invoiceNumber) return Promise.resolve(o.invoiceNumber);
+    var n = STATE.config.nextInvoiceNumber || 1;
+    var num = 'DSX-INV' + String(n).padStart(4,'0');
+    updateConfig({nextInvoiceNumber: n+1});
+    return updateOrder(o.id, {invoiceNumber:num}).then(function(){ return num; });
+  }
+
+  function saveInvoiceDraft(orderId, mode){
+    if(mode===true) mode = 'download';
+    if(!mode) mode = 'save';
+    var o = STATE.orders.find(function(x){ return x.id===orderId; });
+    if(!o || !STATE.invoiceDraft) return;
+    var draft = STATE.invoiceDraft;
+    var vatEnabled = !!draft.vatEnabled && isVatVendor();
+    var totals = invoiceTotals(draft);
+    var patch = {
+      invoiceLineItems: draft.items.map(function(li){ return {description:li.description||'', qty:Number(li.qty)||0, unitPrice:Number(li.unitPrice)||0}; }),
+      quoteAmount: totals.subtotal, // keep the job's headline amount (dashboard, Xero export) matching what was actually invoiced
+      invoiceTerms: draft.terms,
+      invoiceDueDays: Number(draft.dueDays)||7,
+      invoiceVatEnabled: vatEnabled,
+      invoiceGeneratedAt: todayIso(),
+      invoiced: true,
+      status: 'invoiced'
+    };
+    ensureInvoiceNumber(o).then(function(num){
+      return updateOrder(o.id, patch).then(function(){ return num; });
+    }).then(function(num){
+      var finalOrder = Object.assign({}, o, patch, {invoiceNumber:num});
+      if(mode==='whatsapp'){
+        var built = buildInvoicePdfBlob(finalOrder);
+        closeInvoiceModal();
+        openInvoiceWhatsappHandoff(finalOrder, built);
+        return;
+      }
+      if(mode==='download'){ generateInvoicePdf(finalOrder); }
+      toast(mode==='download' ? 'Invoice saved — downloading PDF' : 'Invoice saved');
+      closeInvoiceModal();
+    });
+  }
+
+  // Same real-send handoff used for quotes — see openQuoteWhatsappHandoff.
+  function openInvoiceWhatsappHandoff(o, built){
+    var phone = waPhone(o.phone);
+    STATE.openOrderId = o.id;
+    if(!phone){
+      toast('No phone number on file to message');
+      render();
+      return;
+    }
+    var totals = invoiceTotals({items:o.invoiceLineItems||[], vatEnabled:o.invoiceVatEnabled});
+    var dueDate = addDays(o.invoiceGeneratedAt || todayIso(), Number(o.invoiceDueDays)||7);
+    var caption = 'Hi '+(o.customerName||'there')+'! Here\'s your invoice '+(o.invoiceNumber||'')+' for '+(o.title||'your job')+' — total '+money(totals.total)+', due '+fullDate(dueDate)+'.';
+    if(STATE.mcp && built){
+      openOrderChat(phone);
+      attachFileToChat(phone, built.blob, built.filename, 'application/pdf', caption);
+    } else if(STATE.mcp){
+      openOrderChat(phone);
+      toast('Could not build the PDF — try again');
+    } else {
+      if(built){ if(STATE.downloads){ STATE.downloads.save({filename:built.filename, data:built.blob}).catch(function(err){ if(!err||err.code!=='declined'){ fallbackDownload(built.blob, built.filename); } }); } else { fallbackDownload(built.blob, built.filename); } }
+      STATE.chatDraft[phone] = caption + ' I\'m attaching the PDF here now.';
+      toast('Invoice PDF downloading — attach it below and hit Send');
+    }
+    render();
+  }
+
+  // See buildQuotePdfBlob — same split: this builds the blob with no side effects,
+  // generateInvoicePdf() wraps it for the download button.
+  function buildInvoicePdfBlob(o){ return buildBrandedPdf('invoice', o); }
+
+  function generateInvoicePdf(o){
+    var built = buildInvoicePdfBlob(o);
+    if(!built) return;
+    if(STATE.downloads){
+      STATE.downloads.save({filename:built.filename, data:built.blob}).catch(function(err){
+        if(err && err.code==='declined'){ return; }
+        fallbackDownload(built.blob, built.filename);
+      });
+    } else {
+      fallbackDownload(built.blob, built.filename);
+    }
+  }
+
+  /* ============================ init / live wiring ============================ */
+  function init(){
+    seedSample();
+    var P = window.DSX;
+    if(!P || !P.configured){
+      // Firebase isn't configured (or this browser can't run it): sample data only.
+      STATE.auth.phase = 'demo'; STATE.auth.role = 'owner';
+      STATE.demoReason = P && P.error ? P.error : 'Firebase isn’t configured yet (see js/firebase-config.js).';
+      render();
+      return;
+    }
+    STATE.db = P.db;
+    STATE.isLive = true;
+    STATE.customers = [];
+    STATE.orders = [];
+    STATE.team = [];
+    STATE.auth.phase = 'checking';
+    try{
+      var msg = sessionStorage.getItem('dsx_signout_msg');
+      if(msg){ STATE.auth.error = msg; sessionStorage.removeItem('dsx_signout_msg'); }
+    }catch(e){}
+    render();
+    P.auth.onChange(onAuthUser);
+  }
+
+  // Business data only loads after sign-in, and only what the person's role may read.
+  var _feedsStarted = false;
+  function startDataFeeds(){
+    if(_feedsStarted || !STATE.db) return;
+    _feedsStarted = true;
+    var db = STATE.db;
+    var A = STATE.auth;
+    db.collection('team').orderBy('name').onSnapshot(function(qs){
+      STATE.team = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+      render();
+    }, function(){});
+    if(A.role==='owner'){
+      db.collection('links').onSnapshot(function(qs){
+        var map = {};
+        qs.docs.forEach(function(d){ map[d.id] = d.data(); });
+        STATE.links = map;
+        render();
+      }, function(){});
+    }
+    db.doc('config/business').onSnapshot(function(snap){
+      if(snap.exists){
+        var d = snap.data();
+        STATE.config = Object.assign({}, STATE.config, d);
+        render();
+      }
+    }, function(){});
+    db.collection('orders').onSnapshot(function(qs){
+      STATE.orders = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+      STATE.orders.sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
+      render();
+    }, function(){ toast('Could not load jobs — check your connection'); });
+    if(isTechnician()) return; // technicians only see the job board — no customers, WhatsApp, files or downloads
+    db.collection('customers').orderBy('name').onSnapshot(function(qs){
+      STATE.customers = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+      render();
+    }, function(){});
+    db.collection('wa_handled').onSnapshot(function(qs){
+      var map = {};
+      qs.docs.forEach(function(d){ map[d.id] = d.data(); });
+      STATE.waHandled = map;
+      render();
+    }, function(){});
+    STATE.assets = window.DSX.assets;
+    STATE.downloads = window.DSX.downloads;
+    STATE.mcp = window.DSX.mcp;
+    startWaWatch();
+    render();
+    setTimeout(cleanupOldCloudFiles, 8000);
+  }
+
+  /* ============================ whatsapp (Bird + Cloudinary) ============================ */
+  // WhatsApp runs on the Bird connector; files are hosted on Cloudinary so WhatsApp can
+  // fetch them by public link. PDFs are tagged and cleaned up after 30 days.
+  var WA_SERVER = 'Bird';
+  var FILE_SERVER = 'Cloudinary';
+  var WA_DEFAULT_FROM = '+27604934689';
+  var FILE_TAG = 'dsignx-ops';
+  var FILE_KEEP_DAYS = 30;
+  var WINDOW_MS = 24*60*60*1000;
+
+  function waFrom(){ return WA_DEFAULT_FROM; }
+  function waTo(phone){ return '+'+waPhone(phone); }
+
+  function waBodyOf(m){
+    if(m.text && m.text.body) return m.text.body;
+    if(m.document) return '📎 '+(m.document.filename||'Document')+(m.document.caption?('\n'+m.document.caption):'');
+    if(m.image) return '🖼 Photo'+(m.image.caption?('\n'+m.image.caption):'');
+    if(m.video) return '🎬 Video'+(m.video.caption?('\n'+m.video.caption):'');
+    if(m.audio) return '🎤 Voice note';
+    if(m.sticker) return 'Sticker';
+    if(m.location) return '📍 Location'+(m.location.name?(': '+m.location.name):'');
+    if(m.contact_cards) return '👤 Contact card';
+    if(m.interactive_reply) return (m.interactive_reply.text || m.interactive_reply.title || 'Button reply');
+    if(m.interactive) return m.interactive.body_text || '';
+    if(m.template) return '(template message)';
+    return '';
+  }
+  function waContactPhone(m){
+    var side = m.direction==='inbound' ? m.from : m.to;
+    return side && side.phone_number ? waPhone(side.phone_number) : '';
+  }
+
+  // Inbox: one watch over recent messages; a contact is "waiting" when their latest
+  // message is inbound (they wrote last).
+  function handleWaEvent(ev){
+    if(ev.type==='error'){
+      STATE.waStatus = 'error';
+      STATE.waError = ev.error;
+      var retract = ['needs_reauth','server_not_connected','selection_required','not_in_manifest','blocked_by_policy','approval_required'].indexOf(ev.error.code)>=0;
+      if(retract){ STATE.waConversations = []; }
+      render();
+      return;
+    }
+    var payload = (ev.result && ev.result.payload) || {};
+    var msgs = (payload.data || []).filter(function(m){ return !(m.to && m.to.group_id); });
+    var latest = {}, latestInbound = {};
+    msgs.forEach(function(m){
+      var p = waContactPhone(m);
+      if(!p) return;
+      if(!latest[p] || m.created_at > latest[p].created_at) latest[p] = m;
+      if(m.direction==='inbound' && (!latestInbound[p] || m.created_at > latestInbound[p].created_at)) latestInbound[p] = m;
+    });
+    var convs = [];
+    Object.keys(latest).forEach(function(p){
+      var m = latest[p];
+      if(m.direction!=='inbound') return;
+      convs.push({phone:p, name:(m.from && m.from.display_name) || '', last_message_date:m.created_at});
+      STATE.waMessages[p] = {body: waBodyOf(m) || '(open WhatsApp to view this message)', messageId: m.id, _for: m.created_at};
+    });
+    Object.keys(latestInbound).forEach(function(p){ STATE.waLastInbound[p] = latestInbound[p].created_at; });
+    convs.sort(function(a,b){ return String(b.last_message_date).localeCompare(String(a.last_message_date)); });
+    STATE.waStatus = 'ready';
+    STATE.waError = null;
+    STATE.waConversations = convs;
+    STATE.waLastChecked = (ev.result.cache && ev.result.cache.storedAt) ? new Date(ev.result.cache.storedAt) : new Date();
+    render();
+  }
+
+  function startWaWatch(){
+    if(!STATE.mcp) return;
+    if(STATE.waUnwatch) STATE.waUnwatch();
+    STATE.waStatus = 'loading';
+    STATE.waUnwatch = STATE.mcp.watchTool(WA_SERVER, 'whatsapp_list', {limit:100}, handleWaEvent, {refetchInterval:120000});
+  }
+
+  function waRefreshNow(){
+    if(!STATE.mcp) return;
+    STATE.waStatus = 'loading';
+    render();
+    STATE.mcp.invalidate(WA_SERVER,'whatsapp_list').catch(function(){ startWaWatch(); });
+  }
+
+  function markWaHandled(phone, messageId, action, orderId){
+    if(!messageId) return;
+    var data = {phone:phone, action:action, at:new Date().toISOString(), orderId:orderId||null};
+    STATE.waHandled[messageId] = data; // optimistic, so the card disappears immediately
+    if(STATE.isLive && STATE.db){
+      STATE.db.collection('wa_handled').doc(messageId).set(data).catch(function(){});
+    }
+    if(STATE.mcp && String(messageId).indexOf('wam_')===0){
+      STATE.mcp.callTool(WA_SERVER,'whatsapp_mark_read',{message_id:messageId, idempotency_key:'read-'+messageId}).catch(function(){});
+    }
+  }
+
+  // Is the 24-hour reply window open for this contact? Free-form messages and files
+  // only go through while it is.
+  function waWindowOpen(phone){
+    var t = STATE.waLastInbound[phone];
+    return !!t && (Date.now() - new Date(t).getTime()) < WINDOW_MS;
+  }
+
+  /* ============================ per-job customer chat ============================ */
+  function openOrderChat(phone){
+    if(!phone || !STATE.mcp) return;
+    var entry = STATE.chatMessages[phone] || {};
+    entry.loading = true;
+    STATE.chatMessages[phone] = entry;
+    render();
+    var to = waTo(phone);
+    Promise.all([
+      STATE.mcp.callTool(WA_SERVER,'whatsapp_list',{from:to, direction:'inbound', limit:30}),
+      STATE.mcp.callTool(WA_SERVER,'whatsapp_list',{to:to, direction:'outbound', limit:30})
+    ]).then(function(rs){
+      var all = [];
+      rs.forEach(function(res){ all = all.concat(((res && res.payload) || {}).data || []); });
+      all.sort(function(a,b){ return String(a.created_at).localeCompare(String(b.created_at)); });
+      var list = all.map(function(m){
+        return {message_id:m.id, body:waBodyOf(m), from_me:m.direction==='outbound', date:m.created_at,
+                failed:m.status==='failed', failReason:(m.last_error && (m.last_error.description||m.last_error.code))||''};
+      });
+      var lastIn = all.filter(function(m){ return m.direction==='inbound'; }).pop();
+      if(lastIn) STATE.waLastInbound[phone] = lastIn.created_at;
+      // Merge rather than replace: an in-flight file upload for this phone stashes its
+      // own fields on this entry and must survive whichever call resolves first.
+      STATE.chatMessages[phone] = Object.assign({}, STATE.chatMessages[phone], {loading:false, error:null, list:list});
+      render();
+      if(lastIn && !lastIn.read_at){
+        STATE.mcp.callTool(WA_SERVER,'whatsapp_mark_read',{message_id:lastIn.id, idempotency_key:'read-'+lastIn.id}).catch(function(){});
+      }
+    }).catch(function(err){
+      STATE.chatMessages[phone] = Object.assign({}, STATE.chatMessages[phone], {loading:false, error:err, list:(STATE.chatMessages[phone]||{}).list||[]});
+      render();
+    });
+  }
+
+  function blobToDataUri(blob, mimeType){
+    return new Promise(function(resolve, reject){
+      var reader = new FileReader();
+      reader.onload = function(){
+        var r = String(reader.result || '');
+        if(mimeType && r.indexOf('data:application/octet-stream')===0) r = 'data:'+mimeType+r.slice(r.indexOf(';'));
+        resolve(r);
+      };
+      reader.onerror = function(){ reject(reader.error || new Error('Could not read file')); };
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  function cloudSlug(filename){
+    var base = String(filename||'file').toLowerCase().replace(/[^a-z0-9.\-]+/g,'-').replace(/-+/g,'-');
+    var dot = base.lastIndexOf('.');
+    var stem = dot>0 ? base.slice(0,dot) : base, ext = dot>0 ? base.slice(dot) : '';
+    return 'dsignx-docs/'+stem.slice(0,60)+'-'+Math.random().toString(36).slice(2,10)+ext;
+  }
+
+  var MAX_UPLOAD_BYTES = 7*1024*1024;
+
+  // Uploads a generated/fetched file to Cloudinary (public link WhatsApp can fetch) and
+  // stages it as a pending send in the job's customer chat — the person still has to
+  // hit Send there before anything reaches the customer.
+  function attachFileToChat(phone, blob, filename, mimeType, caption){
+    if(!phone || !STATE.mcp) return;
+    if(blob.size > MAX_UPLOAD_BYTES){
+      toast('That file is too big to send from here ('+(blob.size/1048576).toFixed(1)+' MB, limit 7 MB) — download it and send it from WhatsApp instead');
+      return;
+    }
+    var isImage = (mimeType||blob.type||'').indexOf('image/')===0;
+    var entry = Object.assign({}, STATE.chatMessages[phone]);
+    entry.uploading = true;
+    entry.sendError = null;
+    STATE.chatMessages[phone] = entry;
+    render();
+    blobToDataUri(blob, mimeType).then(function(uri){
+      var slug = cloudSlug(filename);
+      if(isImage) slug = slug.replace(/\.[a-z0-9]+$/,''); // image public ids carry no extension
+      return STATE.mcp.callTool(FILE_SERVER,'upload-asset',{
+        resource_type: isImage ? 'image' : 'raw',
+        upload_request: {file:uri, public_id:slug, tags:[FILE_TAG], overwrite:false}
+      });
+    }).then(function(res){
+      var payload = (res && res.payload) || {};
+      if(!payload.secure_url) throw {code:'tool_error', message:'Cloudinary did not return a link'};
+      var e = Object.assign({}, STATE.chatMessages[phone]);
+      e.uploading = false;
+      e.pendingSend = {kind: isImage ? 'image' : 'file', url: payload.secure_url, assetId: payload.asset_id, filename: filename, caption: caption || ''};
+      STATE.chatMessages[phone] = e;
+      render();
+    }).catch(function(err){
+      var e = Object.assign({}, STATE.chatMessages[phone]);
+      e.uploading = false;
+      e.sendError = err;
+      STATE.chatMessages[phone] = e;
+      render();
+      toast('Could not prepare that file for WhatsApp — ' + waErrorNotice(err).text);
+    });
+  }
+
+  function waSendCall(phone, content, key){
+    var input = Object.assign({from: waFrom(), to: waTo(phone), idempotency_key: key}, content);
+    return STATE.mcp.callTool(WA_SERVER,'whatsapp_send',input);
+  }
+
+  // Paperclip in the job chat: pick a file on this device and stage it for sending.
+  // Whatever is typed in the message box becomes the caption.
+  var CLIP_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';
+  function attachFromDevice(phone, file){
+    if(!phone || !file) return;
+    var type = file.type || '';
+    if(type.indexOf('image/')===0 && type!=='image/jpeg' && type!=='image/png'){
+      toast('WhatsApp only accepts JPG or PNG photos — save it as one of those and try again');
+      return;
+    }
+    var caption = (STATE.chatDraft[phone]||'').trim();
+    STATE.chatDraft[phone] = '';
+    attachFileToChat(phone, file, file.name || 'attachment', type, caption);
+  }
+
+  function confirmChatSend(phone){
+    var entry = STATE.chatMessages[phone];
+    if(!entry || !entry.pendingSend || !STATE.mcp || entry.sending) return;
+    var pending = entry.pendingSend;
+    if(!pending.key) pending.key = 'dsx-'+uid();
+    entry.sending = true;
+    entry.sendError = null;
+    render();
+
+    var content;
+    if(pending.kind==='image') content = {image:{url:pending.url, caption:pending.caption||null}};
+    else if(pending.kind==='file') content = {document:{url:pending.url, filename:pending.filename, caption:pending.caption||null}};
+    else content = {text:{body:pending.text}};
+
+    waSendCall(phone, content, pending.key).then(function(res){
+      var payload = (res && res.payload) || {};
+      entry.sending = false;
+      entry.pendingSend = null;
+      var isText = pending.kind==='text' || !pending.kind;
+      var body = isText ? pending.text : ('📎 '+pending.filename+(pending.caption?('\n'+pending.caption):''));
+      entry.list = (entry.list||[]).concat([{message_id: payload.id || ('local-'+Date.now()), body: body, from_me:true, date: new Date().toISOString()}]);
+      if(isText){ STATE.chatDraft[phone] = ''; }
+      STATE.chatMessages[phone] = entry;
+      render();
+      toast(isText ? 'Message sent' : 'File sent');
+      if(payload.id) checkWaDelivery(phone, payload.id);
+    }).catch(function(err){
+      entry.sending = false;
+      entry.sendError = err;
+      STATE.chatMessages[phone] = entry;
+      render();
+    });
+  }
+
+  // Delivery is asynchronous: look again shortly so a refusal from WhatsApp shows up
+  // in the chat instead of silently disappearing.
+  function checkWaDelivery(phone, id){
+    setTimeout(function(){
+      if(!STATE.mcp) return;
+      STATE.mcp.callTool(WA_SERVER,'whatsapp_get',{message_id:id}).then(function(res){
+        var m = (res && res.payload) || {};
+        if(m.status!=='failed') return;
+        var entry = STATE.chatMessages[phone];
+        if(!entry || !entry.list) return;
+        entry.list.forEach(function(x){ if(x.message_id===id){ x.failed = true; x.failReason = (m.last_error && (m.last_error.description||m.last_error.code))||'not delivered'; } });
+        render();
+        toast('WhatsApp did not deliver that message — ' + waFailText(m.last_error));
+      }).catch(function(){});
+    }, 12000);
+  }
+
+  function waFailText(le){
+    if(!le) return 'no reason given';
+    var meta = String(le.meta_error_code||'');
+    if(meta==='131047' || /window/i.test(le.description||'')) return 'the 24-hour reply window has closed. Ask the customer to message you first.';
+    if(meta==='131031') return 'the WhatsApp business account is locked. Check WhatsApp Manager.';
+    return le.description || le.code || 'no reason given';
+  }
+
+  // Remove PDFs/images this app uploaded to Cloudinary more than 30 days ago. Owner
+  // only, at most once a day per device.
+  function cleanupOldCloudFiles(){
+    if(!STATE.mcp || !isOwnerRole()) return;
+    var today = todayIso();
+    try { if(localStorage.getItem('dsx-cloud-cleanup')===today) return; } catch(e){}
+    var cutoff = addDays(today, -FILE_KEEP_DAYS);
+    var expr = 'tags='+FILE_TAG+' AND uploaded_at<"'+cutoff+'"';
+    STATE.mcp.callTool(FILE_SERVER,'search-assets',{request:{expression:expr, max_results:100, fields:'asset_id,public_id,created_at'}}).then(function(res){
+      var list = (((res && res.payload) || {}).resources) || [];
+      var chain = Promise.resolve();
+      list.forEach(function(r){
+        chain = chain.then(function(){
+          return STATE.mcp.callTool(FILE_SERVER,'delete-asset',{request:{asset_id:r.asset_id, invalidate:true}}).catch(function(){});
+        });
+      });
+      return chain.then(function(){ try { localStorage.setItem('dsx-cloud-cleanup', today); } catch(e){} });
+    }).catch(function(){});
+  }
+
+  function waErrorNotice(err){
+    err = err || {};
+    var who = (err.server===FILE_SERVER) ? 'Cloudinary' : 'Bird (WhatsApp)';
+    var msg = String(err.message||'');
+    switch(err.code){
+      case 'needs_reauth': return {text:'Your sign-in has expired.', action:'Sign out and sign in again.'};
+      case 'server_not_connected': return {text: who+' isn’t set up on the server yet.', action:'Add its key as described in the setup guide.'};
+      case 'blocked_by_policy': return {text:'Your role doesn’t allow this.', action:''};
+      case 'server_unavailable': return {text:'Couldn’t reach '+who+' just now — try again in a moment.', action:''};
+      case 'tool_error':
+        if(/E15044|customer service window|outside.*window/i.test(msg)) return {text:'The 24-hour reply window is closed for this customer, so WhatsApp only allows approved templates.', action:'Ask them to send you a WhatsApp first, then send again.'};
+        if(/131031|locked/i.test(msg)) return {text:'The WhatsApp business account is locked by Meta.', action:'Check WhatsApp Manager.'};
+        return {text: who+' reported a problem: ' + (msg.length>220 ? msg.slice(0,220)+'…' : (msg||'unknown error')), action:''};
+      default: return {text:'Couldn’t reach WhatsApp right now.', action:''};
+    }
+  }
+
+
+  /* ============================ render: shell ============================ */
+  function render(){
+    var app = document.getElementById('app');
+    var ph = STATE.auth.phase;
+    if(ph!=='unlocked' && ph!=='demo'){
+      app.innerHTML = renderAuthScreen();
+      bindAuthEvents();
+      return;
+    }
+    app.onsubmit = function(e){ if(e.target.getAttribute('data-auth')) e.preventDefault(); };
+    if(!canAccess(STATE.tab)){ STATE.tab = firstAllowedTab(); }
+    app.innerHTML =
+      '<div class="shell">' +
+        renderSidebar() +
+        '<div class="main">' + renderTab() + '</div>' +
+      '</div>' +
+      (STATE.openOrderId ? renderOrderModal() : '') +
+      (STATE.newOrderOpen && !isTechnician() ? renderNewOrderModal() : '') +
+      (STATE.newTeamOpen && isOwnerRole() ? renderNewTeamModal() : '') +
+      (STATE.customerForm && canAccess('customers') ? renderCustomerForm() : '') +
+      (STATE.quoteModalOrderId && canAccess('quotes') ? renderQuoteModal() : '') +
+      (STATE.invoiceModalOrderId && canAccess('quotes') ? renderInvoiceModal() : '');
+    bindEvents();
+  }
+
+  var NAV = [
+    {key:'dashboard', label:'Dashboard'},
+    {key:'board', label:'Job board'},
+    {key:'whatsapp', label:'WhatsApp inbox'},
+    {key:'customers', label:'Customers'},
+    {key:'team', label:'Team'},
+    {key:'quotes', label:'Quotes & invoicing'},
+    {key:'reports', label:'Reports'},
+    {key:'settings', label:'Settings'}
+  ];
+
+  function waPendingCount(){
+    return STATE.waConversations.filter(function(c){
+      var m = STATE.waMessages[c.phone];
+      return !(m && m.messageId && STATE.waHandled[m.messageId]);
+    }).length;
+  }
+
+  function renderSidebar(){
+    var member = currentTeamMember();
+    var pending = waPendingCount();
+    var navList = NAV.filter(function(n){ return canAccess(n.key); });
+    var items = navList.map(function(n){
+      var badge = (n.key==='whatsapp' && pending) ? '<span class="badge">'+pending+'</span>' : '';
+      return '<li><button data-action="tab" data-tab="'+n.key+'" class="'+(STATE.tab===n.key?'active':'')+'"><span class="dot"></span>'+n.label+badge+'</button></li>';
+    }).join('');
+    var viewerPill = STATE.auth.phase==='demo' ? '<div class="who-box"><div><strong>Demo mode</strong><span style="font-size:11px;">Sample data only. Changes are not saved and nothing is sent. '+escapeHtml(STATE.demoReason||'')+'</span></div></div>' : (
+      '<div class="who-box"><div><span style="font-size:11px;">Signed in</span><strong>'+(member?escapeHtml(member.name):'Owner')+'</strong>' +
+        '<span style="font-size:11px;">'+(isOwnerRole()?'':roleLabel(currentRole())+' &middot; ')+'<a href="#" data-action="change-password">Change password</a></span></div>' +
+        '<button type="button" class="btn btn-sm" data-action="lock-app" title="Lock DsignX Ops">'+LOCK_ICON+' Lock</button></div>'
+    );
+    return (
+      '<div class="sidebar">' +
+        '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
+        '<ul class="navlist">' + items + '</ul>' +
+        viewerPill +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa</div>' +
+      '</div>'
+    );
+  }
+
+  function renderTab(){
+    switch(STATE.tab){
+      case 'board': return renderBoardTab();
+      case 'whatsapp': return renderWhatsAppTab();
+      case 'customers': return renderCustomersTab();
+      case 'team': return renderTeamTab();
+      case 'quotes': return renderQuotesTab();
+      case 'settings': return renderSettingsTab();
+      case 'reports': return renderReportsTab();
+      default: return renderDashboardTab();
+    }
+  }
+
+  function exampleBadge(){
+    if(STATE.isLive) return '';
+    return '<span class="example-badge" title="This view is showing sample jobs so you can see how the board works. Sign in to see your real jobs.">Example data</span>';
+  }
+
+  /* ============================ dashboard ============================ */
+  function renderDashboardTab(){
+    var member = currentTeamMember();
+    var open = ordersActive();
+    if(member){ open = open.filter(function(o){ return o.designerId===member.id || o.technicianId===member.id; }); }
+    var dueSoon = open.filter(function(o){ return o.dueDate; }).sort(function(a,b){ return a.dueDate.localeCompare(b.dueDate); }).slice(0,6);
+    var quotedValue = STATE.orders.filter(function(o){ return o.quoteAmount && !o.invoiced; }).reduce(function(s,o){ return s+Number(o.quoteAmount); },0);
+    var thisWeek = open.filter(function(o){ var d=daysUntil(o.dueDate); return d!==null && d<=7 && d>=0; }).length;
+    var overdue = open.filter(function(o){ var d=daysUntil(o.dueDate); return d!==null && d<0; }).length;
+
+    var tiles = member ?
+      (tile('Your open jobs', open.length, 'Assigned to you') +
+       tile('Due this week', thisWeek, overdue ? (overdue+' overdue') : 'On schedule')) :
+      (tile('Open jobs', open.length, 'Not yet delivered or invoiced') +
+       tile('Due this week', thisWeek, overdue ? (overdue+' overdue') : 'On schedule') +
+       tile('Awaiting invoice', money(quotedValue), 'Quoted, not yet invoiced') +
+       tile('Customers', STATE.customers.length, 'In your books'));
+
+    var dueRows = dueSoon.length ? dueSoon.map(function(o){
+      var d = daysUntil(o.dueDate);
+      var cls = d<0 ? 'overdue' : (d<=2 ? 'soon' : '');
+      var label = d<0 ? (Math.abs(d)+'d overdue') : (d===0 ? 'Due today' : (d+'d left'));
+      return '<div class="due-row">' +
+        '<div><div class="who">'+escapeHtml(o.customerName)+'</div><div class="what">'+escapeHtml(o.title)+'</div></div>' +
+        '<span class="status-chip status-'+o.status+'">'+statusMeta(o.status).label+'</span>' +
+        '<div class="due-date '+cls+'">'+label+' &middot; '+shortDate(o.dueDate)+'</div>' +
+      '</div>';
+    }).join('') : '<div class="empty-note">'+(member ? 'Nothing due — nothing with a date is assigned to you right now.' : 'Nothing with a due date yet — add one from the job board.')+'</div>';
+
+    var waPending = (STATE.mcp && !member) ? waPendingCount() : 0;
+    var waBanner = waPending ? ('<div class="wa-banner">'+waPending+' new WhatsApp message'+(waPending===1?'':'s')+' waiting to be logged<button class="btn btn-sm" data-action="tab" data-tab="whatsapp">Review inbox</button></div>') : '';
+
+    var subLine = escapeHtml(STATE.config.businessName||'DsignX')+' &middot; '+fullDate(todayIso())+(member ? ' &middot; showing jobs assigned to '+escapeHtml(member.name) : '');
+
+    return (
+      '<div class="topline"><div><h1>Dashboard</h1><div class="sub">'+subLine+'</div></div>' + exampleBadge() +
+        '<button class="btn btn-primary" data-action="open-new-order">+ New order</button>' +
+      '</div>' +
+      waBanner +
+      '<div class="tiles">'+tiles+'</div>' +
+      '<div class="panel"><div class="panel-head"><h2>Coming up</h2></div>' + dueRows + '</div>'
+    );
+  }
+  function tile(label, value, note){
+    return '<div class="tile"><div class="label">'+label+'</div><div class="value">'+value+'</div><div class="note">'+note+'</div></div>';
+  }
+
+  /* ============================ board ============================ */
+  function renderBoardTab(){
+    var q = STATE.boardQuery.trim().toLowerCase();
+    var af = STATE.boardAssigneeFilter;
+    var cols = STATUSES.map(function(s){
+      var items = STATE.orders.filter(function(o){ return o.status===s.key; });
+      if(q){ items = items.filter(function(o){ return (o.title+' '+o.customerName+' '+(o.designerName||'')+' '+(o.technicianName||'')).toLowerCase().indexOf(q)>=0; }); }
+      if(af==='unassigned'){ items = items.filter(function(o){ return !o.designerId && !o.technicianId; }); }
+      else if(af && af!=='all'){ items = items.filter(function(o){ return o.designerId===af || o.technicianId===af; }); }
+      var cards = items.map(cardHtml).join('');
+      return (
+        '<div class="col" data-status="'+s.key+'">' +
+          '<div class="col-head"><span class="t">'+s.label+'</span><span class="n">'+items.length+'</span></div>' +
+          '<div class="col-cards">'+cards+'</div>' +
+        '</div>'
+      );
+    }).join('');
+
+    var assigneeOpts = '<option value="all" '+(af==='all'?'selected':'')+'>Everyone</option><option value="unassigned" '+(af==='unassigned'?'selected':'')+'>Unassigned</option>' +
+      TEAM_ROLES.map(function(r){
+        var members = STATE.team.filter(function(m){ return m.role===r.key; });
+        if(!members.length) return '';
+        return '<optgroup label="'+r.plural+'">' + members.map(function(m){ return '<option value="'+m.id+'" '+(af===m.id?'selected':'')+'>'+escapeHtml(m.name)+'</option>'; }).join('') + '</optgroup>';
+      }).join('');
+
+    return (
+      '<div class="topline"><div><h1>Job board</h1><div class="sub">Drag a card to move it, or click to open</div></div>' + exampleBadge() +
+        (isTechnician() ? '' : '<button class="btn btn-primary" data-action="open-new-order">+ New order</button>') +
+      '</div>' +
+      '<div class="filterbar" style="margin-bottom:14px;">' +
+        '<div class="search"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><input type="text" placeholder="Search jobs or customers" id="boardSearch" value="'+escapeHtml(STATE.boardQuery)+'"></div>' +
+        '<select class="select-inline" id="boardAssignee">'+assigneeOpts+'</select>' +
+      '</div>' +
+      '<div class="board-scroll"><div class="board">'+cols+'</div></div>'
+    );
+  }
+  function cardHtml(o){
+    var d = daysUntil(o.dueDate);
+    var overdue = d!==null && d<0 && o.status!=='invoiced' && o.status!=='delivered';
+    var avatars = '';
+    if(o.designerName) avatars += '<div class="avatar designer" title="Designer: '+escapeHtml(o.designerName)+'">'+initials(o.designerName)+'</div>';
+    if(o.technicianName) avatars += '<div class="avatar technician" title="Technician: '+escapeHtml(o.technicianName)+'">'+initials(o.technicianName)+'</div>';
+    return (
+      '<div class="card" draggable="true" data-id="'+o.id+'" data-action="open-order">' +
+        '<div class="jobno">'+jobNo(o.id)+'</div>' +
+        '<h4>'+escapeHtml(o.title)+'</h4>' +
+        '<div class="who">'+escapeHtml(o.customerName)+'</div>' +
+        '<span class="cat"><span class="dot" style="background:'+catMeta(o.category).dot+'"></span>'+catMeta(o.category).label+'</span>' +
+        (avatars ? '<div class="assignee-row">'+avatars+'</div>' : '') +
+        '<div class="meta">' +
+          '<span class="due'+(overdue?' overdue':'')+'">'+(o.dueDate?shortDate(o.dueDate):'No date')+'</span>' +
+          (isTechnician() ? '' : '<span class="amt">'+(o.quoteAmount?money(o.quoteAmount):'—')+'</span>') +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  /* ============================ whatsapp inbox tab ============================ */
+  function renderWhatsAppTab(){
+    var head = '<div class="topline"><div><h1>WhatsApp inbox</h1><div class="sub">Customers who messaged last and are waiting for a reply · via Bird</div></div></div>';
+
+    if(!STATE.mcp){
+      return head + '<div class="panel"><p style="margin:0 0 10px;">This app isn\'t connected to a WhatsApp tool yet, so orders won\'t appear here automatically.</p><p class="hint" style="margin:0;">WhatsApp needs the Bird and Cloudinary keys set up on the server (see the setup guide), then reload this page. Until then, share your order link from the Settings tab and log messages here manually with <strong>+ New order</strong>.</p></div>';
+    }
+
+    var statusRow = '';
+    if(STATE.waStatus==='error' && STATE.waError){
+      var notice = waErrorNotice(STATE.waError);
+      statusRow = '<div class="wa-status error">'+escapeHtml(notice.text)+(notice.action?(' '+escapeHtml(notice.action)):'')+'</div>';
+    } else {
+      var checked = STATE.waLastChecked ? ('Checked '+relTime(STATE.waLastChecked)) : (STATE.waStatus==='loading' ? 'Checking WhatsApp…' : 'Not checked yet');
+      statusRow = '<div class="wa-status">'+checked+'<button class="btn btn-sm refresh" data-action="wa-refresh">Check now</button></div>';
+    }
+
+    var visible = STATE.waConversations.filter(function(c){
+      var m = STATE.waMessages[c.phone];
+      if(m && m.messageId && STATE.waHandled[m.messageId]) return false;
+      return true;
+    });
+
+    var cards = visible.length ? visible.map(function(c){
+      var m = STATE.waMessages[c.phone];
+      var bodyHtml = !m ? 'Loading message…' : (m.error ? '(couldn\'t load this message — open WhatsApp to view it)' : escapeHtml(m.body));
+      var msgId = (m && m.messageId) ? m.messageId : '';
+      return (
+        '<div class="wa-card">' +
+          '<div class="wa-card-head"><span class="nm">'+escapeHtml(c.name||c.phone)+'</span><span class="ph">+'+escapeHtml(c.phone)+'</span><span class="when">'+relTime(c.last_message_date)+'</span></div>' +
+          '<div class="wa-body">'+bodyHtml+'</div>' +
+          '<div class="wa-actions">' +
+            '<button class="btn btn-primary btn-sm" data-action="log-wa-order" data-phone="'+escapeHtml(c.phone)+'" data-name="'+escapeHtml(c.name||'')+'" data-msgid="'+escapeHtml(msgId)+'" '+(m?'':'disabled')+'>Log as order</button>' +
+            '<button class="btn btn-ghost btn-sm" data-action="dismiss-wa-order" data-phone="'+escapeHtml(c.phone)+'" data-msgid="'+escapeHtml(msgId)+'" '+(msgId?'':'disabled')+'>Not an order</button>' +
+          '</div>' +
+        '</div>'
+      );
+    }).join('') : '<div class="panel"><div class="empty-note">Nothing waiting — new WhatsApp messages will show up here within a couple of minutes.</div></div>';
+
+    return head + statusRow + '<div class="wa-list">'+cards+'</div>';
+  }
+
+  function relTime(dateLike){
+    var d = (dateLike instanceof Date) ? dateLike : new Date(String(dateLike).replace(' ','T'));
+    if(isNaN(d)) return '';
+    var diffMs = Date.now() - d.getTime();
+    var mins = Math.round(diffMs/60000);
+    if(mins < 1) return 'just now';
+    if(mins < 60) return mins+'m ago';
+    var hrs = Math.round(mins/60);
+    if(hrs < 24) return hrs+'h ago';
+    return Math.round(hrs/24)+'d ago';
+  }
+
+  /* ============================ reports: commission ============================ */
+  // Sliding scale on total sales excl. VAT for the month. The bracket the month's total falls in sets
+  // the rate, and that rate applies to the whole total.
+  var COMMISSION_TIERS = [
+    {from:0,      to:49999,  rate:1.125},
+    {from:50000,  to:64999,  rate:2.25},
+    {from:65000,  to:79999,  rate:3.38},
+    {from:80000,  to:99999,  rate:4.50},
+    {from:100000, to:149999, rate:5.63},
+    {from:150000, to:null,   rate:6.75}
+  ];
+  function tierIndexFor(total){
+    for(var i=COMMISSION_TIERS.length-1;i>=0;i--){ if(total >= COMMISSION_TIERS[i].from) return i; }
+    return 0;
+  }
+  function round2(n){ return Math.round((Number(n)||0)*100)/100; }
+  function commissionFor(total){
+    var i = tierIndexFor(total), t = COMMISSION_TIERS[i];
+    return {tier:i, rate:t.rate, amount:round2(total * t.rate / 100), next:COMMISSION_TIERS[i+1]||null};
+  }
+  function fmtRate(r){ var s = String(r); return (s.indexOf('.')<0 ? s+'.00' : (s.split('.')[1].length<2 ? s+'0' : s)) + '%'; }
+  function tierLabel(t){ return t.to===null ? (money(t.from)+' and more') : (money(t.from)+' – '+money(t.to)); }
+
+  function isSale(o){ return !!(o.invoiced || o.status==='invoiced'); }
+  function saleDate(o){ return o.invoiceGeneratedAt || o.invoicedAt || o.updatedAt || o.createdAt || ''; }
+  function saleExVat(o){
+    if(o.invoiceLineItems && o.invoiceLineItems.length){
+      return round2(o.invoiceLineItems.reduce(function(s,li){ return s + (Number(li.qty)||0)*(Number(li.unitPrice)||0); }, 0));
+    }
+    return round2(Number(o.quoteAmount)||0); // quote amounts are stored excl. VAT
+  }
+  function salesInRange(from, to){
+    return STATE.orders.filter(function(o){
+      if(!isSale(o)) return false;
+      var d = String(saleDate(o)).slice(0,10);
+      return (!from || d >= from) && (!to || d <= to);
+    });
+  }
+  function monthBounds(d){ return {from:localIso(new Date(d.getFullYear(), d.getMonth(), 1)), to:localIso(new Date(d.getFullYear(), d.getMonth()+1, 0))}; }
+  function reportRange(){
+    if(!STATE.reportFrom && !STATE.reportTo){ var b = monthBounds(new Date()); STATE.reportFrom = b.from; STATE.reportTo = b.to; }
+    var f = STATE.reportFrom, t = STATE.reportTo;
+    if(f && t && f > t){ var x = f; f = t; t = x; }
+    return {from:f, to:t};
+  }
+  // A range that is exactly one calendar month, or null
+  function rangeIsMonth(r){
+    if(!r.from || !r.to) return null;
+    var b = monthBounds(new Date(r.from+'T00:00:00'));
+    return (b.from===r.from && b.to===r.to) ? r.from.slice(0,7) : null;
+  }
+  function rangeLabel(r){
+    var m = rangeIsMonth(r);
+    if(m) return monthLabel(m);
+    return (r.from ? fullDate(r.from) : 'Start') + ' – ' + (r.to ? fullDate(r.to) : 'today');
+  }
+  function reportPresets(){
+    var now = new Date(), y = now.getFullYear(), m = now.getMonth();
+    var q0 = Math.floor(m/3)*3;
+    var taxStart = new Date(m>=2 ? y : y-1, 2, 1);
+    var tm = monthBounds(now), lm = monthBounds(new Date(y, m-1, 1));
+    return [
+      {label:'This month', from:tm.from, to:tm.to},
+      {label:'Last month', from:lm.from, to:lm.to},
+      {label:'This quarter', from:localIso(new Date(y, q0, 1)), to:localIso(new Date(y, q0+3, 0))},
+      {label:'Tax year to date', from:localIso(taxStart), to:todayIso()}
+    ];
+  }
+  function monthLabel(ym){
+    var d = new Date(ym+'-01T00:00:00');
+    return isNaN(d) ? ym : d.toLocaleDateString('en-ZA',{month:'long', year:'numeric'});
+  }
+  function shiftMonth(ym, by){
+    var p = ym.split('-'), d = new Date(Number(p[0]), Number(p[1])-1+by, 1);
+    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+  }
+
+  // Designers and technicians each earn on the full value of the jobs they're assigned to.
+  function commissionRows(r){
+    var sales = salesInRange(r.from, r.to);
+    var rows = STATE.team.map(function(m){
+      var jobs = sales.filter(function(o){ return o.designerId===m.id || o.technicianId===m.id; });
+      var total = round2(jobs.reduce(function(s,o){ return s + saleExVat(o); }, 0));
+      var c = commissionFor(total);
+      return {member:m, jobs:jobs, total:total, rate:c.rate, tier:c.tier, commission:c.amount, next:c.next};
+    });
+    var unassigned = sales.filter(function(o){ return !o.designerId && !o.technicianId; });
+    return {
+      rows: rows,
+      salesTotal: round2(sales.reduce(function(s,o){ return s + saleExVat(o); }, 0)),
+      salesCount: sales.length,
+      unassignedTotal: round2(unassigned.reduce(function(s,o){ return s + saleExVat(o); }, 0)),
+      unassignedCount: unassigned.length
+    };
+  }
+
+  function renderReportsTab(){
+    var range = reportRange();
+    var data = commissionRows(range);
+    var isMonth = rangeIsMonth(range);
+    var periodWord = isMonth ? 'month' : 'period';
+    var me = currentTeamMember();
+    var ownerView = isOwnerRole();
+    var rows = ownerView ? data.rows : data.rows.filter(function(r){ return me && r.member.id===me.id; });
+    rows = rows.slice().sort(function(a,b){ return b.total - a.total || String(a.member.name).localeCompare(b.member.name); });
+    var commissionTotal = round2(rows.reduce(function(s,r){ return s + r.commission; }, 0));
+
+    var tableRows = rows.map(function(r){
+      var pct = 100, nextNote = '<div class="next-note">Top bracket reached</div>';
+      if(r.next){
+        var cur = COMMISSION_TIERS[r.tier];
+        pct = Math.max(2, Math.min(100, (r.total - cur.from) / (r.next.from - cur.from) * 100));
+        nextNote = '<div class="next-note">'+money(round2(r.next.from - r.total))+' more for '+fmtRate(r.next.rate)+'</div>';
+      }
+      var open = STATE.reportOpenMember===r.member.id;
+      var main = '<tr class="row-btn" data-action="report-toggle" data-id="'+r.member.id+'">' +
+        '<td><strong>'+escapeHtml(r.member.name)+'</strong><div style="font-size:11.5px; color:var(--ink-faint);">'+roleLabel(r.member.role)+'</div></td>' +
+        '<td class="num">'+r.jobs.length+'</td>' +
+        '<td class="num">'+money(r.total)+'<div class="progress" title="Progress to the next bracket"><i style="width:'+pct.toFixed(1)+'%"></i></div>'+nextNote+'</td>' +
+        '<td class="num"><span class="rate-chip">'+fmtRate(r.rate)+'</span></td>' +
+        '<td class="num"><strong>'+money(r.commission)+'</strong></td>' +
+      '</tr>';
+      var detail = '';
+      if(open){
+        var jr = r.jobs.length ? r.jobs.slice().sort(function(a,b){ return String(saleDate(a)).localeCompare(String(saleDate(b))); }).map(function(o){
+          var asRole = (o.designerId===r.member.id && o.technicianId===r.member.id) ? 'Designer & technician' : (o.designerId===r.member.id ? 'Designer' : 'Technician');
+          return '<tr><td>'+shortDate(String(saleDate(o)).slice(0,10))+'</td><td>'+escapeHtml(o.invoiceNumber||jobNo(o.id))+'</td><td>'+escapeHtml(o.title)+'<div style="font-size:11px; color:var(--ink-faint);">'+escapeHtml(o.customerName||'')+' &middot; '+asRole+'</div></td><td class="num">'+money(saleExVat(o))+'</td></tr>';
+        }).join('') : '<tr><td colspan="4" class="empty-note">No invoiced jobs in this '+periodWord+'.</td></tr>';
+        detail = '<tr><td colspan="5" style="padding:0 0 4px;"><div class="breakdown"><table><thead><tr><th>Date</th><th>Invoice</th><th>Job</th><th style="text-align:right;">Excl. VAT</th></tr></thead><tbody>'+jr+'</tbody></table></div></td></tr>';
+      }
+      return main + detail;
+    }).join('');
+    if(!rows.length){
+      tableRows = '<tr><td colspan="5" class="empty-note">'+(ownerView ? 'Add designers and technicians on the Team tab to see their commission.' : 'You’re not set up as a team member yet.')+'</td></tr>';
+    } else if(ownerView){
+      tableRows += '<tr class="total-row"><td>Total commission</td><td></td><td></td><td></td><td class="num">'+money(commissionTotal)+'</td></tr>';
+    }
+
+    var tiers = COMMISSION_TIERS.map(function(t, i){
+      var hit = !ownerView && rows[0] && rows[0].tier===i;
+      return '<div class="tier-row'+(hit?' hit':'')+'"><span>'+tierLabel(t)+'</span><span class="r">'+fmtRate(t.rate)+'</span></div>';
+    }).join('');
+
+    var note = (ownerView && data.unassignedCount) ? '<div class="rep-note">'+data.unassignedCount+' invoiced job'+(data.unassignedCount===1?'':'s')+' ('+money(data.unassignedTotal)+') this '+periodWord+' '+(data.unassignedCount===1?'has':'have')+' no designer or technician assigned, so '+(data.unassignedCount===1?'it doesn’t':'they don’t')+' count towards anyone’s commission.</div>' : '';
+
+    var tilesHtml = ownerView ?
+      (tile('Sales excl. VAT', money(data.salesTotal), data.salesCount+' invoiced job'+(data.salesCount===1?'':'s')) +
+       tile('Commission payable', money(commissionTotal), rows.filter(function(r){ return r.commission>0; }).length+' team member'+(rows.filter(function(r){ return r.commission>0; }).length===1?'':'s')) +
+       tile('Unassigned sales', money(data.unassignedTotal), 'Not counted for commission') +
+       tile('Commission vs sales', data.salesTotal ? ((commissionTotal/data.salesTotal*100).toFixed(2)+'%') : '—', 'Of this '+periodWord+'’s sales'))
+      : (rows[0] ? (tile('Your sales excl. VAT', money(rows[0].total), rows[0].jobs.length+' invoiced job'+(rows[0].jobs.length===1?'':'s')) + tile('Your rate', fmtRate(rows[0].rate), rows[0].next ? (money(round2(rows[0].next.from-rows[0].total))+' to '+fmtRate(rows[0].next.rate)) : 'Top bracket') + tile('Your commission', money(rows[0].commission), rangeLabel(range))) : '');
+
+    return (
+      '<div class="topline"><div><h1>Reports</h1><div class="sub">Commission report &middot; '+rangeLabel(range)+(ownerView?'':' &middot; your figures only')+'</div></div>' + exampleBadge() +
+        (ownerView ? '<button class="btn btn-sm" data-action="report-export">Download CSV</button>' : '') +
+      '</div>' +
+      '<div class="panel" style="padding:12px 14px; margin-bottom:16px;">' +
+        '<div class="period-bar">' +
+          reportPresets().map(function(p){
+            var on = range.from===p.from && range.to===p.to;
+            return '<button type="button" class="chip-toggle'+(on?' active':'')+'" data-action="report-preset" data-from="'+p.from+'" data-to="'+p.to+'">'+p.label+'</button>';
+          }).join('') +
+          '<span style="flex:1"></span>' +
+          (isMonth ? '<button class="btn btn-sm" data-action="report-month" data-by="-1" aria-label="Previous month">&larr;</button>' : '') +
+          '<label for="reportFrom" style="margin:0;">From</label><input type="date" id="reportFrom" value="'+escapeHtml(range.from||'')+'" style="width:auto;">' +
+          '<label for="reportTo" style="margin:0;">To</label><input type="date" id="reportTo" value="'+escapeHtml(range.to||'')+'" style="width:auto;">' +
+          (isMonth ? '<button class="btn btn-sm" data-action="report-month" data-by="1" aria-label="Next month">&rarr;</button>' : '') +
+        '</div>' +
+        (isMonth ? '' : '<div class="hint" style="margin-top:8px;">Custom period: the sliding scale is applied to each person’s total sales for the whole period you’ve picked. Commission is normally worked out per calendar month.</div>') +
+      '</div>' +
+      '<div class="tiles"'+(ownerView?'':' style="grid-template-columns:repeat(3,1fr);"')+'>'+tilesHtml+'</div>' +
+      note +
+      '<div class="two-col">' +
+        '<div class="panel"><div class="panel-head"><h2>Commission by team member</h2><span class="hint" style="margin:0;">Tap a row for the jobs behind it</span></div>' +
+          '<div class="tbl-wrap"><table><thead><tr><th>Team member</th><th style="text-align:right;">Jobs</th><th style="text-align:right;">Sales excl. VAT</th><th style="text-align:right;">Rate</th><th style="text-align:right;">Commission</th></tr></thead><tbody>'+tableRows+'</tbody></table></div>' +
+        '</div>' +
+        '<div class="panel"><div class="panel-head"><h2>Sliding scale</h2></div>' +
+          '<div class="tier-list">'+tiers+'</div>' +
+          '<div class="hint" style="margin-top:10px;">Each person’s total invoiced sales excl. VAT for the period sets their bracket, and that rate is paid on the whole total. Designers and technicians each earn on the full value of jobs they’re assigned to. A job counts on the date it was invoiced.</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function exportCommissionCsv(){
+    var range = reportRange(), data = commissionRows(range);
+    var ym = (range.from||'start')+' to '+(range.to||todayIso());
+    function q(v){ v = String(v==null?'':v); return /[",\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; }
+    var lines = [['Period','Team member','Role','Invoiced jobs','Sales excl VAT','Commission rate','Commission'].join(',')];
+    data.rows.forEach(function(r){
+      lines.push([ym, r.member.name, roleLabel(r.member.role), r.jobs.length, r.total.toFixed(2), r.rate, r.commission.toFixed(2)].map(q).join(','));
+    });
+    lines.push('');
+    lines.push(['Period','Team member','Invoice','Job','Customer','Date','Sales excl VAT'].join(','));
+    data.rows.forEach(function(r){
+      r.jobs.forEach(function(o){ lines.push([ym, r.member.name, o.invoiceNumber||jobNo(o.id), o.title, o.customerName, String(saleDate(o)).slice(0,10), saleExVat(o).toFixed(2)].map(q).join(',')); });
+    });
+    var csv = lines.join('\r\n'), filename = 'dsignx-commission-'+(rangeIsMonth(range)||((range.from||'start')+'_to_'+(range.to||todayIso())))+'.csv';
+    if(STATE.downloads){
+      STATE.downloads.save({filename:filename, data:csv}).then(function(){ toast('Commission report downloaded'); }).catch(function(e){
+        if(e && e.code==='declined'){ toast('Download cancelled'); } else { fallbackDownload(new Blob([csv],{type:'text/csv'}), filename); }
+      });
+    } else { fallbackDownload(new Blob([csv],{type:'text/csv'}), filename); }
+  }
+
+  /* ============================ invoice export (Xero "Sales invoices" template) ============================ */
+  var XERO_INVOICE_COLUMNS = ['ContactName','EmailAddress','POAddressLine1','POAddressLine2','POAddressLine3','POAddressLine4','POCity','PORegion','POPostalCode','POCountry','SAAddressLine1','SAAddressLine2','SAAddressLine3','SAAddressLine4','SACity','SARegion','SAPostalCode','SACountry','InvoiceNumber','Reference','InvoiceDate','DueDate','PlannedDate','Total','TaxTotal','InvoiceAmountPaid','InvoiceAmountDue','InventoryItemCode','Description','Quantity','UnitAmount','Discount','LineAmount','AccountCode','TaxType','TaxAmount','TrackingName1','TrackingOption1','TrackingName2','TrackingOption2','Currency','Type','Sent','Status'];
+
+  function issuedInvoices(){
+    return STATE.orders.filter(function(o){ return isSale(o) || (o.invoiceNumber && o.invoiceGeneratedAt); });
+  }
+  function invoiceDateOf(o){ return String(o.invoiceGeneratedAt || o.invoicedAt || o.updatedAt || o.createdAt || todayIso()).slice(0,10); }
+  function invoicesInRange(){
+    var from = STATE.invExportFrom, to = STATE.invExportTo;
+    if(from && to && from > to){ var t = from; from = to; to = t; }
+    return issuedInvoices().filter(function(o){
+      var d = invoiceDateOf(o);
+      return (!from || d >= from) && (!to || d <= to);
+    }).sort(function(a,b){ return invoiceDateOf(a).localeCompare(invoiceDateOf(b)) || String(a.invoiceNumber||'').localeCompare(String(b.invoiceNumber||'')); });
+  }
+  function dmy(iso){ var p = String(iso||'').slice(0,10).split('-'); return p.length===3 ? (p[2]+'/'+p[1]+'/'+p[0]) : ''; }
+  function f4(n){ return (Math.round((Number(n)||0)*10000)/10000).toFixed(4); }
+  function firstName(n){ return String(n||'').trim().split(/\s+/)[0] || ''; }
+
+  // Builds the line rows for one invoice. Unit prices in the app are excl. VAT, as in the template.
+  function xeroRowsFor(o){
+    var items = (o.invoiceLineItems && o.invoiceLineItems.length) ? o.invoiceLineItems
+      : (o.lineItems && o.lineItems.length) ? o.lineItems
+      : [{description:o.title||'Job', qty:o.qty||1, unitPrice:(Number(o.quoteAmount)||0)/(Number(o.qty)||1)}];
+    var vatOn = isVatVendor() && (o.invoiceVatEnabled!=null ? !!o.invoiceVatEnabled : (o.quoteVatEnabled!=null ? !!o.quoteVatEnabled : true));
+    var rate = vatOn ? (Number(STATE.config.vatRate)||0)/100 : 0;
+    var lines = items.map(function(li){
+      var qty = Number(li.qty)||0, unit = Number(li.unitPrice)||0;
+      var amount = round2(qty*unit);
+      return {desc:li.description||o.title||'', qty:qty, unit:unit, amount:amount, tax:round2(amount*rate)};
+    });
+    var taxTotal = round2(lines.reduce(function(s,l){ return s+l.tax; },0));
+    var total = round2(lines.reduce(function(s,l){ return s+l.amount; },0) + taxTotal);
+    var cust = STATE.customers.find(function(c){ return c.id===o.customerId; }) || {};
+    var date = invoiceDateOf(o);
+    var due = addDays(date, o.invoiceDueDays!=null ? o.invoiceDueDays : (STATE.config.invoiceDueDays||7));
+    var reps = [o.designerName, o.technicianName].filter(Boolean).map(firstName).filter(function(n,i,a){ return a.indexOf(n)===i; }).join(' & ');
+    var paid = 0;
+    return lines.map(function(l){
+      var r = {};
+      XERO_INVOICE_COLUMNS.forEach(function(c){ r[c] = ''; });
+      r.ContactName = o.customerName || cust.name || '';
+      r.EmailAddress = cust.email || '';
+      var ipa = cust.postalAddress || {}, ida = cust.postalAddress ? customerDeliveryAddress(cust) : {};
+      r.POAddressLine1 = ipa.line1||''; r.POAddressLine2 = ipa.line2||''; r.POCity = ipa.city||''; r.PORegion = ipa.region||''; r.POPostalCode = ipa.postalCode||''; r.POCountry = addrHasData(ipa) ? (ipa.country||'') : '';
+      r.SAAddressLine1 = ida.line1||''; r.SAAddressLine2 = ida.line2||''; r.SACity = ida.city||''; r.SARegion = ida.region||''; r.SAPostalCode = ida.postalCode||''; r.SACountry = addrHasData(ida) ? (ida.country||'') : '';
+      r.InvoiceNumber = o.invoiceNumber || jobNo(o.id);
+      r.Reference = o.title || '';
+      r.InvoiceDate = dmy(date);
+      r.DueDate = dmy(due);
+      r.Total = f4(total);
+      r.TaxTotal = f4(taxTotal);
+      r.InvoiceAmountPaid = f4(paid);
+      r.InvoiceAmountDue = f4(total - paid);
+      r.Description = l.desc;
+      r.Quantity = f4(l.qty);
+      r.UnitAmount = f4(l.unit);
+      r.LineAmount = f4(l.amount);
+      r.AccountCode = STATE.config.accountCode || '200';
+      r.TaxType = vatOn ? (STATE.config.xeroTaxVat || 'Standard Rate Sales') : (STATE.config.xeroTaxNoVat || 'No VAT');
+      r.TaxAmount = f4(l.tax);
+      r.TrackingName1 = STATE.config.xeroTrackingName || 'Sales Rep';
+      r.TrackingOption1 = reps;
+      r.Currency = STATE.config.currency || 'ZAR';
+      r.Type = 'Sales invoice';
+      r.Sent = 'Unsent';
+      r.Status = STATE.invExportStatus || 'Draft';
+      return r;
+    });
+  }
+
+  function exportInvoicesXero(){
+    var list = invoicesInRange();
+    if(!list.length){ toast('No invoices in that date range'); return; }
+    var out = [XERO_INVOICE_COLUMNS.join(',')];
+    list.forEach(function(o){
+      xeroRowsFor(o).forEach(function(r){ out.push(XERO_INVOICE_COLUMNS.map(function(c){ return csvCell(r[c]); }).join(',')); });
+    });
+    var csv = out.join('\r\n') + '\r\n';
+    var stamp = new Date();
+    var rangeTag = (STATE.invExportFrom||STATE.invExportTo) ? ((STATE.invExportFrom||'start')+'_to_'+(STATE.invExportTo||todayIso())+'_') : '';
+    var filename = 'SalesInvoices_DsignX_'+rangeTag+todayIso()+'_'+String(stamp.getHours()).padStart(2,'0')+String(stamp.getMinutes()).padStart(2,'0')+'.csv';
+    var done = function(){ toast('Exported '+list.length+' invoice'+(list.length===1?'':'s')); };
+    if(STATE.downloads){
+      STATE.downloads.save({filename:filename, data:csv}).then(done).catch(function(e){
+        if(e && e.code==='declined'){ toast('Export cancelled'); } else { fallbackDownload(new Blob([csv],{type:'text/csv'}), filename); done(); }
+      });
+    } else { fallbackDownload(new Blob([csv],{type:'text/csv'}), filename); done(); }
+  }
+
+  function invExportPresets(){
+    var now = new Date(), y = now.getFullYear(), m = now.getMonth();
+    var dow = (now.getDay()+6)%7; // Monday = 0
+    var monday = new Date(y, m, now.getDate()-dow);
+    var sunday = new Date(y, m, now.getDate()-dow+6);
+    var taxStart = new Date(m>=2 ? y : y-1, 2, 1); // SA tax year starts 1 March
+    return [
+      {label:'All dates', from:'', to:''},
+      {label:'Today', from:todayIso(), to:todayIso()},
+      {label:'This week', from:localIso(monday), to:localIso(sunday)},
+      {label:'This month', from:localIso(new Date(y,m,1)), to:localIso(new Date(y,m+1,0))},
+      {label:'Last month', from:localIso(new Date(y,m-1,1)), to:localIso(new Date(y,m,0))},
+      {label:'Tax year to date', from:localIso(taxStart), to:todayIso()}
+    ];
+  }
+
+  function renderLetterheadPanel(){
+    function f(id, key, label){ return '<div class="field"><label for="'+id+'">'+label+'</label><input type="text" id="'+id+'" value="'+escapeHtml(lh(key))+'"></div>'; }
+    return (
+      '<div class="panel">' +
+        '<div class="section-label">Letterhead on quotes &amp; invoices</div>' +
+        '<div class="hint" style="margin:-4px 0 12px;">Printed in the header, banking box and footer of every quote and invoice PDF. VAT number and bank details come from Invoice defaults below.</div>' +
+        f('lhName','docCompanyName','Company name') +
+        f('lhAddress','docAddress','Address') +
+        '<div class="field-row">' + f('lhTel','docTel','Telephone') + f('lhWa','docWhatsapp','WhatsApp') + '</div>' +
+        '<div class="field-row">' + f('lhEmail','docEmail','Email') + f('lhWeb','docWebsite','Website') + '</div>' +
+        '<div class="field-row">' + f('lhReg','docRegNo','Company reg. no') + f('lhSwift','bankSwift','SWIFT code') + '</div>' +
+        f('lhAcctType','bankAccountType','Bank account type') +
+        '<div style="display:flex; gap:8px; flex-wrap:wrap;">' +
+          '<button class="btn btn-primary btn-sm" data-action="save-letterhead">Save</button>' +
+          '<button class="btn btn-sm" data-action="preview-letterhead" data-kind="quote">Sample quote PDF</button>' +
+          '<button class="btn btn-sm" data-action="preview-letterhead" data-kind="invoice">Sample invoice PDF</button>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function sampleDocOrder(){
+    return {id:'sample01', customerName:'Sample Customer', phone:'+27 82 000 0000', title:'Shopfront fascia sign', description:'3m x 0.6m light box fascia with existing logo artwork.',
+      lineItems:[{description:'Light box fascia sign 3m x 0.6m', qty:1, unitPrice:3650},{description:'Installation', qty:1, unitPrice:550}],
+      invoiceLineItems:[{description:'Light box fascia sign 3m x 0.6m', qty:1, unitPrice:3650},{description:'Installation', qty:1, unitPrice:550}],
+      quoteNumber:'QU-SAMPLE', invoiceNumber:'INV-SAMPLE', quoteGeneratedAt:todayIso(), invoiceGeneratedAt:todayIso(),
+      quoteVatEnabled:true, invoiceVatEnabled:true, quoteValidDays:STATE.config.quoteValidityDays||14, invoiceDueDays:STATE.config.invoiceDueDays||7};
+  }
+
+  /* ============================ customer export (Xero contacts template) ============================ */
+  var XERO_CONTACT_COLUMNS = ['*ContactName','AccountNumber','EmailAddress','FirstName','LastName','POAttentionTo','POAddressLine1','POAddressLine2','POAddressLine3','POAddressLine4','POCity','PORegion','POPostalCode','POCountry','SAAttentionTo','SAAddressLine1','SAAddressLine2','SAAddressLine3','SAAddressLine4','SACity','SARegion','SAPostalCode','SACountry','PhoneNumber','FaxNumber','MobileNumber','DDINumber','SkypeName','BankAccountName','BankAccountNumber','BankAccountParticulars','TaxNumber','AccountsReceivableTaxCodeName','AccountsPayableTaxCodeName','Website','LegalName','Discount','CompanyNumber','DueDateBillDay','DueDateBillTerm','DueDateSalesDay','DueDateSalesTerm','SalesAccount','PurchasesAccount','TrackingName1','SalesTrackingOption1','PurchasesTrackingOption1','TrackingName2','SalesTrackingOption2','PurchasesTrackingOption2','BrandingTheme','DefaultTaxBills','DefaultTaxSales','Person1FirstName','Person1LastName','Person1Email','Person1IncludeInEmail','Person2FirstName','Person2LastName','Person2Email','Person2IncludeInEmail','Person3FirstName','Person3LastName','Person3Email','Person3IncludeInEmail','Person4FirstName','Person4LastName','Person4Email','Person4IncludeInEmail','Person5FirstName','Person5LastName','Person5Email','Person5IncludeInEmail'];
+
+  function ordersOfCustomer(c){
+    var n = String(c.name||'').trim().toLowerCase();
+    return STATE.orders.filter(function(o){ return o.customerId===c.id || (!o.customerId && String(o.customerName||'').trim().toLowerCase()===n); });
+  }
+  // When the customer was added. Older records have no date, so fall back to their first job.
+  function customerAddedDate(c){
+    if(c.createdAt) return String(c.createdAt).slice(0,10);
+    var ds = ordersOfCustomer(c).map(function(o){ return String(o.createdAt||'').slice(0,10); }).filter(Boolean).sort();
+    return ds[0] || '';
+  }
+  function customerActivityDates(c){
+    var out = [];
+    ordersOfCustomer(c).forEach(function(o){
+      if(o.createdAt) out.push(String(o.createdAt).slice(0,10));
+      if(isSale(o)) out.push(invoiceDateOf(o));
+    });
+    return out;
+  }
+  function customersForExport(){
+    var from = STATE.custExportFrom, to = STATE.custExportTo;
+    if(from && to && from > to){ var t = from; from = to; to = t; }
+    var dated = !!(from || to);
+    function inRange(d){ return !!d && (!from || d >= from) && (!to || d <= to); }
+    var undated = 0;
+    var list = STATE.customers.filter(function(c){
+      if(!dated) return true;
+      if(STATE.custExportMode==='active') return customerActivityDates(c).some(inRange);
+      var d = customerAddedDate(c);
+      if(!d){ undated++; return false; }
+      return inRange(d);
+    }).slice().sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||'')); });
+    return {list:list, undated:undated};
+  }
+  function exportCustomersXero(){
+    var res = customersForExport(), list = res.list;
+    if(!list.length){ toast('No customers in that date range'); return; }
+    var out = [XERO_CONTACT_COLUMNS.join(',')];
+    list.forEach(function(c){
+      var r = {};
+      XERO_CONTACT_COLUMNS.forEach(function(k){ r[k] = ''; });
+      r['*ContactName'] = String(c.name||'').trim();
+      r.EmailAddress = c.email || '';
+      r.FirstName = c.firstName || '';
+      r.LastName = c.lastName || '';
+      r.MobileNumber = c.phone || '';
+      var pa = c.postalAddress || {}, da = customerDeliveryAddress(c) || {};
+      r.POAddressLine1 = pa.line1||''; r.POAddressLine2 = pa.line2||''; r.POCity = pa.city||''; r.PORegion = pa.region||''; r.POPostalCode = pa.postalCode||''; r.POCountry = addrHasData(pa) ? (pa.country||'') : '';
+      r.SAAddressLine1 = da.line1||''; r.SAAddressLine2 = da.line2||''; r.SACity = da.city||''; r.SARegion = da.region||''; r.SAPostalCode = da.postalCode||''; r.SACountry = addrHasData(da) ? (da.country||'') : '';
+      if(c.type==='business'){
+        r.Website = c.website || '';
+        r.TaxNumber = c.vatNumber || '';
+        r.CompanyNumber = c.regNumber || '';
+        r.LegalName = String(c.name||'').trim();
+        (c.contacts||[]).slice(0,5).forEach(function(p, i){
+          var n = i+1;
+          r['Person'+n+'FirstName'] = p.firstName||''; r['Person'+n+'LastName'] = p.lastName||''; r['Person'+n+'Email'] = p.email||'';
+          r['Person'+n+'IncludeInEmail'] = p.email ? 'Yes' : '';
+        });
+      }
+      out.push(XERO_CONTACT_COLUMNS.map(function(k){ return csvCell(r[k]); }).join(','));
+    });
+    var csv = out.join('\r\n') + '\r\n';
+    var tag = (STATE.custExportFrom||STATE.custExportTo) ? ((STATE.custExportFrom||'start')+'_to_'+(STATE.custExportTo||todayIso())+'_') : '';
+    var filename = 'Contacts_DsignX_'+tag+todayIso()+'.csv';
+    var done = function(){ toast('Exported '+list.length+' customer'+(list.length===1?'':'s')); };
+    if(STATE.downloads){
+      STATE.downloads.save({filename:filename, data:csv}).then(done).catch(function(e){
+        if(e && e.code==='declined'){ toast('Export cancelled'); } else { fallbackDownload(new Blob([csv],{type:'text/csv'}), filename); done(); }
+      });
+    } else { fallbackDownload(new Blob([csv],{type:'text/csv'}), filename); done(); }
+  }
+  function renderCustomerExportPanel(){
+    var res = customersForExport(), list = res.list;
+    var withEmail = list.filter(function(c){ return c.email; }).length;
+    var withPhone = list.filter(function(c){ return c.phone; }).length;
+    var dated = !!(STATE.custExportFrom || STATE.custExportTo);
+    return (
+      '<div class="panel">' +
+        '<div class="section-label">Export customers (Xero contacts template)</div>' +
+        '<div class="hint" style="margin:-4px 0 12px;">One row per customer in the same 73 columns as your Xero “Contacts” import file. Fills in contact name, primary person, email, cellphone, postal and delivery addresses, and for businesses the website, registration number, VAT number and up to 5 contact persons.</div>' +
+        '<div class="section-label" style="margin-bottom:6px;">Dates</div>' +
+        '<div class="filterbar" style="margin-bottom:10px;">' + invExportPresets().map(function(p){
+          var on = STATE.custExportFrom===p.from && STATE.custExportTo===p.to;
+          return '<button type="button" class="chip-toggle'+(on?' active':'')+'" data-action="cust-ex-preset" data-from="'+p.from+'" data-to="'+p.to+'">'+p.label+'</button>';
+        }).join('') + '</div>' +
+        '<div class="field-row">' +
+          '<div class="field"><label for="custExFrom">From</label><input type="date" id="custExFrom" value="'+escapeHtml(STATE.custExportFrom)+'"></div>' +
+          '<div class="field"><label for="custExTo">To</label><input type="date" id="custExTo" value="'+escapeHtml(STATE.custExportTo)+'"></div>' +
+        '</div>' +
+        '<div class="field"><label for="custExMode">Include customers who</label><select id="custExMode" style="max-width:320px;"'+(dated?'':' disabled')+'>' +
+          '<option value="added"'+(STATE.custExportMode==='added'?' selected':'')+'>were added in these dates</option>' +
+          '<option value="active"'+(STATE.custExportMode==='active'?' selected':'')+'>had a job or invoice in these dates</option>' +
+        '</select></div>' +
+        '<div style="background:var(--surface-2); border-radius:var(--radius-s); padding:10px 12px; font-size:12.5px; color:var(--ink-soft); margin-bottom:12px;">' +
+          (list.length ? ('<strong style="color:var(--ink);">'+list.length+' customer'+(list.length===1?'':'s')+'</strong> &middot; '+withPhone+' with a phone number &middot; '+withEmail+' with an email') : 'No customers match these dates.') +
+          (res.undated ? ('<div style="margin-top:4px;">'+res.undated+' older customer'+(res.undated===1?' has':'s have')+' no date on record and no jobs, so '+(res.undated===1?'it isn’t':'they aren’t')+' included. Choose <em>All dates</em> to export everyone.</div>') : '') +
+        '</div>' +
+        '<button class="btn btn-primary btn-sm" data-action="export-customers-xero"'+(list.length?'':' disabled')+'>Download CSV</button>' +
+      '</div>'
+    );
+  }
+
+  function renderInvoiceExportPanel(){
+    var list = invoicesInRange();
+    var lineCount = 0, grand = 0;
+    list.forEach(function(o){ var rows = xeroRowsFor(o); lineCount += rows.length; grand += Number(rows[0] ? rows[0].Total : 0); });
+    var statusOpts = ['Draft','Awaiting Approval','Awaiting Payment'].map(function(v){ return '<option'+(STATE.invExportStatus===v?' selected':'')+'>'+v+'</option>'; }).join('');
+    var dates = list.map(invoiceDateOf);
+    return (
+      '<div class="panel">' +
+        '<div class="section-label">Export invoices (Xero sales invoice template)</div>' +
+        '<div class="hint" style="margin:-4px 0 12px;">Every invoice issued in the app, one row per line item, in the same 44 columns as your Xero “SalesInvoices” file. Amounts are excl. VAT per line with VAT in TaxAmount; designer &amp; technician go in the Sales Rep tracking column.</div>' +
+        '<div class="section-label" style="margin-bottom:6px;">Invoice dates to export</div>' +
+        '<div class="filterbar" style="margin-bottom:10px;">' + invExportPresets().map(function(p){
+          var on = STATE.invExportFrom===p.from && STATE.invExportTo===p.to;
+          return '<button type="button" class="chip-toggle'+(on?' active':'')+'" data-action="inv-ex-preset" data-from="'+p.from+'" data-to="'+p.to+'">'+p.label+'</button>';
+        }).join('') + '</div>' +
+        '<div class="field-row">' +
+          '<div class="field"><label for="invExFrom">From</label><input type="date" id="invExFrom" value="'+escapeHtml(STATE.invExportFrom)+'"></div>' +
+          '<div class="field"><label for="invExTo">To</label><input type="date" id="invExTo" value="'+escapeHtml(STATE.invExportTo)+'"></div>' +
+        '</div>' +
+        '<div class="field"><label for="invExStatus">Import into Xero as</label><select id="invExStatus" style="max-width:220px;">'+statusOpts+'</select></div>' +
+        '<div class="field-row">' +
+          '<div class="field"><label for="cfgXeroTaxVat">Tax type (with VAT)</label><input type="text" id="cfgXeroTaxVat" value="'+escapeHtml(STATE.config.xeroTaxVat||'Standard Rate Sales')+'"></div>' +
+          '<div class="field"><label for="cfgXeroTaxNoVat">Tax type (no VAT)</label><input type="text" id="cfgXeroTaxNoVat" value="'+escapeHtml(STATE.config.xeroTaxNoVat||'No VAT')+'"></div>' +
+        '</div>' +
+        '<div class="field"><label for="cfgXeroTracking">Tracking category name</label><input type="text" id="cfgXeroTracking" style="max-width:220px;" value="'+escapeHtml(STATE.config.xeroTrackingName||'Sales Rep')+'"><div class="hint">Account code ('+escapeHtml(STATE.config.accountCode||'200')+') and currency come from Xero export defaults above.</div></div>' +
+        '<div style="background:var(--surface-2); border-radius:var(--radius-s); padding:10px 12px; font-size:12.5px; color:var(--ink-soft); margin-bottom:12px;">' +
+          (list.length ? ('<strong style="color:var(--ink);">'+list.length+' invoice'+(list.length===1?'':'s')+'</strong> &middot; '+lineCount+' line'+(lineCount===1?'':'s')+' &middot; '+money(round2(grand))+' incl. VAT &middot; '+shortDate(dates[0])+' – '+shortDate(dates[dates.length-1])) : ((STATE.invExportFrom||STATE.invExportTo) ? ('No invoices dated '+(STATE.invExportFrom?fullDate(STATE.invExportFrom):'the start')+' – '+(STATE.invExportTo?fullDate(STATE.invExportTo):'today')+'.') : 'No invoices issued yet.')) +
+        '</div>' +
+        '<div style="display:flex; gap:8px; flex-wrap:wrap;">' +
+          '<button class="btn btn-primary btn-sm" data-action="export-invoices-xero"'+(list.length?'':' disabled')+'>Download CSV</button>' +
+          '<button class="btn btn-sm" data-action="save-xero-export-defaults">Save tax &amp; tracking</button>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  /* ============================ team ============================ */
+  function jobCountFor(memberId){
+    return STATE.orders.filter(function(o){
+      return (o.designerId===memberId || o.technicianId===memberId) && o.status!=='delivered' && o.status!=='invoiced';
+    }).length;
+  }
+
+  function renderTeamTab(){
+    var groups = TEAM_ROLES.map(function(r){
+      var members = STATE.team.filter(function(m){ return m.role===r.key; });
+      var rows = members.length ? members.map(function(m){
+        var openCount = jobCountFor(m.id);
+        var linked = linksFor(m.id).length;
+        var inviteStatus;
+        if(m.active===false){ inviteStatus = '<span class="access-tag access-off">Access revoked</span>'; }
+        else if(linked>1){ inviteStatus = '<span class="access-tag access-warn" title="More than one account used this invite code — reset access if that wasn’t expected">'+linked+' accounts linked</span>'; }
+        else if(linked===1){ inviteStatus = '<span class="access-tag access-on">Has access</span>'; }
+        else if(m.inviteHash){ inviteStatus = '<span class="access-tag '+(m.inviteExpires && m.inviteExpires<todayIso()?'access-off">Code expired':'access-pending">Code sent '+shortDate(m.invitedAt))+'</span>'; }
+        else { inviteStatus = '<span class="access-tag access-off">No access yet</span>'; }
+        if(!isOwnerRole()){ inviteStatus = ''; }
+        var panel = STATE.inviteMemberId===m.id ? renderInvitePanel(m) : '';
+        return (
+          '<div>' +
+          '<div class="customer-row">' +
+            '<div><div class="nm">'+escapeHtml(m.name)+'</div><div class="ph">'+escapeHtml(m.phone||m.email||'no contact on file')+'</div></div>' +
+            '<div class="ct">'+openCount+' open job'+(openCount===1?'':'s')+'<br>' +
+              '<span style="font-size:11px; color:var(--ink-faint);">'+roleLabel(m.role)+'</span>' +
+              (isOwnerRole() ? (
+              '<br>'+inviteStatus+'<br>' +
+              '<button class="btn btn-ghost btn-sm" style="padding:2px 8px; margin-top:2px;" data-action="invite-team" data-id="'+m.id+'">'+((linksFor(m.id).length||m.inviteHash)?'New code':'Invite')+'</button> ' +
+              ((linksFor(m.id).length||m.inviteHash) ? '<button class="btn btn-ghost btn-sm" style="padding:2px 8px; margin-top:2px;" data-action="revoke-team" data-id="'+m.id+'">Revoke</button> ' : '') +
+              '<button class="btn btn-ghost btn-sm" style="padding:2px 8px; margin-top:2px;" data-action="delete-team" data-id="'+m.id+'">Remove</button>') : '') +
+            '</div>' +
+          '</div>' +
+          panel +
+          '</div>'
+        );
+      }).join('') : '<div class="empty-note">No '+r.plural.toLowerCase()+' added yet.</div>';
+      return '<div class="panel"><div class="panel-head"><h2>'+r.plural+'</h2></div><div class="customer-list">'+rows+'</div></div>';
+    }).join('');
+
+    return (
+      '<div class="topline"><div><h1>Team</h1><div class="sub">Designers and technicians you assign jobs to'+(isOwnerRole()?'':' &middot; only the owner can invite or remove people')+'</div></div>' + exampleBadge() +
+        (isOwnerRole() ? '<button class="btn btn-primary" data-action="open-add-team">+ Add team member</button>' : '') +
+      '</div>' +
+      (isOwnerRole() ? renderAccessPanel() : '') +
+      groups
+    );
+  }
+
+  function renderAccessPanel(){
+    var row = function(label, o, d, t){ var y = '<span style="color:var(--success); font-weight:700;">✓</span>', n = '<span style="color:var(--ink-faint);">—</span>'; return '<tr><td>'+label+'</td><td>'+(o?y:n)+'</td><td>'+(d?y:n)+'</td><td>'+(t?y:n)+'</td></tr>'; };
+    return (
+      '<div class="panel"><div class="panel-head"><h2>Access &amp; security</h2></div>' +
+        '<div class="hint" style="margin:-4px 0 12px; font-size:12.5px;">To give someone access: 1) add them below, 2) tap <strong>Invite</strong> to send the website link and their one-time code. They create their own account (email and password) with the code. Codes expire after '+CODE_TTL_DAYS+' days. Everyone is signed out after 30 minutes without activity, or when they close the tab. <strong>Revoke</strong> signs a person out immediately.</div>' +
+        '<div class="tbl-wrap"><table class="perm-table"><thead><tr><th>Section</th><th>Owner</th><th>Designer</th><th>Technician</th></tr></thead><tbody>' +
+          row('Job board', 1,1,1) + row('Dashboard', 1,1,0) + row('WhatsApp inbox', 1,1,0) + row('Customers', 1,1,0) + row('Quotes &amp; invoicing', 1,1,0) + row('Reports (designers see only their own commission)', 1,1,0) + row('Team (view)', 1,1,0) + row('Invite / revoke people', 1,0,0) + row('Settings', 1,0,0) +
+        '</tbody></table></div>' +
+        '<div class="hint" style="margin-top:8px;">Technicians see job cards without prices and can’t delete jobs, create orders, or open quotes and invoices.</div>' +
+      '</div>' +
+      '<div class="panel"><div class="panel-head"><h2>App link for invites</h2></div>' +
+        '<div class="field"><label for="cfgAppLink">Link your team opens to use DsignX Ops</label>' +
+          '<input type="text" id="cfgAppLink" placeholder="'+escapeHtml(location.origin+location.pathname)+'" value="'+escapeHtml(STATE.config.appShareLink||'')+'"><div class="hint">Leave empty to use this page’s address.</div>' +
+          '<div class="hint">Make sure you\'ve shared this page with them first — use the Share button on DsignX Ops itself — otherwise the link won\'t open for them.</div>' +
+        '</div>' +
+        '<button class="btn btn-primary btn-sm" data-action="save-team-defaults">Save</button>' +
+      '</div>'
+    );
+  }
+
+  function renderInvitePanel(m){
+    var text = STATE.inviteDraftText || inviteMessageFor(m, STATE.inviteCode);
+    var canWhatsapp = !!(waPhone(m.phone) && STATE.mcp);
+    return (
+      '<div class="panel invite-panel">' +
+        '<div class="section-label">One-time invite code for '+escapeHtml(m.name)+'</div>' +
+        '<div class="code-box">'+escapeHtml(STATE.inviteCode||'')+'</div>' +
+        '<div class="hint" style="margin:-6px 0 12px;">The code becomes active when you send or copy the message'+(linksFor(m.id).length?' — and their current sign-in stops working':'')+'.</div>' +
+        '<div class="field"><label for="inviteMsg">Invite message for '+escapeHtml(m.name)+'</label><textarea id="inviteMsg" rows="5">'+escapeHtml(text)+'</textarea></div>' +
+        (canWhatsapp ? '' : '<div class="hint">'+(waPhone(m.phone) ? 'WhatsApp isn\'t connected right now' : 'Add a phone number to send this via WhatsApp')+' — copy the message instead and send it however suits.</div>') +
+        '<div class="modal-foot" style="justify-content:flex-start;">' +
+          (canWhatsapp ? '<button class="btn btn-primary btn-sm" data-action="invite-send-wa" data-id="'+m.id+'">Send via WhatsApp</button>' : '') +
+          '<button class="btn btn-sm" data-action="invite-copy" data-id="'+m.id+'">Copy message</button>' +
+          '<button class="btn btn-ghost btn-sm" data-action="invite-cancel">Cancel</button>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function renderNewTeamModal(){
+    var roleOpts = TEAM_ROLES.map(function(r){ return '<option value="'+r.key+'">'+r.label+'</option>'; }).join('');
+    return (
+      '<div class="overlay" data-action="close-modal-bg">' +
+        '<div class="modal" role="dialog" aria-modal="true" aria-label="Add team member" style="max-width:420px;">' +
+          '<div class="modal-head"><h2>Add team member</h2><button class="modal-close" data-action="close-new-team" aria-label="Close">&times;</button></div>' +
+          '<div class="field"><label for="ntName">Name</label><input type="text" id="ntName" placeholder="e.g. Thabo Nkosi"></div>' +
+          '<div class="field"><label for="ntRole">Role</label><select id="ntRole">'+roleOpts+'</select></div>' +
+          '<div class="field"><label for="ntPhone">Phone (optional)</label><input type="tel" id="ntPhone" placeholder="+27..."></div>' +
+          '<div class="modal-foot">' +
+            '<button class="btn btn-ghost" data-action="close-new-team">Cancel</button>' +
+            '<button class="btn btn-primary" data-action="submit-new-team">Add to team</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function assigneeSelects(order, prefix){
+    order = order || {};
+    prefix = prefix || 'of';
+    function optionsFor(role, selectedId){
+      var opts = '<option value="">Unassigned</option>';
+      STATE.team.filter(function(m){ return m.role===role; }).forEach(function(m){
+        opts += '<option value="'+m.id+'" '+(selectedId===m.id?'selected':'')+'>'+escapeHtml(m.name)+'</option>';
+      });
+      return opts;
+    }
+    return (
+      '<div class="field-row">' +
+        '<div class="field"><label for="'+prefix+'AsgDesigner">Designer</label><select id="'+prefix+'AsgDesigner">'+optionsFor('designer', order.designerId)+'</select></div>' +
+        '<div class="field"><label for="'+prefix+'AsgTechnician">Technician</label><select id="'+prefix+'AsgTechnician">'+optionsFor('technician', order.technicianId)+'</select></div>' +
+      '</div>'
+    );
+  }
+
+  /* ============================ customers ============================ */
+  function renderCustomersTab(){
+    var q = STATE.customerQuery.trim().toLowerCase();
+    var list = STATE.customers.filter(function(c){ return !q || c.name.toLowerCase().indexOf(q)>=0 || (c.phone||'').indexOf(q)>=0; });
+
+    var rows = list.length ? list.map(function(c){
+      var os = STATE.orders.filter(function(o){ return o.customerId===c.id; });
+      var total = os.reduce(function(s,o){ return s+(Number(o.quoteAmount)||0); },0);
+      return (
+        '<div class="customer-row" data-action="view-customer" data-id="'+c.id+'">' +
+          '<div><div class="nm">'+escapeHtml(c.name)+(c.type==='business'?'<span class="cust-type">Business</span>':'')+'</div><div class="ph">'+escapeHtml(c.phone||'no number on file')+'</div></div>' +
+          '<div class="ct">'+os.length+' job'+(os.length===1?'':'s')+'<br>'+money(total)+'</div>' +
+        '</div>'
+      );
+    }).join('') : '<div class="empty-note">No customers yet — they\'ll appear here as soon as you log a job.</div>';
+
+    var detail = '';
+    if(STATE.viewCustomerId){
+      var c = STATE.customers.find(function(x){return x.id===STATE.viewCustomerId;});
+      if(c){
+        var os = STATE.orders.filter(function(o){ return o.customerId===c.id; });
+        var hist = os.length ? os.map(function(o){
+          return '<tr class="row-btn" data-action="open-order" data-id="'+o.id+'"><td>'+escapeHtml(o.title)+'</td><td><span class="status-chip status-'+o.status+'">'+statusMeta(o.status).label+'</span></td><td class="num">'+(o.quoteAmount?money(o.quoteAmount):'—')+'</td><td>'+shortDate(o.createdAt)+'</td></tr>';
+        }).join('') : '<tr><td colspan="4" class="empty-note">No jobs logged yet.</td></tr>';
+        detail =
+          '<div class="panel">' +
+            '<div class="panel-head"><h2>'+escapeHtml(c.name)+'<span class="cust-type">'+(c.type==='business'?'Business':'Individual')+'</span></h2><div style="display:flex; gap:6px;"><button class="btn btn-sm" data-action="edit-customer" data-id="'+c.id+'">Edit</button><button class="btn btn-ghost btn-sm" data-action="close-customer">Close</button></div></div>' +
+            '<dl class="kv" style="margin-bottom:14px;">' +
+              (personName(c)?('<dt>Primary person</dt><dd>'+escapeHtml(personName(c))+'</dd>'):'') +
+              '<dt>Cellphone</dt><dd class="mono">'+escapeHtml(c.phone||'—')+'</dd>' +
+              (c.email?('<dt>Email</dt><dd>'+escapeHtml(c.email)+'</dd>'):'') +
+              (c.website?('<dt>Website</dt><dd>'+escapeHtml(c.website)+'</dd>'):'') +
+              (c.regNumber?('<dt>Reg. number</dt><dd class="mono">'+escapeHtml(c.regNumber)+'</dd>'):'') +
+              (c.vatNumber?('<dt>VAT number</dt><dd class="mono">'+escapeHtml(c.vatNumber)+'</dd>'):'') +
+              (addrHasData(c.postalAddress)?('<dt>Postal</dt><dd class="addr">'+escapeHtml(formatAddress(c.postalAddress))+'</dd>'):'') +
+              (addrHasData(customerDeliveryAddress(c))?('<dt>Delivery</dt><dd class="addr">'+(c.deliverySame===false?escapeHtml(formatAddress(c.deliveryAddress)):'Same as postal')+'</dd>'):'') +
+              ((c.contacts||[]).length?('<dt>Contacts</dt><dd>'+(c.contacts||[]).map(function(p){ return escapeHtml([personName(p), p.phone, p.email].filter(Boolean).join(' · ')); }).join('<br>')+'</dd>'):'') +
+              (c.notes?('<dt>Notes</dt><dd>'+escapeHtml(c.notes)+'</dd>'):'') +
+            '</dl>' +
+            '<div class="tbl-wrap"><table><thead><tr><th>Job</th><th>Status</th><th>Quote</th><th>Logged</th></tr></thead><tbody>'+hist+'</tbody></table></div>' +
+          '</div>';
+      }
+    }
+
+    return (
+      '<div class="topline"><div><h1>Customers</h1><div class="sub">'+STATE.customers.length+' on file</div></div>' + exampleBadge() +
+        '<button class="btn btn-primary" data-action="open-add-customer">+ Add customer</button>' +
+      '</div>' +
+      '<div class="two-col">' +
+        '<div>' +
+          '<div class="search" style="margin-bottom:12px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><input type="text" id="customerSearch" placeholder="Search customers" value="'+escapeHtml(STATE.customerQuery)+'"></div>' +
+          '<div class="customer-list">'+rows+'</div>' +
+        '</div>' +
+        '<div>'+(detail || '<div class="panel"><div class="empty-note">Select a customer to see their order history.</div></div>')+'</div>' +
+      '</div>'
+    );
+  }
+
+  /* ============================ quotes & invoicing ============================ */
+  function renderQuotesTab(){
+    var list = STATE.orders.filter(function(o){ return o.quoteAmount!==null && o.quoteAmount!==undefined && o.quoteAmount!==''; });
+    if(STATE.quoteFilter==='pending') list = list.filter(function(o){ return !o.invoiced; });
+    if(STATE.quoteFilter==='invoiced') list = list.filter(function(o){ return o.invoiced; });
+    list = list.slice().sort(function(a,b){ return (b.updatedAt||'').localeCompare(a.updatedAt||''); });
+
+    var selectedCount = Object.keys(STATE.selectedForExport).filter(function(k){ return STATE.selectedForExport[k]; }).length;
+
+    var rows = list.length ? list.map(function(o){
+      var checked = !!STATE.selectedForExport[o.id];
+      return (
+        '<tr>' +
+          '<td><input type="checkbox" data-action="select-export" data-id="'+o.id+'" '+(checked?'checked':'')+'></td>' +
+          '<td class="row-btn" data-action="open-order" data-id="'+o.id+'">'+escapeHtml(o.customerName)+'</td>' +
+          '<td class="row-btn" data-action="open-order" data-id="'+o.id+'">'+escapeHtml(o.title)+'</td>' +
+          '<td class="num">'+money(o.quoteAmount)+'</td>' +
+          '<td>'+(o.invoiced ? ('<span class="status-chip status-invoiced">'+escapeHtml(o.invoiceNumber||'Invoiced')+'</span>') : '<button class="btn btn-ghost btn-sm" data-action="open-invoice" data-id="'+o.id+'">Generate</button>')+'</td>' +
+          '<td>'+shortDate(o.dueDate)+'</td>' +
+          '<td>'+(o.quoteNumber ? ('<span class="mono" style="font-size:11.5px;">'+escapeHtml(o.quoteNumber)+'</span>') : '<button class="btn btn-ghost btn-sm" data-action="open-quote" data-id="'+o.id+'">Generate</button>')+'</td>' +
+        '</tr>'
+      );
+    }).join('') : '<tr><td colspan="7" class="empty-note">No quoted jobs yet — set a quote amount from any job card.</td></tr>';
+
+    return (
+      '<div class="topline"><div><h1>Quotes &amp; invoicing</h1><div class="sub">Export selected jobs as a Xero-ready invoice CSV</div></div>' + exampleBadge() + '</div>' +
+      '<div class="filterbar" style="margin-bottom:14px;">' +
+        '<button class="chip-toggle '+(STATE.quoteFilter==='all'?'active':'')+'" data-action="quote-filter" data-filter="all">All</button>' +
+        '<button class="chip-toggle '+(STATE.quoteFilter==='pending'?'active':'')+'" data-action="quote-filter" data-filter="pending">Not yet invoiced</button>' +
+        '<button class="chip-toggle '+(STATE.quoteFilter==='invoiced'?'active':'')+'" data-action="quote-filter" data-filter="invoiced">Invoiced</button>' +
+        '<span style="flex:1"></span>' +
+        '<button class="btn btn-primary btn-sm" data-action="export-xero" '+(selectedCount?'':'disabled')+'>Export '+(selectedCount||'')+' to Xero CSV</button>' +
+      '</div>' +
+      '<div class="panel"><div class="tbl-wrap"><table><thead><tr><th></th><th>Customer</th><th>Job</th><th>Amount</th><th>Invoice</th><th>Due</th><th>Quotation</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>' +
+      '<div class="hint" style="margin-top:10px;">Xero import needs the <strong>ContactName</strong> to match an existing Xero contact exactly, and every line filled in for AccountCode and TaxType — set your defaults in Settings.</div>'
+    );
+  }
+
+  /* ============================ settings ============================ */
+  function waMediaCheckHtml(){
+    var c = STATE.waMediaCheck;
+    if(!c || c.status==='loading') return '';
+    if(c.status==='error'){
+      return '<div class="hint" style="margin-top:8px; color:var(--critical);">Could not check — '+escapeHtml(waErrorNotice(c.error).text)+'</div>';
+    }
+    return '<div class="hint" style="margin-top:8px;">' + c.rows.map(function(r){
+      return escapeHtml(r.name)+': <strong>'+(r.ok?'connected':'not set up')+'</strong>'+(r.ok?'':' — add its key on the server (see the setup guide)');
+    }).join('<br>') + '</div>';
+  }
+
+  function renderSettingsTab(){
+    var num = (STATE.config.whatsappNumber||'').replace(/\D/g,'');
+    var msg = STATE.config.messageTemplate || DEFAULT_TEMPLATE;
+    var link = num ? ('https://wa.me/'+num+'?text='+encodeURIComponent(msg)) : '';
+
+    return (
+      '<div class="topline"><div><h1>Settings</h1><div class="sub">WhatsApp ordering &amp; invoicing defaults</div></div></div>' +
+      '<div class="two-col">' +
+        '<div>' +
+          '<div class="panel">' +
+            '<div class="section-label">WhatsApp ordering</div>' +
+            '<div class="field"><label for="waNumber">Business WhatsApp number</label><input type="tel" id="waNumber" placeholder="27821112222" value="'+escapeHtml(STATE.config.whatsappNumber||'')+'"><div class="hint">Country code, digits only — no leading 0 or plus sign needed.</div></div>' +
+            '<div class="field"><label for="waTemplate">Pre-filled order message</label><textarea id="waTemplate" rows="7">'+escapeHtml(msg)+'</textarea></div>' +
+            '<button class="btn btn-primary btn-sm" data-action="save-whatsapp">Save</button>' +
+            '<div style="margin-top:16px;">' +
+              (link ?
+                ('<label>Share this link — post it in your Instagram bio, website or storefront</label>' +
+                '<div class="search" style="margin-bottom:8px;"><input type="text" readonly value="'+escapeHtml(link)+'" id="waLink"></div>' +
+                '<div style="display:flex; gap:8px; flex-wrap:wrap;"><button class="btn btn-sm" data-action="copy-link">Copy link</button><a class="btn btn-sm btn-primary" href="'+escapeHtml(link)+'" target="_blank" rel="noopener">Open in WhatsApp</a></div>')
+                : '<div class="hint">Add a WhatsApp number above to generate your order link.</div>'
+              ) +
+            '</div>' +
+          '</div>' +
+          '<div class="panel">' +
+            '<div class="section-label">Xero export defaults</div>' +
+            '<div class="field-row">' +
+              '<div class="field"><label for="cfgAccount">Account code</label><input type="text" id="cfgAccount" value="'+escapeHtml(STATE.config.accountCode||'')+'"></div>' +
+              '<div class="field"><label for="cfgTax">Tax type</label><input type="text" id="cfgTax" value="'+escapeHtml(STATE.config.taxType||'')+'"></div>' +
+            '</div>' +
+            '<div class="field"><label for="cfgCurrency">Currency</label><input type="text" id="cfgCurrency" style="max-width:110px" value="'+escapeHtml(STATE.config.currency||'ZAR')+'"></div>' +
+            '<button class="btn btn-primary btn-sm" data-action="save-xero-defaults">Save</button>' +
+          '</div>' +
+          renderInvoiceExportPanel() +
+          renderCustomerExportPanel() +
+          renderLetterheadPanel() +
+          '<div class="panel">' +
+            '<div class="section-label">Quotation defaults</div>' +
+            '<div class="field-row">' +
+              '<div class="field"><label for="cfgBizEmail">Business email (optional)</label><input type="text" id="cfgBizEmail" value="'+escapeHtml(STATE.config.businessEmail||'')+'"></div>' +
+              '<div class="field"><label for="cfgBizAddress">Business address (optional)</label><input type="text" id="cfgBizAddress" value="'+escapeHtml(STATE.config.businessAddress||'')+'"></div>' +
+            '</div>' +
+            '<div class="field-row">' +
+              '<div class="field"><label for="cfgValidDays">Default validity (days)</label><input type="number" id="cfgValidDays" min="1" value="'+(STATE.config.quoteValidityDays||14)+'"></div>' +
+              '<div class="field"><label for="cfgVatRate">VAT rate (%)</label><input type="number" id="cfgVatRate" min="0" step="0.1" value="'+(STATE.config.vatRate!=null?STATE.config.vatRate:15)+'"></div>' +
+            '</div>' +
+            '<div class="field"><label for="cfgQuoteTerms">Default terms &amp; notes</label><textarea id="cfgQuoteTerms" rows="3">'+escapeHtml(STATE.config.quoteTerms||'')+'</textarea></div>' +
+            '<button class="btn btn-primary btn-sm" data-action="save-quote-defaults">Save</button>' +
+          '</div>' +
+          '<div class="panel">' +
+            '<div class="section-label">Invoice defaults</div>' +
+            '<div class="field"><label for="cfgVatNumber">Business VAT number</label><input type="text" id="cfgVatNumber" value="'+escapeHtml(STATE.config.businessVatNumber||'')+'"><div class="hint">Leave blank if you\'re not VAT-registered — invoices will then say &ldquo;Invoice&rdquo; with no VAT charged, never &ldquo;Tax Invoice&rdquo;.</div></div>' +
+            '<div class="field"><label for="cfgInvoiceDueDays">Default payment terms (days)</label><input type="number" id="cfgInvoiceDueDays" min="0" style="max-width:110px" value="'+(STATE.config.invoiceDueDays||7)+'"></div>' +
+            '<div class="section-label" style="margin-top:14px;">Banking details (printed on invoices, optional)</div>' +
+            '<div class="field-row">' +
+              '<div class="field"><label for="cfgBankName">Bank</label><input type="text" id="cfgBankName" value="'+escapeHtml(STATE.config.bankName||'')+'"></div>' +
+              '<div class="field"><label for="cfgBankHolder">Account holder</label><input type="text" id="cfgBankHolder" value="'+escapeHtml(STATE.config.bankAccountHolder||'')+'"></div>' +
+            '</div>' +
+            '<div class="field-row">' +
+              '<div class="field"><label for="cfgBankAccount">Account number</label><input type="text" id="cfgBankAccount" value="'+escapeHtml(STATE.config.bankAccountNumber||'')+'"></div>' +
+              '<div class="field"><label for="cfgBankBranch">Branch code</label><input type="text" id="cfgBankBranch" value="'+escapeHtml(STATE.config.bankBranchCode||'')+'"></div>' +
+            '</div>' +
+            '<div class="field"><label for="cfgInvoiceTerms">Default terms &amp; notes</label><textarea id="cfgInvoiceTerms" rows="3">'+escapeHtml(STATE.config.invoiceTerms||'')+'</textarea></div>' +
+            '<button class="btn btn-primary btn-sm" data-action="save-invoice-defaults">Save</button>' +
+          '</div>' +
+          (isOwnerRole() ?
+            '<div class="panel">' +
+              '<div class="section-label">Import data</div>' +
+              '<p class="hint" style="margin-top:0;">Load a DsignX Ops backup file (.json), for example the export from the Claude version. Records with the same ID are overwritten; nothing else is deleted. Team members must be invited again afterwards.</p>' +
+              (STATE.importStatus ? '<div class="hint" style="margin:0 0 8px;"><strong>'+escapeHtml(STATE.importStatus)+'</strong></div>' : '') +
+              '<label class="btn btn-sm" style="cursor:pointer;">Choose backup file…<input type="file" id="importFile" accept="application/json,.json" style="display:none"></label>' +
+            '</div>'
+            : '') +
+          (STATE.mcp ?
+            '<div class="panel">' +
+              '<div class="section-label">Sending files over WhatsApp</div>' +
+              '<p class="hint" style="margin-top:0;">Messages go out from the business number '+escapeHtml(waFrom())+' through Bird. Quotes, invoices and artwork are uploaded to Cloudinary so WhatsApp can fetch them, and are deleted from Cloudinary after 30 days. Use <strong>Send via WhatsApp</strong>, review the preview in that job\'s chat and hit Send. WhatsApp only allows normal messages and files within 24 hours of the customer\'s last message to you.</p>' +
+              '<button class="btn btn-sm" data-action="wa-check-media" '+((STATE.waMediaCheck&&STATE.waMediaCheck.status==='loading')?'disabled':'')+'>'+((STATE.waMediaCheck&&STATE.waMediaCheck.status==='loading')?'Checking…':'Check WhatsApp connection')+'</button>' +
+              waMediaCheckHtml() +
+            '</div>'
+            : '') +
+        '</div>' +
+        '<div>' +
+          '<div class="section-label">What a customer sees</div>' +
+          '<div class="phone-mock"><div class="bubble">'+escapeHtml(msg)+'</div></div>' +
+          '<p class="hint" style="max-width:280px;">Tapping the link opens WhatsApp with this message ready to send to your number — the customer fills in the blanks and hits send. When they message you, log the job with <strong>+ New order</strong> so it lands on your board.</p>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  /* ============================ quote modal ============================ */
+  function renderQuoteModal(){
+    var o = STATE.orders.find(function(x){ return x.id===STATE.quoteModalOrderId; });
+    var draft = STATE.quoteDraft;
+    if(!o || !draft) return '';
+    var totals = quoteTotals(draft);
+
+    var rows = draft.items.map(function(li, i){
+      return (
+        '<tr>' +
+          '<td style="min-width:180px;"><input type="text" id="qliDesc-'+i+'" value="'+escapeHtml(li.description)+'" placeholder="What this line covers"></td>' +
+          '<td style="width:64px;"><input type="number" id="qliQty-'+i+'" min="0" step="1" value="'+li.qty+'"></td>' +
+          '<td style="width:100px;"><input type="number" id="qliPrice-'+i+'" min="0" step="0.01" value="'+li.unitPrice+'"></td>' +
+          '<td class="num" id="qliLineTotal-'+i+'" style="white-space:nowrap;">'+money((Number(li.qty)||0)*(Number(li.unitPrice)||0))+'</td>' +
+          '<td><button class="btn btn-ghost btn-sm" data-action="quote-remove-line" data-i="'+i+'" title="Remove line">&times;</button></td>' +
+        '</tr>'
+      );
+    }).join('');
+
+    var validUntil = addDays(todayIso(), draft.validDays);
+
+    return (
+      '<div class="overlay" data-action="close-modal-bg">' +
+        '<div class="modal" role="dialog" aria-modal="true" aria-label="Quotation" style="max-width:680px;">' +
+          '<div class="modal-head"><div><div class="jobno mono">'+(o.quoteNumber||'Not yet numbered')+'</div><h2>Quotation for '+escapeHtml(o.customerName)+'</h2></div><button class="modal-close" data-action="close-quote-modal" aria-label="Close">&times;</button></div>' +
+
+          '<div class="tbl-wrap"><table><thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Line total</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
+          '<button class="btn btn-ghost btn-sm" style="margin:8px 0 16px;" data-action="quote-add-line">+ Add line</button>' +
+
+          '<div class="kv" style="justify-content:flex-end; margin-left:auto; max-width:260px; margin-bottom:16px;">' +
+            '<dt>Subtotal</dt><dd class="num" id="qSubtotal">'+money(totals.subtotal)+'</dd>' +
+            '<dt><label style="display:flex; align-items:center; gap:6px; margin:0; cursor:pointer;"><input type="checkbox" id="qVatEnabled" style="width:auto;" '+(draft.vatEnabled?'checked':'')+'> VAT ('+(STATE.config.vatRate||15)+'%)</label></dt><dd class="num" id="qVatAmount">'+money(totals.vat)+'</dd>' +
+            '<dt style="font-weight:700; color:var(--ink);">Total</dt><dd class="num" id="qTotal" style="font-weight:700;">'+money(totals.total)+'</dd>' +
+          '</div>' +
+
+          '<div class="field-row">' +
+            '<div class="field"><label for="qValidDays">Valid for (days)</label><input type="number" id="qValidDays" min="1" value="'+draft.validDays+'"></div>' +
+            '<div class="field"><label>Valid until</label><input type="text" id="qValidUntilDisplay" value="'+fullDate(validUntil)+'" disabled></div>' +
+          '</div>' +
+          '<div class="field"><label for="qTerms">Terms &amp; notes (printed on the quote)</label><textarea id="qTerms" rows="3">'+escapeHtml(draft.terms)+'</textarea></div>' +
+
+          '<div class="modal-foot">' +
+            '<button class="btn btn-ghost" data-action="close-quote-modal">Cancel</button>' +
+            '<button class="btn" data-action="quote-save" data-id="'+o.id+'">Save</button>' +
+            '<button class="btn" data-action="quote-save-download" data-id="'+o.id+'">Save &amp; download PDF</button>' +
+            (waPhone(o.phone) ? '<button class="btn btn-primary" data-action="quote-save-whatsapp" data-id="'+o.id+'">Save &amp; send via WhatsApp</button>' : '') +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  /* ============================ invoice modal ============================ */
+  function renderInvoiceModal(){
+    var o = STATE.orders.find(function(x){ return x.id===STATE.invoiceModalOrderId; });
+    var draft = STATE.invoiceDraft;
+    if(!o || !draft) return '';
+    var vendor = isVatVendor();
+    var totals = invoiceTotals(draft);
+
+    var rows = draft.items.map(function(li, i){
+      return (
+        '<tr>' +
+          '<td style="min-width:180px;"><input type="text" id="iliDesc-'+i+'" value="'+escapeHtml(li.description)+'" placeholder="What this line covers"></td>' +
+          '<td style="width:64px;"><input type="number" id="iliQty-'+i+'" min="0" step="1" value="'+li.qty+'"></td>' +
+          '<td style="width:100px;"><input type="number" id="iliPrice-'+i+'" min="0" step="0.01" value="'+li.unitPrice+'"></td>' +
+          '<td class="num" id="iliLineTotal-'+i+'" style="white-space:nowrap;">'+money((Number(li.qty)||0)*(Number(li.unitPrice)||0))+'</td>' +
+          '<td><button class="btn btn-ghost btn-sm" data-action="invoice-remove-line" data-i="'+i+'" title="Remove line">&times;</button></td>' +
+        '</tr>'
+      );
+    }).join('');
+
+    var dueDate = addDays(todayIso(), draft.dueDays);
+
+    return (
+      '<div class="overlay" data-action="close-modal-bg">' +
+        '<div class="modal" role="dialog" aria-modal="true" aria-label="Invoice" style="max-width:680px;">' +
+          '<div class="modal-head"><div><div class="jobno mono">'+(o.invoiceNumber||'Not yet numbered')+'</div><h2>'+(vendor?'Tax invoice':'Invoice')+' for '+escapeHtml(o.customerName)+'</h2></div><button class="modal-close" data-action="close-invoice-modal" aria-label="Close">&times;</button></div>' +
+
+          (vendor ? '' : '<p class="hint" style="margin-top:0;">No business VAT number is on file in Settings, so this will be issued as a plain invoice with no VAT charged — not a Tax Invoice.</p>') +
+
+          '<div class="tbl-wrap"><table><thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Line total</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
+          '<button class="btn btn-ghost btn-sm" style="margin:8px 0 16px;" data-action="invoice-add-line">+ Add line</button>' +
+
+          '<div class="kv" style="justify-content:flex-end; margin-left:auto; max-width:260px; margin-bottom:16px;">' +
+            '<dt>Subtotal</dt><dd class="num" id="iSubtotal">'+money(totals.subtotal)+'</dd>' +
+            (vendor ?
+              '<dt><label style="display:flex; align-items:center; gap:6px; margin:0; cursor:pointer;"><input type="checkbox" id="iVatEnabled" style="width:auto;" '+(draft.vatEnabled?'checked':'')+'> VAT ('+(STATE.config.vatRate||15)+'%)</label></dt><dd class="num" id="iVatAmount">'+money(totals.vat)+'</dd>'
+              : '') +
+            '<dt style="font-weight:700; color:var(--ink);">Total due</dt><dd class="num" id="iTotal" style="font-weight:700;">'+money(totals.total)+'</dd>' +
+          '</div>' +
+
+          '<div class="field-row">' +
+            '<div class="field"><label for="iDueDays">Payment due in (days)</label><input type="number" id="iDueDays" min="0" value="'+draft.dueDays+'"></div>' +
+            '<div class="field"><label>Due date</label><input type="text" id="iDueDateDisplay" value="'+fullDate(dueDate)+'" disabled></div>' +
+          '</div>' +
+          '<div class="field"><label for="iTerms">Terms &amp; notes (printed on the invoice)</label><textarea id="iTerms" rows="3">'+escapeHtml(draft.terms)+'</textarea></div>' +
+
+          '<div class="modal-foot">' +
+            '<button class="btn btn-ghost" data-action="close-invoice-modal">Cancel</button>' +
+            '<button class="btn" data-action="invoice-save" data-id="'+o.id+'">Save</button>' +
+            '<button class="btn" data-action="invoice-save-download" data-id="'+o.id+'">Save &amp; download PDF</button>' +
+            (waPhone(o.phone) ? '<button class="btn btn-primary" data-action="invoice-save-whatsapp" data-id="'+o.id+'">Save &amp; send via WhatsApp</button>' : '') +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  /* ============================ order modal ============================ */
+  function renderChatSection(o){
+    if(!STATE.mcp){
+      return '<div class="section-label" style="margin-top:18px;">Customer chat</div><div class="hint">WhatsApp isn’t set up on the server yet, so customer chat is unavailable.</div>';
+    }
+    var phone = waPhone(o.phone);
+    if(!phone){
+      return '<div class="section-label" style="margin-top:18px;">Customer chat</div><div class="hint">No phone number on file for this customer.</div>';
+    }
+    var entry = STATE.chatMessages[phone] || {};
+    var body;
+    if(entry.loading && !(entry.list && entry.list.length)){
+      body = '<div class="empty-note">Loading conversation…</div>';
+    } else if(entry.error && !(entry.list && entry.list.length)){
+      var notice = waErrorNotice(entry.error);
+      body = '<div class="wa-status error">'+escapeHtml(notice.text)+(notice.action?(' '+escapeHtml(notice.action)):'')+'</div>';
+    } else if(entry.list && entry.list.length){
+      body = '<div class="chat-thread">' + entry.list.map(function(m){
+        var cls = m.from_me ? 'out' : 'in';
+        return '<div class="chat-msg '+cls+'">'+escapeHtml(m.body||'(no text — open WhatsApp to view)')+'<span class="t">'+relTime(m.date)+(m.failed?(' · <span style="color:var(--critical);">not delivered'+(m.failReason?(': '+escapeHtml(m.failReason)):'')+'</span>'):'')+'</span></div>';
+      }).join('') + '</div>';
+    } else {
+      body = '<div class="empty-note">No WhatsApp messages with this customer yet.</div>';
+    }
+
+    var composeArea;
+    if(entry.uploading){
+      composeArea = '<div class="chat-preview">Preparing the file for WhatsApp…</div>';
+    } else if(entry.pendingSend){
+      var pv = entry.pendingSend;
+      var previewLine = (!pv.kind || pv.kind==='text')
+        ? '<em>&ldquo;'+escapeHtml(pv.text)+'&rdquo;</em>'
+        : ('📎 <strong>'+escapeHtml(pv.filename)+'</strong>' + (pv.caption ? ('<br><em>&ldquo;'+escapeHtml(pv.caption)+'&rdquo;</em>') : ''));
+      composeArea =
+        '<div class="chat-preview">Send to '+escapeHtml(o.customerName)+' (+'+escapeHtml(phone)+')?<br>'+previewLine+
+          (!waWindowOpen(phone) && !entry.loading && !entry.sendError ? '<div style="margin-top:6px; color:var(--warning, #9a6700);">This customer hasn\'t messaged you in the last 24 hours, so WhatsApp will probably refuse this. Ask them to send you a message first.</div>' : '') +
+          (entry.sendError ? ('<div style="margin-top:6px; color:var(--critical);">'+escapeHtml(waErrorNotice(entry.sendError).text)+'</div>') : '') +
+          '<div class="actions">' +
+            '<button class="btn btn-primary btn-sm" data-action="chat-confirm-send" data-phone="'+phone+'" '+(entry.sending?'disabled':'')+'>'+(entry.sending?'Sending…':'Send now')+'</button>' +
+            '<button class="btn btn-ghost btn-sm" data-action="chat-cancel-send" data-phone="'+phone+'" '+(entry.sending?'disabled':'')+'>Cancel</button>' +
+          '</div>' +
+        '</div>';
+    } else {
+      var draft = STATE.chatDraft[phone] || '';
+      composeArea =
+        '<div class="chat-compose">' +
+          '<label class="btn btn-sm chat-attach" title="Attach a photo, PDF or document" aria-label="Attach a file">'+CLIP_ICON+'<input type="file" id="chatAttach" data-phone="'+phone+'" accept="image/jpeg,image/png,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt" style="display:none"></label>' +
+          '<textarea id="chatCompose" placeholder="Message '+escapeHtml(o.customerName)+'…" rows="2">'+escapeHtml(draft)+'</textarea>' +
+          '<button class="btn btn-primary btn-sm" data-action="chat-prepare-send" data-phone="'+phone+'">Send</button>' +
+        '</div>';
+    }
+
+    return (
+      '<div class="section-label" style="margin-top:18px; display:flex; align-items:center; justify-content:space-between;">Customer chat<button class="btn btn-ghost btn-sm" style="margin:0; padding:3px 9px;" data-action="chat-refresh" data-phone="'+phone+'">Refresh</button></div>' +
+      body + composeArea
+    );
+  }
+
+  function renderOrderModal(){
+    var o = STATE.orders.find(function(x){return x.id===STATE.openOrderId;});
+    if(!o) return '';
+    var statusOpts = STATUSES.map(function(s){ return '<option value="'+s.key+'" '+(o.status===s.key?'selected':'')+'>'+s.label+'</option>'; }).join('');
+    var catOpts = CATEGORIES.map(function(c){ return '<option value="'+c.key+'" '+(o.category===c.key?'selected':'')+'>'+c.label+'</option>'; }).join('');
+    var attach = (o.attachmentIds||[]).map(function(id){
+      return '<div class="attach-item" style="position:relative; display:inline-block;">' +
+        '<img class="attach-thumb" src="'+escapeHtml(id)+'" alt="Attachment">' +
+        (waPhone(o.phone) ? '<button class="btn btn-sm" style="position:absolute; bottom:4px; right:4px; padding:2px 7px; font-size:11px;" title="Send via WhatsApp" data-action="send-artwork-wa" data-id="'+o.id+'" data-att="'+id+'">Send</button>' : '') +
+      '</div>';
+    }).join('');
+
+    return (
+      '<div class="overlay" data-action="close-modal-bg">' +
+        '<div class="modal" role="dialog" aria-modal="true" aria-label="Job details">' +
+          '<div class="modal-head"><div><div class="jobno mono">'+jobNo(o.id)+'</div><h2>'+escapeHtml(o.title)+'</h2></div><button class="modal-close" data-action="close-order" aria-label="Close">&times;</button></div>' +
+          '<div class="field"><label for="ofTitle">Job title</label><input type="text" id="ofTitle" value="'+escapeHtml(o.title)+'"></div>' +
+          '<div class="field-row">' +
+            '<div class="field"><label for="ofStatus">Status</label><select id="ofStatus">'+statusOpts+'</select></div>' +
+            '<div class="field"><label for="ofCategory">Category</label><select id="ofCategory">'+catOpts+'</select></div>' +
+          '</div>' +
+          '<div class="field"><label for="ofCustomer">Customer</label><input type="text" value="'+escapeHtml(o.customerName)+' &middot; '+escapeHtml(o.phone||'no number')+'" disabled></div>' +
+          '<div class="field"><label for="ofDesc">Details</label><textarea id="ofDesc">'+escapeHtml(o.description||'')+'</textarea></div>' +
+          '<div class="field-row">' +
+            '<div class="field"><label for="ofQty">Quantity</label><input type="number" id="ofQty" min="1" value="'+(o.qty||1)+'"></div>' +
+            '<div class="field"><label for="ofDue">Due date</label><input type="date" id="ofDue" value="'+(o.dueDate||'')+'"></div>' +
+          '</div>' +
+          assigneeSelects(o) +
+          (isTechnician() ? '' : (
+          '<div class="field-row">' +
+            '<div class="field"><label for="ofQuote">Quote amount ('+escapeHtml(STATE.config.currency||'ZAR')+')</label><input type="number" id="ofQuote" step="0.01" value="'+(o.quoteAmount!==null&&o.quoteAmount!==undefined?o.quoteAmount:'')+'"></div>' +
+            '<div class="field"><label for="ofInvNo">Invoice number</label><input type="text" id="ofInvNo" value="'+escapeHtml(o.invoiceNumber||'')+'" placeholder="'+jobNo(o.id)+'"></div>' +
+          '</div>' +
+          '<div class="field" style="display:flex; align-items:center; justify-content:space-between; background:var(--surface-2); border-radius:var(--radius-s); padding:10px 12px;">' +
+            '<span style="font-size:12.5px; color:var(--ink-soft);">'+(o.quoteNumber ? ('Quotation '+escapeHtml(o.quoteNumber)+' &middot; '+(o.lineItems?o.lineItems.length:0)+' line item'+((o.lineItems&&o.lineItems.length===1)?'':'s')) : 'No quotation document yet')+'</span>' +
+            '<button class="btn btn-sm" data-action="open-quote" data-id="'+o.id+'">'+(o.quoteNumber?'Edit quotation':'Generate quotation')+'</button>' +
+          '</div>' +
+          '<div class="field" style="display:flex; align-items:center; justify-content:space-between; background:var(--surface-2); border-radius:var(--radius-s); padding:10px 12px;">' +
+            '<span style="font-size:12.5px; color:var(--ink-soft);">'+(o.invoiceNumber && o.invoiceGeneratedAt ? ((isVatVendor()?'Tax invoice ':'Invoice ')+escapeHtml(o.invoiceNumber)+' &middot; '+(o.invoiceLineItems?o.invoiceLineItems.length:0)+' line item'+((o.invoiceLineItems&&o.invoiceLineItems.length===1)?'':'s')) : 'No invoice document yet')+'</span>' +
+            '<button class="btn btn-sm" data-action="open-invoice" data-id="'+o.id+'">'+(o.invoiceNumber && o.invoiceGeneratedAt?'Edit invoice':'Generate tax invoice')+'</button>' +
+          '</div>'
+          )) +
+          '<div class="field"><label for="ofNotes">Internal notes</label><textarea id="ofNotes">'+escapeHtml(o.notes||'')+'</textarea></div>' +
+          (STATE.assets ?
+            '<div class="field"><label>Artwork / proof attachments</label><div class="attach-grid">'+attach+'<label class="attach-file" style="cursor:pointer;">+ Add<input type="file" id="ofAttach" accept="image/*,application/pdf" style="display:none"></label></div></div>'
+            : (attach ? '<div class="field"><label>Artwork / proof attachments</label><div class="attach-grid">'+attach+'</div></div>' : '')
+          ) +
+          (isTechnician() ? '' : '<label style="display:flex; align-items:center; gap:8px; margin:4px 0 6px; cursor:pointer;"><input type="checkbox" id="ofInvoiced" '+(o.invoiced?'checked':'')+' style="width:auto;"> Marked as invoiced</label>') +
+          (isTechnician() ? '' : renderChatSection(o)) +
+          '<div class="modal-foot">' +
+            (isTechnician() ? '' : '<button class="btn btn-danger" data-action="delete-order" data-id="'+o.id+'">Delete</button>') +
+            '<span style="flex:1"></span>' +
+            '<button class="btn btn-ghost" data-action="close-order">Cancel</button>' +
+            '<button class="btn btn-primary" data-action="save-order" data-id="'+o.id+'">Save changes</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  /* ============================ new order modal ============================ */
+  function renderNewOrderModal(){
+    var pf = STATE.newOrderPrefill || {};
+    var catOpts = CATEGORIES.map(function(c){ return '<option value="'+c.key+'">'+c.label+'</option>'; }).join('');
+    var srcOpts = SOURCES.map(function(s){ return '<option value="'+s+'" '+((pf.source||'WhatsApp')===s?'selected':'')+'>'+s+'</option>'; }).join('');
+    var dl = STATE.customers.map(function(c){ return '<option value="'+escapeHtml(c.name)+'">'; }).join('');
+    return (
+      '<div class="overlay" data-action="close-modal-bg">' +
+        '<div class="modal" role="dialog" aria-modal="true" aria-label="New order">' +
+          '<div class="modal-head"><h2>New order</h2><button class="modal-close" data-action="close-new-order" aria-label="Close">&times;</button></div>' +
+          (pf.messageId ? '<div class="hint" style="margin:-8px 0 14px;">Pulled in from WhatsApp — check the details before adding it.</div>' : '') +
+          '<div class="field"><label for="noCustomer">Customer name</label><input type="text" id="noCustomer" list="customerNames" placeholder="e.g. Riaan Pretorius" autocomplete="off" value="'+escapeHtml(pf.name||'')+'"><datalist id="customerNames">'+dl+'</datalist></div>' +
+          '<div class="field"><label for="noPhone">Phone number</label><input type="tel" id="noPhone" placeholder="+27..." value="'+escapeHtml(pf.phone||'')+'"></div>' +
+          '<div class="field-row">' +
+            '<div class="field"><label for="noCategory">Category</label><select id="noCategory">'+catOpts+'</select></div>' +
+            '<div class="field"><label for="noSource">How did it come in?</label><select id="noSource">'+srcOpts+'</select></div>' +
+          '</div>' +
+          '<div class="field"><label for="noTitle">Job title</label><input type="text" id="noTitle" placeholder="e.g. Shopfront fascia sign" value="'+escapeHtml(pf.title||'')+'"></div>' +
+          '<div class="field"><label for="noDesc">Details</label><textarea id="noDesc" placeholder="Size, material, files supplied...">'+escapeHtml(pf.description||'')+'</textarea></div>' +
+          '<div class="field-row">' +
+            '<div class="field"><label for="noQty">Quantity</label><input type="number" id="noQty" min="1" value="1"></div>' +
+            '<div class="field"><label for="noDue">Due date</label><input type="date" id="noDue"></div>' +
+          '</div>' +
+          '<div class="field"><label for="noQuote">Quote amount ('+escapeHtml(STATE.config.currency||'ZAR')+', optional)</label><input type="number" id="noQuote" step="0.01" placeholder="Leave blank if not quoted yet"></div>' +
+          (STATE.team.length ? assigneeSelects({}, 'no') : '') +
+          '<div class="modal-foot">' +
+            '<button class="btn btn-ghost" data-action="close-new-order">Cancel</button>' +
+            '<button class="btn btn-primary" data-action="submit-new-order">Add to board</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  /* ============================ CSV export ============================ */
+  function csvCell(v){
+    v = (v===null||v===undefined) ? '' : String(v);
+    if(/[",\n]/.test(v)) v = '"' + v.replace(/"/g,'""') + '"';
+    return v;
+  }
+  function exportXero(){
+    var ids = Object.keys(STATE.selectedForExport).filter(function(k){ return STATE.selectedForExport[k]; });
+    var rows = ids.map(function(id){ return STATE.orders.find(function(o){ return o.id===id; }); }).filter(Boolean);
+    if(!rows.length){ toast('Select at least one job first'); return; }
+    var header = ['ContactName','InvoiceNumber','InvoiceDate','DueDate','Description','Quantity','UnitAmount','AccountCode','TaxType','Currency','Reference'];
+    var lines = [header.join(',')];
+    rows.forEach(function(o){
+      var invNo = o.invoiceNumber || jobNo(o.id);
+      lines.push([
+        csvCell(o.customerName),
+        csvCell(invNo),
+        csvCell(todayIso()),
+        csvCell(o.dueDate || todayIso()),
+        csvCell(o.title + (o.description ? (' — '+o.description) : '')),
+        csvCell(o.qty||1),
+        csvCell(Number(o.quoteAmount||0).toFixed(2)),
+        csvCell(STATE.config.accountCode||''),
+        csvCell(STATE.config.taxType||''),
+        csvCell(STATE.config.currency||'ZAR'),
+        csvCell(jobNo(o.id))
+      ].join(','));
+    });
+    var csv = lines.join('\r\n');
+    var filename = 'dsignx-xero-invoices-'+todayIso()+'.csv';
+
+    function markInvoicedAndReset(){
+      rows.forEach(function(o){
+        if(!o.invoiced){ updateOrder(o.id, {invoiced:true, invoiceNumber:o.invoiceNumber||jobNo(o.id), status:'invoiced'}); }
+      });
+      STATE.selectedForExport = {};
+    }
+
+    if(STATE.downloads){
+      STATE.downloads.save({filename:filename, data:csv}).then(function(){
+        toast('Exported '+rows.length+' job(s) — check your downloads');
+        markInvoicedAndReset();
+        render();
+      }).catch(function(e){
+        if(e && e.code==='declined'){ toast('Export cancelled'); }
+        else{ toast('Could not export — try again'); }
+      });
+    } else {
+      var blob = new Blob([csv], {type:'text/csv'});
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = filename; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast('Exported '+rows.length+' job(s)');
+      markInvoicedAndReset();
+      render();
+    }
+  }
+
+  /* ============================ events ============================ */
+  function bindEvents(){
+    var app = document.getElementById('app');
+
+    app.onclick = function(e){
+      var el = e.target.closest('[data-action]');
+      if(!el) return;
+      var action = el.getAttribute('data-action');
+
+      if(action==='tab'){ var tt = el.getAttribute('data-tab'); if(canAccess(tt)){ STATE.tab = tt; } STATE.viewCustomerId=null; render(); }
+      else if(action==='lock-app'){ lockApp(''); }
+      else if(action==='cust-ex-preset'){ STATE.custExportFrom = el.getAttribute('data-from'); STATE.custExportTo = el.getAttribute('data-to'); render(); }
+      else if(action==='export-customers-xero'){ if(isOwnerRole()) exportCustomersXero(); }
+      else if(action==='inv-ex-preset'){ STATE.invExportFrom = el.getAttribute('data-from'); STATE.invExportTo = el.getAttribute('data-to'); render(); }
+      else if(action==='save-letterhead' && isOwnerRole()){
+        updateConfig({
+          docCompanyName: document.getElementById('lhName').value.trim(),
+          docAddress: document.getElementById('lhAddress').value.trim(),
+          docTel: document.getElementById('lhTel').value.trim(),
+          docWhatsapp: document.getElementById('lhWa').value.trim(),
+          docEmail: document.getElementById('lhEmail').value.trim(),
+          docWebsite: document.getElementById('lhWeb').value.trim(),
+          docRegNo: document.getElementById('lhReg').value.trim(),
+          bankSwift: document.getElementById('lhSwift').value.trim(),
+          bankAccountType: document.getElementById('lhAcctType').value.trim()
+        });
+        toast('Letterhead saved');
+      }
+      else if(action==='preview-letterhead'){
+        var sk = el.getAttribute('data-kind'), sb = buildBrandedPdf(sk, sampleDocOrder());
+        if(sb){ sb.filename = 'Sample-'+sk+'.pdf'; if(STATE.downloads){ STATE.downloads.save({filename:sb.filename, data:sb.blob}).catch(function(err){ if(!err||err.code!=='declined'){ fallbackDownload(sb.blob, sb.filename); } }); } else { fallbackDownload(sb.blob, sb.filename); } }
+      }
+      else if(action==='export-invoices-xero'){ if(isOwnerRole()) exportInvoicesXero(); }
+      else if(action==='save-xero-export-defaults' && isOwnerRole()){
+        updateConfig({
+          xeroTaxVat: document.getElementById('cfgXeroTaxVat').value.trim() || 'Standard Rate Sales',
+          xeroTaxNoVat: document.getElementById('cfgXeroTaxNoVat').value.trim() || 'No VAT',
+          xeroTrackingName: document.getElementById('cfgXeroTracking').value.trim() || 'Sales Rep'
+        });
+        toast('Export settings saved');
+      }
+      else if(action==='report-month'){
+        var rr = reportRange(), base = new Date(rr.from+'T00:00:00');
+        var nb = monthBounds(new Date(base.getFullYear(), base.getMonth()+Number(el.getAttribute('data-by')), 1));
+        STATE.reportFrom = nb.from; STATE.reportTo = nb.to; STATE.reportOpenMember = null; render();
+      }
+      else if(action==='report-preset'){ STATE.reportFrom = el.getAttribute('data-from'); STATE.reportTo = el.getAttribute('data-to'); STATE.reportOpenMember = null; render(); }
+      else if(action==='report-toggle'){ var rid = el.getAttribute('data-id'); STATE.reportOpenMember = (STATE.reportOpenMember===rid) ? null : rid; render(); }
+      else if(action==='report-export'){ if(isOwnerRole()) exportCommissionCsv(); }
+      else if(action==='change-password'){ e.preventDefault(); changePassword(); }
+      else if(action==='revoke-team'){
+        var rm = STATE.team.find(function(x){ return x.id===el.getAttribute('data-id'); });
+        if(rm && confirm('Revoke '+rm.name+'’s access? They’ll be signed out and can’t open DsignX Ops until you send a new invite code.')){ revokeAccess(rm.id); }
+      }
+      else if(action==='open-new-order' && !isTechnician()){ STATE.newOrderPrefill = null; STATE.newOrderOpen = true; render(); }
+      else if(action==='close-new-order'){ STATE.newOrderOpen = false; STATE.newOrderPrefill = null; render(); }
+      else if(action==='open-order'){
+        STATE.openOrderId = el.getAttribute('data-id');
+        render();
+        var ord = STATE.orders.find(function(x){return x.id===STATE.openOrderId;});
+        if(ord && STATE.mcp){ openOrderChat(waPhone(ord.phone)); }
+      }
+      else if(action==='chat-refresh'){ openOrderChat(el.getAttribute('data-phone')); }
+      else if(action==='chat-prepare-send'){
+        var cphone = el.getAttribute('data-phone');
+        var ctext = (STATE.chatDraft[cphone]||'').trim();
+        if(!ctext){ toast('Type a message first'); return; }
+        var centry = STATE.chatMessages[cphone] || {};
+        centry.pendingSend = {kind:'text', text:ctext};
+        centry.sendError = null;
+        STATE.chatMessages[cphone] = centry;
+        render();
+      }
+      else if(action==='chat-confirm-send'){ confirmChatSend(el.getAttribute('data-phone')); }
+      else if(action==='chat-cancel-send'){
+        var xphone = el.getAttribute('data-phone');
+        var xentry = STATE.chatMessages[xphone] || {};
+        xentry.pendingSend = null;
+        xentry.sendError = null;
+        STATE.chatMessages[xphone] = xentry;
+        render();
+      }
+      else if(action==='close-order'){ STATE.openOrderId = null; render(); }
+      else if(action==='close-modal-bg'){ if(e.target===el){ STATE.openOrderId=null; STATE.newOrderOpen=false; STATE.newOrderPrefill=null; STATE.newTeamOpen=false; STATE.quoteModalOrderId=null; STATE.quoteDraft=null; STATE.invoiceModalOrderId=null; STATE.invoiceDraft=null; render(); } }
+      else if(action==='open-add-team'){ if(isOwnerRole()){ STATE.newTeamOpen = true; render(); } }
+      else if(action==='close-new-team'){ STATE.newTeamOpen = false; render(); }
+      else if(action==='submit-new-team'){ submitNewTeamMember(); }
+      else if(action==='delete-team'){
+        if(isOwnerRole() && confirm('Remove this team member? They lose access immediately. Jobs already assigned to them keep their name on record.')){ deleteTeamMember(el.getAttribute('data-id')); }
+      }
+      else if(action==='invite-team'){
+        var im = STATE.team.find(function(x){ return x.id===el.getAttribute('data-id'); });
+        if(im && isOwnerRole()){
+          if(linksFor(im.id).length && !confirm('Send '+im.name+' a new invite code? Their current sign-in stops working until they enter the new code and set a new password.')) return;
+          STATE.inviteMemberId = im.id; STATE.inviteCode = generateInviteCode(); STATE.inviteDraftText = inviteMessageFor(im, STATE.inviteCode); render();
+        }
+      }
+      else if(action==='invite-cancel'){ STATE.inviteMemberId = null; STATE.inviteDraftText = ''; STATE.inviteCode = null; render(); }
+      else if(action==='invite-copy'){ copyInviteMessage(el.getAttribute('data-id')); }
+      else if(action==='invite-send-wa'){ sendTeamInvite(el.getAttribute('data-id')); }
+      else if(action==='save-team-defaults' && isOwnerRole()){
+        updateConfig({ appShareLink: document.getElementById('cfgAppLink').value.trim() });
+        toast('Team invite link saved');
+      }
+      else if(action==='open-quote'){ if(canAccess('quotes')) openQuoteModal(el.getAttribute('data-id')); }
+      else if(action==='close-quote-modal'){ closeQuoteModal(); }
+      else if(action==='quote-add-line'){ addQuoteLine(); }
+      else if(action==='quote-remove-line'){ removeQuoteLine(Number(el.getAttribute('data-i'))); }
+      else if(action==='quote-save'){ saveQuoteDraft(el.getAttribute('data-id'), 'save'); }
+      else if(action==='quote-save-download'){ saveQuoteDraft(el.getAttribute('data-id'), 'download'); }
+      else if(action==='quote-save-whatsapp'){ saveQuoteDraft(el.getAttribute('data-id'), 'whatsapp'); }
+      else if(action==='send-artwork-wa'){ sendArtworkViaWhatsapp(el.getAttribute('data-id'), el.getAttribute('data-att')); }
+      else if(action==='wa-check-media'){ checkWaMediaSupport(); }
+      else if(action==='save-quote-defaults'){
+        updateConfig({
+          businessEmail: document.getElementById('cfgBizEmail').value.trim(),
+          businessAddress: document.getElementById('cfgBizAddress').value.trim(),
+          quoteValidityDays: Number(document.getElementById('cfgValidDays').value)||14,
+          vatRate: Number(document.getElementById('cfgVatRate').value)||0,
+          quoteTerms: document.getElementById('cfgQuoteTerms').value
+        });
+        toast('Quotation defaults saved');
+      }
+      else if(action==='open-invoice'){ if(canAccess('quotes')) openInvoiceModal(el.getAttribute('data-id')); }
+      else if(action==='close-invoice-modal'){ closeInvoiceModal(); }
+      else if(action==='invoice-add-line'){ addInvoiceLine(); }
+      else if(action==='invoice-remove-line'){ removeInvoiceLine(Number(el.getAttribute('data-i'))); }
+      else if(action==='invoice-save'){ saveInvoiceDraft(el.getAttribute('data-id'), 'save'); }
+      else if(action==='invoice-save-download'){ saveInvoiceDraft(el.getAttribute('data-id'), 'download'); }
+      else if(action==='invoice-save-whatsapp'){ saveInvoiceDraft(el.getAttribute('data-id'), 'whatsapp'); }
+      else if(action==='save-invoice-defaults'){
+        updateConfig({
+          businessVatNumber: document.getElementById('cfgVatNumber').value.trim(),
+          invoiceDueDays: Number(document.getElementById('cfgInvoiceDueDays').value)||7,
+          bankName: document.getElementById('cfgBankName').value.trim(),
+          bankAccountHolder: document.getElementById('cfgBankHolder').value.trim(),
+          bankAccountNumber: document.getElementById('cfgBankAccount').value.trim(),
+          bankBranchCode: document.getElementById('cfgBankBranch').value.trim(),
+          invoiceTerms: document.getElementById('cfgInvoiceTerms').value
+        });
+        toast('Invoice defaults saved');
+      }
+      else if(action==='wa-refresh'){ waRefreshNow(); }
+      else if(action==='log-wa-order'){
+        var phone = el.getAttribute('data-phone');
+        var msg = STATE.waMessages[phone] || {};
+        STATE.newOrderPrefill = {
+          name: el.getAttribute('data-name') || phone,
+          phone: '+'+phone,
+          title: (msg.body||'').slice(0,60) || 'WhatsApp enquiry',
+          description: msg.body||'',
+          source: 'WhatsApp',
+          messageId: el.getAttribute('data-msgid') || null,
+          waPhone: phone
+        };
+        STATE.newOrderOpen = true;
+        render();
+      }
+      else if(action==='dismiss-wa-order'){
+        var dphone = el.getAttribute('data-phone'), dmsg = el.getAttribute('data-msgid');
+        if(dmsg){ markWaHandled(dphone, dmsg, 'dismissed'); render(); }
+      }
+      else if(action==='delete-order' && !isTechnician()){
+        if(confirm('Delete this job? This cannot be undone.')){ deleteOrder(el.getAttribute('data-id')); }
+      }
+      else if(action==='save-order'){ saveOrderFromModal(el.getAttribute('data-id')); }
+      else if(action==='submit-new-order'){ submitNewOrder(); }
+      else if(action==='view-customer'){ STATE.viewCustomerId = el.getAttribute('data-id'); render(); }
+      else if(action==='close-customer'){ STATE.viewCustomerId = null; render(); }
+      else if(action==='open-add-customer'){ addCustomerPrompt(); }
+      else if(action==='edit-customer'){ openCustomerForm(el.getAttribute('data-id')); }
+      else if(action==='cf-cancel'){ STATE.customerForm = null; render(); }
+      else if(action==='cf-save'){ saveCustomerForm(); }
+      else if(action==='cf-type'){ if(STATE.customerForm){ STATE.customerForm.draft.type = el.getAttribute('data-type'); STATE.customerForm.errors = {}; render(); } }
+      else if(action==='cf-add-contact'){ var cd = STATE.customerForm && STATE.customerForm.draft; if(cd && cd.contacts.length < MAX_EXTRA_CONTACTS){ cd.contacts.push(blankPerson()); render(); var ni = cd.contacts.length-1; setTimeout(function(){ var x = document.getElementById('cfc'+ni+'f'); if(x) x.focus(); }, 0); } }
+      else if(action==='cf-remove-contact'){ var rd = STATE.customerForm && STATE.customerForm.draft; if(rd){ rd.contacts.splice(Number(el.getAttribute('data-i')), 1); render(); } }
+      else if(action==='quote-filter'){ STATE.quoteFilter = el.getAttribute('data-filter'); render(); }
+      else if(action==='select-export'){ STATE.selectedForExport[el.getAttribute('data-id')] = el.checked; render(); }
+      else if(action==='export-xero'){ exportXero(); }
+      else if(action==='save-whatsapp'){
+        updateConfig({
+          whatsappNumber: document.getElementById('waNumber').value.trim(),
+          messageTemplate: document.getElementById('waTemplate').value
+        });
+        toast('WhatsApp settings saved');
+      }
+      else if(action==='save-xero-defaults'){
+        updateConfig({
+          accountCode: document.getElementById('cfgAccount').value.trim(),
+          taxType: document.getElementById('cfgTax').value.trim(),
+          currency: document.getElementById('cfgCurrency').value.trim() || 'ZAR'
+        });
+        toast('Xero export defaults saved');
+      }
+      else if(action==='copy-link'){
+        var inp = document.getElementById('waLink');
+        copyText(inp.value);
+      }
+    };
+
+    app.onchange = function(e){
+      if(e.target.id==='cfDelSame' && STATE.customerForm){ STATE.customerForm.draft.deliverySame = e.target.checked; render(); return; }
+      if(e.target.id==='boardSearch'){ STATE.boardQuery = e.target.value; render(); focusEl('boardSearch'); }
+      if(e.target.id==='customerSearch'){ STATE.customerQuery = e.target.value; render(); focusEl('customerSearch'); }
+      if(e.target.id==='ofAttach'){ handleAttach(e.target.files[0]); }
+      if(e.target.id==='chatAttach'){ attachFromDevice(e.target.getAttribute('data-phone'), e.target.files[0]); e.target.value=''; }
+      if(e.target.id==='importFile'){ importBackupFile(e.target.files[0]); e.target.value=''; }
+      if(e.target.id==='boardAssignee'){ STATE.boardAssigneeFilter = e.target.value; render(); }
+      if(e.target.id==='custExFrom'){ STATE.custExportFrom = e.target.value; render(); }
+      if(e.target.id==='custExTo'){ STATE.custExportTo = e.target.value; render(); }
+      if(e.target.id==='custExMode'){ STATE.custExportMode = e.target.value; render(); }
+      if(e.target.id==='invExFrom'){ STATE.invExportFrom = e.target.value; render(); }
+      if(e.target.id==='invExTo'){ STATE.invExportTo = e.target.value; render(); }
+      if(e.target.id==='invExStatus'){ STATE.invExportStatus = e.target.value; render(); }
+      if(e.target.id==='reportFrom'){ STATE.reportFrom = e.target.value; STATE.reportOpenMember = null; render(); }
+      if(e.target.id==='reportTo'){ STATE.reportTo = e.target.value; STATE.reportOpenMember = null; render(); }
+      if(e.target.id==='qVatEnabled'){ STATE.quoteDraft.vatEnabled = e.target.checked; refreshQuoteTotals(); }
+      if(e.target.id==='iVatEnabled'){ STATE.invoiceDraft.vatEnabled = e.target.checked; refreshInvoiceTotals(); }
+    };
+    app.oninput = function(e){
+      var cfp = e.target.getAttribute && e.target.getAttribute('data-cf');
+      if(cfp && STATE.customerForm){ setDraftPath(cfp, e.target.value); if(cfp==='name' && STATE.customerForm.errors && STATE.customerForm.errors.name){ STATE.customerForm.errors.name = null; e.target.classList.remove('invalid'); } return; }
+      if(e.target.id==='boardSearch'){ STATE.boardQuery = e.target.value; render(); focusEl('boardSearch'); }
+      if(e.target.id==='customerSearch'){ STATE.customerQuery = e.target.value; render(); focusEl('customerSearch'); }
+      if(e.target.id==='chatCompose'){ var p = currentChatPhone(); if(p){ STATE.chatDraft[p] = e.target.value; } }
+      if(e.target.id==='inviteMsg'){ STATE.inviteDraftText = e.target.value; }
+      if(STATE.quoteDraft){
+        var qm = e.target.id.match(/^qli(Desc|Qty|Price)-(\d+)$/);
+        if(qm){
+          var qi = Number(qm[2]);
+          var li = STATE.quoteDraft.items[qi];
+          if(li){
+            if(qm[1]==='Desc') li.description = e.target.value;
+            else if(qm[1]==='Qty') li.qty = e.target.value;
+            else if(qm[1]==='Price') li.unitPrice = e.target.value;
+            refreshQuoteTotals();
+          }
+        }
+        if(e.target.id==='qValidDays'){
+          STATE.quoteDraft.validDays = e.target.value;
+          var disp = document.getElementById('qValidUntilDisplay');
+          if(disp) disp.value = fullDate(addDays(todayIso(), Number(e.target.value)||0));
+        }
+        if(e.target.id==='qTerms'){ STATE.quoteDraft.terms = e.target.value; }
+      }
+      if(STATE.invoiceDraft){
+        var im = e.target.id.match(/^ili(Desc|Qty|Price)-(\d+)$/);
+        if(im){
+          var ii = Number(im[2]);
+          var ili = STATE.invoiceDraft.items[ii];
+          if(ili){
+            if(im[1]==='Desc') ili.description = e.target.value;
+            else if(im[1]==='Qty') ili.qty = e.target.value;
+            else if(im[1]==='Price') ili.unitPrice = e.target.value;
+            refreshInvoiceTotals();
+          }
+        }
+        if(e.target.id==='iDueDays'){
+          STATE.invoiceDraft.dueDays = e.target.value;
+          var idisp = document.getElementById('iDueDateDisplay');
+          if(idisp) idisp.value = fullDate(addDays(todayIso(), Number(e.target.value)||0));
+        }
+        if(e.target.id==='iTerms'){ STATE.invoiceDraft.terms = e.target.value; }
+      }
+    };
+
+    // drag & drop on board
+    app.querySelectorAll('.card').forEach(function(card){
+      card.addEventListener('dragstart', function(e){
+        card.classList.add('dragging');
+        e.dataTransfer.setData('text/plain', card.getAttribute('data-id'));
+        e.dataTransfer.effectAllowed = 'move';
+      });
+      card.addEventListener('dragend', function(){ card.classList.remove('dragging'); });
+    });
+    app.querySelectorAll('.col').forEach(function(col){
+      col.addEventListener('dragover', function(e){ e.preventDefault(); col.classList.add('dragover'); });
+      col.addEventListener('dragleave', function(){ col.classList.remove('dragover'); });
+      col.addEventListener('drop', function(e){
+        e.preventDefault(); col.classList.remove('dragover');
+        var id = e.dataTransfer.getData('text/plain');
+        var status = col.getAttribute('data-status');
+        if(id && status){ updateOrder(id, {status:status}); }
+      });
+    });
+  }
+
+  function focusEl(id){
+    var el = document.getElementById(id);
+    if(el){ el.focus(); var v=el.value; el.value=''; el.value=v; }
+  }
+
+  function copyText(text, okMessage){
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){ toast(okMessage||'Link copied'); }).catch(function(){ toast('Could not copy — select and copy manually'); });
+    } else {
+      toast('Could not copy — select and copy manually');
+    }
+  }
+
+  function saveOrderFromModal(id){
+    var patch = {
+      title: document.getElementById('ofTitle').value.trim() || 'Untitled job',
+      status: document.getElementById('ofStatus').value,
+      category: document.getElementById('ofCategory').value,
+      description: document.getElementById('ofDesc').value,
+      qty: Number(document.getElementById('ofQty').value)||1,
+      dueDate: document.getElementById('ofDue').value,
+      notes: document.getElementById('ofNotes').value
+    };
+    if(!isTechnician() && document.getElementById('ofQuote')){
+      patch.invoiceNumber = document.getElementById('ofInvNo').value.trim();
+      patch.invoiced = document.getElementById('ofInvoiced').checked;
+      var qv = document.getElementById('ofQuote').value;
+      patch.quoteAmount = qv===''? null : Number(qv);
+      if(patch.invoiced && patch.status!=='invoiced'){ patch.status='invoiced'; }
+    }
+    var desId = document.getElementById('ofAsgDesigner').value;
+    var techId = document.getElementById('ofAsgTechnician').value;
+    var desMember = STATE.team.find(function(m){ return m.id===desId; });
+    var techMember = STATE.team.find(function(m){ return m.id===techId; });
+    patch.designerId = desId || null;
+    patch.designerName = desMember ? desMember.name : '';
+    patch.technicianId = techId || null;
+    patch.technicianName = techMember ? techMember.name : '';
+    updateOrder(id, patch);
+    STATE.openOrderId = null;
+    render();
+    toast('Job updated');
+  }
+
+  function submitNewOrder(){
+    var name = document.getElementById('noCustomer').value.trim();
+    if(!name){ toast('Add a customer name first'); return; }
+    var phone = document.getElementById('noPhone').value.trim();
+    var title = document.getElementById('noTitle').value.trim() || 'Untitled job';
+    var quoteVal = document.getElementById('noQuote').value;
+    var desEl = document.getElementById('noAsgDesigner'), techEl = document.getElementById('noAsgTechnician');
+    var desMember = desEl ? STATE.team.find(function(m){ return m.id===desEl.value; }) : null;
+    var techMember = techEl ? STATE.team.find(function(m){ return m.id===techEl.value; }) : null;
+
+    var existing = findCustomerByName(name);
+    var customerPromise = existing ? Promise.resolve(existing) : persistCustomer({name:name, phone:phone, email:'', notes:''});
+
+    customerPromise.then(function(cust){
+      var order = {
+        designerId: desMember ? desMember.id : null,
+        designerName: desMember ? desMember.name : '',
+        technicianId: techMember ? techMember.id : null,
+        technicianName: techMember ? techMember.name : '',
+        customerId: cust.id,
+        customerName: cust.name,
+        phone: phone || cust.phone || '',
+        category: document.getElementById('noCategory').value,
+        title: title,
+        description: document.getElementById('noDesc').value,
+        qty: Number(document.getElementById('noQty').value)||1,
+        status: 'new',
+        quoteAmount: quoteVal===''? null : Number(quoteVal),
+        invoiced:false,
+        invoiceNumber:'',
+        dueDate: document.getElementById('noDue').value,
+        notes:'',
+        source: document.getElementById('noSource').value,
+        attachmentIds:[],
+        createdAt: todayIso(),
+        updatedAt: todayIso()
+      };
+      return persistOrder(order);
+    }).then(function(order){
+      var pf = STATE.newOrderPrefill;
+      if(pf && pf.messageId){ markWaHandled(pf.waPhone, pf.messageId, 'logged', order.id); }
+      STATE.newOrderOpen = false;
+      STATE.newOrderPrefill = null;
+      render();
+      toast('Job added to board');
+    });
+  }
+
+  function submitNewTeamMember(){
+    var name = document.getElementById('ntName').value.trim();
+    if(!name){ toast('Add a name first'); return; }
+    var role = document.getElementById('ntRole').value;
+    var phone = document.getElementById('ntPhone').value.trim();
+    persistTeamMember({name:name, role:role, phone:phone, email:'', invited:false, invitedAt:null, createdAt:todayIso()}).then(function(){
+      STATE.newTeamOpen = false;
+      render();
+      toast(name+' added to the team');
+    });
+  }
+
+  /* ============================ customer form (individual / business) ============================ */
+  var MAX_EXTRA_CONTACTS = 5;
+  function blankAddress(){ return {line1:'', line2:'', city:'', region:'', postalCode:'', country:'South Africa'}; }
+  function blankPerson(){ return {firstName:'', lastName:'', email:'', phone:''}; }
+  function addrHasData(a){ return !!(a && (a.line1||a.line2||a.city||a.region||a.postalCode)); }
+  function formatAddress(a){
+    if(!addrHasData(a)) return '';
+    var cityLine = [a.city, a.region, a.postalCode].filter(Boolean).join(', ');
+    return [a.line1, a.line2, cityLine, a.country].filter(Boolean).join('\n');
+  }
+  function customerDeliveryAddress(c){ return c.deliverySame===false ? (c.deliveryAddress||blankAddress()) : (c.postalAddress||blankAddress()); }
+  function personName(p){ return [p && p.firstName, p && p.lastName].filter(Boolean).join(' '); }
+
+  function openCustomerForm(id){
+    var c = id ? STATE.customers.find(function(x){ return x.id===id; }) : null;
+    var d = {
+      type: (c && c.type) || 'individual',
+      name: c ? (c.name||'') : '',
+      firstName: (c && c.firstName) || '', lastName: (c && c.lastName) || '',
+      email: (c && c.email) || '', phone: (c && c.phone) || '',
+      notes: (c && c.notes) || '',
+      website: (c && c.website) || '', regNumber: (c && c.regNumber) || '', vatNumber: (c && c.vatNumber) || '',
+      postalAddress: Object.assign(blankAddress(), (c && c.postalAddress) || {}),
+      deliverySame: c ? c.deliverySame!==false : true,
+      deliveryAddress: Object.assign(blankAddress(), (c && c.deliveryAddress) || {}),
+      contacts: ((c && c.contacts) || []).map(function(p){ return Object.assign(blankPerson(), p); })
+    };
+    STATE.customerForm = {id: c ? c.id : null, draft: d, errors: {}};
+    render();
+    setTimeout(function(){ var el = document.getElementById('cfName'); if(el && !id) el.focus(); }, 0);
+  }
+  function addCustomerPrompt(){ openCustomerForm(null); }
+
+  function setDraftPath(path, value){
+    var d = STATE.customerForm && STATE.customerForm.draft; if(!d) return;
+    var parts = path.split('.'), o = d;
+    for(var i=0;i<parts.length-1;i++){ o = o[parts[i]]; if(o==null) return; }
+    o[parts[parts.length-1]] = value;
+  }
+
+  function customerNameTaken(name, exceptId){
+    var n = String(name||'').trim().toLowerCase().replace(/\s+/g,' ');
+    if(!n) return false;
+    return STATE.customers.some(function(c){ return c.id!==exceptId && String(c.name||'').trim().toLowerCase().replace(/\s+/g,' ')===n; });
+  }
+
+  function validateCustomerDraft(){
+    var f = STATE.customerForm, d = f.draft, e = {};
+    var emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if(!d.name.trim()) e.name = 'Contact name is required.';
+    else if(customerNameTaken(d.name, f.id)) e.name = 'Another customer already has this name. Contact names must be unique.';
+    if(d.email && !emailRe.test(d.email.trim())) e.email = 'This email address doesn’t look right.';
+    if(d.type==='business'){
+      d.contacts.forEach(function(p, i){ if(p.email && !emailRe.test(p.email.trim())) e['contact'+i] = 'Check this email address.'; });
+      if(d.website && /\s/.test(d.website.trim())) e.website = 'A website can’t contain spaces.';
+    }
+    f.errors = e;
+    return !Object.keys(e).length;
+  }
+
+  function cleanAddress(a){ var o = {}; Object.keys(blankAddress()).forEach(function(k){ o[k] = String((a&&a[k])||'').trim(); }); return o; }
+
+  function saveCustomerForm(){
+    var f = STATE.customerForm; if(!f) return;
+    if(!validateCustomerDraft()){ render(); toast('Please fix the highlighted fields'); return; }
+    var d = f.draft, biz = d.type==='business';
+    var data = {
+      type: d.type,
+      name: d.name.trim().replace(/\s+/g,' '),
+      firstName: d.firstName.trim(), lastName: d.lastName.trim(),
+      email: d.email.trim(), phone: d.phone.trim(), notes: d.notes,
+      postalAddress: cleanAddress(d.postalAddress),
+      deliverySame: !!d.deliverySame,
+      deliveryAddress: d.deliverySame ? cleanAddress(blankAddress()) : cleanAddress(d.deliveryAddress),
+      website: biz ? d.website.trim() : '',
+      regNumber: biz ? d.regNumber.trim() : '',
+      vatNumber: biz ? d.vatNumber.trim() : '',
+      contacts: biz ? d.contacts.map(function(p){ return {firstName:p.firstName.trim(), lastName:p.lastName.trim(), email:p.email.trim(), phone:p.phone.trim()}; })
+                        .filter(function(p){ return p.firstName||p.lastName||p.email||p.phone; }).slice(0, MAX_EXTRA_CONTACTS) : [],
+      updatedAt: todayIso()
+    };
+    var p = f.id ? updateCustomerRecord(f.id, data) : persistCustomer(Object.assign({createdAt: todayIso()}, data));
+    var wasEdit = !!f.id;
+    p.then(function(c){
+      // keep the name shown on that customer's jobs in step with the record
+      if(wasEdit){
+        STATE.orders.filter(function(o){ return o.customerId===f.id && (o.customerName!==data.name || (data.phone && o.phone!==data.phone)); }).forEach(function(o){
+          updateOrder(o.id, {customerName:data.name, phone:data.phone || o.phone});
+        });
+      }
+      STATE.customerForm = null;
+      if(c && c.id) STATE.viewCustomerId = c.id;
+      render();
+      toast(wasEdit ? 'Customer updated' : 'Customer added');
+    }).catch(function(){ toast('Could not save the customer — try again'); });
+  }
+
+  function addressFields(prefix, key, a){
+    function inp(field, label, ph, extra){
+      return '<div class="field"><label for="'+prefix+field+'">'+label+'</label><input type="text" id="'+prefix+field+'" data-cf="'+key+'.'+field+'" value="'+escapeHtml(a[field]||'')+'"'+(ph?' placeholder="'+escapeHtml(ph)+'"':'')+(extra||'')+'></div>';
+    }
+    return inp('line1','Street address / PO Box','e.g. 36A Reitz Street') +
+      inp('line2','Suburb / address line 2','e.g. Central') +
+      '<div class="field-row3">' + inp('city','Town / city','Kroonstad') + inp('region','Province','Free State') + inp('postalCode','Postal code','9499',' inputmode="numeric"') + '</div>' +
+      inp('country','Country','');
+  }
+
+  function renderCustomerForm(){
+    var f = STATE.customerForm, d = f.draft, e = f.errors || {}, biz = d.type==='business';
+    function fld(id, path, label, val, opts){
+      opts = opts || {};
+      var err = opts.err ? '<div class="field-error">'+escapeHtml(opts.err)+'</div>' : '';
+      return '<div class="field"><label for="'+id+'">'+label+'</label><input type="'+(opts.type||'text')+'" id="'+id+'" data-cf="'+path+'" value="'+escapeHtml(val||'')+'"'+(opts.ph?' placeholder="'+escapeHtml(opts.ph)+'"':'')+(opts.err?' class="invalid"':'')+(opts.attrs||'')+'>'+(opts.hint?'<div class="hint">'+opts.hint+'</div>':'')+err+'</div>';
+    }
+    var contacts = '';
+    if(biz){
+      contacts = '<div class="form-section"><div class="section-label">Additional contact persons ('+d.contacts.length+' of '+MAX_EXTRA_CONTACTS+')</div>' +
+        d.contacts.map(function(p, i){
+          return '<div class="person-card"><div class="ph-head"><span>Contact '+(i+1)+'</span><button type="button" class="btn btn-ghost btn-sm" style="padding:2px 8px;" data-action="cf-remove-contact" data-i="'+i+'">Remove</button></div>' +
+            '<div class="field-row">' + fld('cfc'+i+'f','contacts.'+i+'.firstName','First name',p.firstName) + fld('cfc'+i+'l','contacts.'+i+'.lastName','Last name',p.lastName) + '</div>' +
+            '<div class="field-row">' + fld('cfc'+i+'e','contacts.'+i+'.email','Email',p.email,{type:'email', err:e['contact'+i]}) + fld('cfc'+i+'p','contacts.'+i+'.phone','Cellphone',p.phone,{type:'tel'}) + '</div>' +
+          '</div>';
+        }).join('') +
+        (d.contacts.length < MAX_EXTRA_CONTACTS ? '<button type="button" class="btn btn-sm" data-action="cf-add-contact">+ Add contact person</button>' : '<div class="hint">Maximum of '+MAX_EXTRA_CONTACTS+' additional contact persons.</div>') +
+      '</div>';
+    }
+    return (
+      '<div class="overlay">' +
+        '<div class="modal" role="dialog" aria-modal="true" aria-label="'+(f.id?'Edit customer':'Add customer')+'" style="max-width:640px;">' +
+          '<div class="modal-head"><h2>'+(f.id?'Edit customer':'Add customer')+'</h2><button class="modal-close" data-action="cf-cancel" aria-label="Close">&times;</button></div>' +
+          '<div class="seg" role="radiogroup" aria-label="Customer type" style="margin-bottom:14px;">' +
+            '<button type="button" role="radio" aria-checked="'+(!biz)+'" class="'+(!biz?'on':'')+'" data-action="cf-type" data-type="individual">Individual</button>' +
+            '<button type="button" role="radio" aria-checked="'+biz+'" class="'+(biz?'on':'')+'" data-action="cf-type" data-type="business">Business</button>' +
+          '</div>' +
+          fld('cfName','name','Contact name *',d.name,{err:e.name, ph: biz ? 'e.g. Kroonstad Primary School' : 'e.g. Riaan Pretorius', hint:'Must be unique — this is the name used on quotes, invoices and in Xero.'}) +
+          '<div class="section-label" style="margin:4px 0 8px;">Primary person</div>' +
+          '<div class="field-row">' + fld('cfFirst','firstName','First name',d.firstName) + fld('cfLast','lastName','Last name',d.lastName) + '</div>' +
+          '<div class="field-row">' + fld('cfEmail','email','Email address',d.email,{type:'email', err:e.email}) + fld('cfPhone','phone','Cellphone number',d.phone,{type:'tel', ph:'e.g. 082 123 4567'}) + '</div>' +
+          (biz ?
+            '<div class="form-section"><div class="section-label">Business details</div>' +
+              fld('cfWeb','website','Website',d.website,{ph:'e.g. www.example.co.za', err:e.website}) +
+              '<div class="field-row">' + fld('cfReg','regNumber','Business registration number',d.regNumber,{ph:'e.g. 2025/123456/07'}) + fld('cfVat','vatNumber','VAT number',d.vatNumber,{ph:'e.g. 4123456789'}) + '</div>' +
+            '</div>' : '') +
+          '<div class="form-section"><div class="section-label">Postal address</div>' + addressFields('cfPa','postalAddress', d.postalAddress) + '</div>' +
+          '<div class="form-section"><div class="section-label">Delivery address</div>' +
+            '<label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin-bottom:10px; font-weight:500;"><input type="checkbox" id="cfDelSame" '+(d.deliverySame?'checked':'')+' style="width:auto;"> Same as postal address</label>' +
+            (d.deliverySame ? '' : addressFields('cfDa','deliveryAddress', d.deliveryAddress)) +
+          '</div>' +
+          contacts +
+          '<div class="form-section"><div class="field"><label for="cfNotes">Notes</label><textarea id="cfNotes" data-cf="notes" rows="3">'+escapeHtml(d.notes||'')+'</textarea></div></div>' +
+          '<div class="modal-foot">' +
+            '<button class="btn btn-ghost" data-action="cf-cancel">Cancel</button>' +
+            '<button class="btn btn-primary" data-action="cf-save">'+(f.id?'Save changes':'Add customer')+'</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  // Owner-only: load a backup JSON {config, customers, orders, team, wa_handled}.
+  function importBackupFile(file){
+    if(!file || !isOwnerRole() || !STATE.db) return;
+    var reader = new FileReader();
+    reader.onload = function(){
+      var data;
+      try{ data = JSON.parse(String(reader.result||'')); }catch(e){ toast('That file isn’t a valid backup (.json)'); return; }
+      var writes = [];
+      if(data.config && typeof data.config==='object'){ var cfg = Object.assign({}, data.config); delete cfg.appShareLink; writes.push({path:'config/business', data:cfg}); }
+      ['customers','orders','team','wa_handled'].forEach(function(col){
+        var rows = data[col] || {};
+        Object.keys(rows).forEach(function(id){
+          var d = Object.assign({}, rows[id]);
+          delete d.id;
+          if(col==='team'){
+            // Invite codes from another system can't be reused: invite people again.
+            delete d.inviteHash; delete d.inviteSalt; delete d.inviteIter; delete d.inviteExpires;
+            d.invited = false; d.invitedAt = null; d.active = true;
+          }
+          writes.push({path: col+'/'+id, data:d});
+        });
+      });
+      if(!writes.length){ toast('No records found in that file'); return; }
+      if(!confirm('Import '+writes.length+' records into DsignX Ops? Records with the same ID will be overwritten.')) return;
+      STATE.importStatus = 'Importing 0 of '+writes.length+'…'; render();
+      window.DSX.importDocs(writes, function(done){ STATE.importStatus = 'Importing '+done+' of '+writes.length+'…'; render(); }).then(function(){
+        STATE.importStatus = 'Imported '+writes.length+' records.'; render(); toast('Import complete');
+      }).catch(function(e){
+        STATE.importStatus = 'Import stopped: '+((e && e.message) || 'unknown error')+'. You can run it again safely.'; render();
+      });
+    };
+    reader.readAsText(file);
+  }
+
+  function handleAttach(file){
+    if(!file || !STATE.assets || !STATE.openOrderId) return;
+    STATE.assets.upload(file).then(function(res){
+      var o = STATE.orders.find(function(x){return x.id===STATE.openOrderId;});
+      if(!o) return;
+      var ids = (o.attachmentIds||[]).concat([res.id]);
+      updateOrder(o.id, {attachmentIds: ids});
+      toast('Attachment added');
+    }).catch(function(err){
+      var why = (err && err.code==='too_large') ? 'files must be under 9 MB' : waErrorNotice(err||{}).text;
+      toast('Could not upload the file — ' + why);
+    });
+  }
+
+  // Artwork/proofs: uploaded to Cloudinary and staged in the job chat (Bird sends it).
+  // Without WhatsApp on this view it falls back to download-and-attach.
+  function sendArtworkViaWhatsapp(orderId, attachmentId){
+    var o = STATE.orders.find(function(x){ return x.id===orderId; });
+    if(!o) return;
+    var phone = waPhone(o.phone);
+    if(!phone){ toast('No phone number on file to message'); return; }
+    if(/^https:\/\//.test(attachmentId) && STATE.mcp){
+      // Attachments already live on Cloudinary, so WhatsApp can fetch them directly.
+      var isPdf = /\.pdf(\?|$)/i.test(attachmentId);
+      var entry = Object.assign({}, STATE.chatMessages[phone]);
+      entry.sendError = null;
+      entry.pendingSend = {kind: isPdf ? 'file' : 'image', url: attachmentId,
+        filename: 'artwork-'+jobNo(o.id)+(isPdf ? '.pdf' : '.jpg'),
+        caption: 'Hi '+(o.customerName||'there')+', here\'s the artwork/proof for '+(o.title||'your job')+' ('+jobNo(o.id)+') — let us know if it looks right!'};
+      STATE.chatMessages[phone] = entry;
+      if(!entry.list) openOrderChat(phone);
+      render();
+      return;
+    }
+    fetch(attachmentId).then(function(r){
+      if(!r.ok) throw new Error('fetch failed');
+      return r.blob();
+    }).then(function(blob){
+      var ext = (blob.type && blob.type.indexOf('/')>-1) ? blob.type.split('/')[1].replace('+xml','') : 'png';
+      var filename = 'artwork-'+jobNo(o.id)+'.'+ext;
+      var caption = 'Hi '+(o.customerName||'there')+', here\'s the artwork/proof for '+(o.title||'your job')+' ('+jobNo(o.id)+') — let us know if it looks right!';
+      if(STATE.mcp){
+        attachFileToChat(phone, blob, filename, blob.type, caption);
+        return;
+      }
+      // No WhatsApp tool connected on this view: fall back to a plain download so it
+      // can still be attached by hand.
+      if(STATE.downloads){
+        STATE.downloads.save({filename:filename, data:blob}).catch(function(err){
+          if(err && err.code==='declined'){ return; }
+          fallbackDownload(blob, filename);
+        });
+      } else {
+        fallbackDownload(blob, filename);
+      }
+      STATE.chatDraft[phone] = caption.replace('let us know', 'I\'m attaching it now — let us know');
+      toast('Artwork downloading — attach it below and hit Send');
+      render();
+    }).catch(function(){ toast('Could not prepare that file — try again'); });
+  }
+
+  // Read-only check: which of the two connectors this view can reach.
+  function checkWaMediaSupport(){
+    if(!STATE.mcp) return;
+    STATE.waMediaCheck = {status:'loading'};
+    render();
+    STATE.mcp.listTools().then(function(res){
+      var servers = (res && res.servers) || [];
+      var rows = [WA_SERVER, FILE_SERVER].map(function(n){
+        var srv = servers.filter(function(x){ return x.server===n; })[0];
+        return {name: n===WA_SERVER ? 'Bird (WhatsApp)' : 'Cloudinary (file links)', ok: !!(srv && srv.tools && srv.tools.length && srv.authStatus!=='needs_reauth')};
+      });
+      STATE.waMediaCheck = {status:'done', rows:rows};
+      render();
+    }).catch(function(err){
+      STATE.waMediaCheck = {status:'error', error:err};
+      render();
+    });
+  }
+
+  /* ============================ boot ============================ */
+  if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', init); } else { init(); }
+})();
