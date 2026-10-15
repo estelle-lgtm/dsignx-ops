@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-10-15.12';
+import './platform.js?v=2026-10-15.13';
 
 (function(){
   "use strict";
@@ -753,7 +753,7 @@ import './platform.js?v=2026-10-15.12';
     var draft = STATE.quoteDraft;
     var totals = quoteTotals(draft);
     var patch = {
-      lineItems: draft.items.map(function(li){ return {description:li.description||'', qty:Number(li.qty)||0, unitPrice:Number(li.unitPrice)||0}; }),
+      lineItems: draft.items.map(function(li){ return {description:li.description||'', qty:Number(li.qty)||0, unitPrice:Number(li.unitPrice)||0, note:String(li.note||'').trim()}; }),
       quoteAmount: totals.subtotal,
       quoteTerms: draft.terms,
       quoteValidDays: Number(draft.validDays)||14,
@@ -976,9 +976,13 @@ import './platform.js?v=2026-10-15.12';
     items.forEach(function(li){
       font('normal', 8.8);
       var dl = doc.splitTextToSize(String(li.description||''), 74);
-      var rowH = Math.max(8, dl.length*4 + 4);
+      font('italic', 7.8);
+      var nl = String(li.note||'').trim() ? doc.splitTextToSize(String(li.note).trim(), 74) : [];
+      font('normal', 8.8);
+      var rowH = Math.max(8, dl.length*4 + 4 + (nl.length ? nl.length*3.5 + 0.8 : 0));
       if(y + rowH > 262){ footer(); doc.addPage(); y = 18; tableHead(); }
       color(INK); doc.text(dl, C.desc, y);
+      if(nl.length){ font('italic', 7.8); color(GREY); doc.text(nl, C.desc, y + dl.length*4 + 0.3); font('normal', 8.8); color(INK); }
       doc.text(pdfQty(li.qty), C.qty, y, {align:'right'});
       doc.text(pdfNum(li.unitPrice), C.price, y, {align:'right'});
       doc.text('0.00', C.disc, y, {align:'right'});
@@ -1153,7 +1157,7 @@ import './platform.js?v=2026-10-15.12';
     var vatEnabled = !!draft.vatEnabled && isVatVendor();
     var totals = invoiceTotals(draft);
     var patch = {
-      invoiceLineItems: draft.items.map(function(li){ return {description:li.description||'', qty:Number(li.qty)||0, unitPrice:Number(li.unitPrice)||0}; }),
+      invoiceLineItems: draft.items.map(function(li){ return {description:li.description||'', qty:Number(li.qty)||0, unitPrice:Number(li.unitPrice)||0, note:String(li.note||'').trim()}; }),
       quoteAmount: totals.subtotal, // keep the job's headline amount (dashboard, Xero export) matching what was actually invoiced
       invoiceTerms: draft.terms,
       invoiceDueDays: Number(draft.dueDays)||7,
@@ -1701,7 +1705,7 @@ import './platform.js?v=2026-10-15.12';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-15.12</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-15.13</span></div>' +
       '</div>'
     );
   }
@@ -2744,7 +2748,8 @@ import './platform.js?v=2026-10-15.12';
           '<td style="width:100px;"><input type="number" id="qliPrice-'+i+'" min="0" step="0.01" value="'+li.unitPrice+'"></td>' +
           '<td class="num" id="qliLineTotal-'+i+'" style="white-space:nowrap;">'+money((Number(li.qty)||0)*(Number(li.unitPrice)||0))+'</td>' +
           '<td><button class="btn btn-ghost btn-sm" data-action="quote-remove-line" data-i="'+i+'" title="Remove line">&times;</button></td>' +
-        '</tr>'
+        '</tr>' +
+        '<tr class="li-note-row"><td colspan="5"><textarea id="qliNote-'+i+'" rows="1" class="li-note" placeholder="Notes for this item (optional) — printed under it on the PDF">'+escapeHtml(li.note||'')+'</textarea></td></tr>'
       );
     }).join('');
 
@@ -2798,7 +2803,8 @@ import './platform.js?v=2026-10-15.12';
           '<td style="width:100px;"><input type="number" id="iliPrice-'+i+'" min="0" step="0.01" value="'+li.unitPrice+'"></td>' +
           '<td class="num" id="iliLineTotal-'+i+'" style="white-space:nowrap;">'+money((Number(li.qty)||0)*(Number(li.unitPrice)||0))+'</td>' +
           '<td><button class="btn btn-ghost btn-sm" data-action="invoice-remove-line" data-i="'+i+'" title="Remove line">&times;</button></td>' +
-        '</tr>'
+        '</tr>' +
+        '<tr class="li-note-row"><td colspan="5"><textarea id="iliNote-'+i+'" rows="1" class="li-note" placeholder="Notes for this item (optional) — printed under it on the PDF">'+escapeHtml(li.note||'')+'</textarea></td></tr>'
       );
     }).join('');
 
@@ -3410,7 +3416,7 @@ import './platform.js?v=2026-10-15.12';
       if(e.target.classList && e.target.classList.contains('st-count')){ onCountInput(e.target.getAttribute('data-st'), e.target.getAttribute('data-pid'), e.target.value); }
       if(e.target.id==='stockSearch'){ STATE.stockQuery = e.target.value; render(); focusEl('stockSearch'); }
       if(STATE.quoteDraft){
-        var qm = e.target.id.match(/^qli(Desc|Qty|Price)-(\d+)$/);
+        var qm = e.target.id.match(/^qli(Desc|Qty|Price|Note)-(\d+)$/);
         if(qm){
           var qi = Number(qm[2]);
           var li = STATE.quoteDraft.items[qi];
@@ -3418,6 +3424,7 @@ import './platform.js?v=2026-10-15.12';
             if(qm[1]==='Desc'){ li.description = e.target.value; applyProductToLine('qli', qi, STATE.quoteDraft.items); }
             else if(qm[1]==='Qty') li.qty = e.target.value;
             else if(qm[1]==='Price') li.unitPrice = e.target.value;
+            else if(qm[1]==='Note') li.note = e.target.value;
             refreshQuoteTotals();
           }
         }
@@ -3429,7 +3436,7 @@ import './platform.js?v=2026-10-15.12';
         if(e.target.id==='qTerms'){ STATE.quoteDraft.terms = e.target.value; }
       }
       if(STATE.invoiceDraft){
-        var im = e.target.id.match(/^ili(Desc|Qty|Price)-(\d+)$/);
+        var im = e.target.id.match(/^ili(Desc|Qty|Price|Note)-(\d+)$/);
         if(im){
           var ii = Number(im[2]);
           var ili = STATE.invoiceDraft.items[ii];
@@ -3437,6 +3444,7 @@ import './platform.js?v=2026-10-15.12';
             if(im[1]==='Desc'){ ili.description = e.target.value; applyProductToLine('ili', ii, STATE.invoiceDraft.items); }
             else if(im[1]==='Qty') ili.qty = e.target.value;
             else if(im[1]==='Price') ili.unitPrice = e.target.value;
+            else if(im[1]==='Note') ili.note = e.target.value;
             refreshInvoiceTotals();
           }
         }
