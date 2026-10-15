@@ -78,6 +78,7 @@ function setup(appMod, authMod, fsMod, fnMod) {
       id: r.id,
       get: () => fsMod.getDoc(r).then(wrapDoc),
       set: (v) => fsMod.setDoc(r, v),
+      merge: (v) => fsMod.setDoc(r, v, { merge: true }),
       update: (v) => fsMod.updateDoc(r, v),
       delete: () => fsMod.deleteDoc(r),
       onSnapshot: (cb, err) => fsMod.onSnapshot(r, (s) => cb(wrapDoc(s)), quiet(err)),
@@ -110,6 +111,26 @@ function setup(appMod, authMod, fsMod, fnMod) {
       if (onProgress) onProgress(done);
     }
     return done;
+  }
+
+  // Hands out the next number(s) of a counter in config/business, safely across devices.
+  async function reserveNumbers(field, count) {
+    const ref = fsMod.doc(fs, 'config/business');
+    return fsMod.runTransaction(fs, async (tx) => {
+      const s = await tx.get(ref);
+      const cur = Number((s.exists() && s.data()[field]) || 1);
+      tx.set(ref, { [field]: cur + (count || 1) }, { merge: true });
+      return cur;
+    });
+  }
+
+  // Patches fields on many existing documents, 400 per batch.
+  async function updateDocs(list) {
+    for (let i = 0; i < list.length; i += 400) {
+      const batch = fsMod.writeBatch(fs);
+      list.slice(i, i + 400).forEach((w) => batch.update(fsMod.doc(fs, w.path), w.data));
+      await batch.commit();
+    }
   }
 
   // The first owner: allowed once, for the owner email named in firestore.rules.
@@ -229,6 +250,8 @@ function setup(appMod, authMod, fsMod, fnMod) {
     assets,
     downloads,
     importDocs,
+    updateDocs,
+    reserveNumbers,
     ownerClaimable,
     claimOwner,
     call: (name, data) => callable(name)(data).then((r) => r.data),

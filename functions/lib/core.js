@@ -63,11 +63,12 @@ function birdRequest(tool, input, opts) {
   }
   if (tool === 'whatsapp_send') {
     if (!input.to) throw badInput('to is required');
-    const kinds = ['text', 'document', 'image'].filter((k) => input[k]);
-    if (kinds.length !== 1) throw badInput('send exactly one of text, document or image');
+    const kinds = ['text', 'document', 'image', 'template'].filter((k) => input[k]);
+    if (kinds.length !== 1) throw badInput('send exactly one of text, document, image or template');
+    if (kinds[0] === 'template' && !/^dsignx_[a-z0-9_]+$/.test(String(input.template.slug || ''))) throw badInput('Only DsignX templates can be sent');
     // Always send from the business number configured on the server.
     const body = { from: opts.from, to: String(input.to) };
-    body[kinds[0]] = input[kinds[0]];
+    body[kinds[0]] = compact(input[kinds[0]]);
     const h = Object.assign({ 'Content-Type': 'application/json' }, headers);
     if (input.idempotency_key) h['Idempotency-Key'] = String(input.idempotency_key).slice(0, 255);
     return { method: 'POST', url: `${host}/v1/whatsapp/messages`, headers: h, body: JSON.stringify(body) };
@@ -158,6 +159,18 @@ function cloudinaryRequest(tool, input, cred, now) {
 
 /* ---------------- shared ---------------- */
 
+// Drops null/empty fields (e.g. a document with no caption) — Bird rejects null values.
+function compact(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+  const out = {};
+  Object.keys(obj).forEach((k) => {
+    const v = obj[k];
+    if (v === null || v === undefined || v === '') return;
+    out[k] = (typeof v === 'object') ? compact(v) : v;
+  });
+  return out;
+}
+
 function badInput(message) {
   const e = new Error(message);
   e.kind = 'bad_input';
@@ -180,8 +193,11 @@ async function send(fetchImpl, req) {
   try { json = text ? JSON.parse(text) : {}; } catch (e) { json = { raw: text }; }
   if (!res.ok) {
     const be = (json && json.error) || {};
+    const details = Array.isArray(be.details) && be.details.length
+      ? ' (' + be.details.map((d) => (d.param ? d.param + ': ' : '') + (d.message || '')).join('; ') + ')'
+      : '';
     const msg = be.code
-      ? `${be.code}: ${be.message || be.name || 'error'}`
+      ? `${be.code}: ${be.message || be.name || 'error'}${details}`
       : (typeof be === 'object' && be.message) ? be.message : `HTTP ${res.status}`;
     const err = new Error(msg);
     err.kind = res.status === 401 || res.status === 403 ? 'auth' : (res.status >= 500 || res.status === 429 ? 'unavailable' : 'tool');

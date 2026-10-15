@@ -74,6 +74,8 @@ import './platform.js';
     invExportFrom:'', invExportTo:'', invExportStatus:'Draft',
     custExportFrom:'', custExportTo:'', custExportMode:'added',
     customerForm:null,
+    products:[], productForm:null, productImport:null, productQuery:'',
+    receipts:[], receiptForm:null, cashups:{}, cashupDate:'', cashupForm:null,
     user:null, links:{},
     auth:{phase:'checking', uid:null, isOwner:false, memberId:null, role:null, error:'', busy:false, myAuth:null, myLink:null, teamLoaded:false, fails:0, lockUntil:0}
   };
@@ -82,8 +84,8 @@ import './platform.js';
   // Who can open what. Owner = the account that completed first-time setup; everyone else must be
   // a team member who redeemed an invite code. The same rules are enforced in firestore.rules.
   var ROLE_TABS = {
-    owner:      ['dashboard','board','whatsapp','customers','team','quotes','reports','settings'],
-    designer:   ['dashboard','board','whatsapp','customers','team','quotes','reports'],
+    owner:      ['dashboard','board','whatsapp','customers','team','quotes','products','cashup','reports','settings'],
+    designer:   ['dashboard','board','whatsapp','customers','team','quotes','products','cashup','reports'],
     technician: ['board']
   };
   var PASSWORD_ITER = 210000, CODE_ITER = 100000, CODE_TTL_DAYS = 7;
@@ -465,7 +467,11 @@ import './platform.js';
     var d = new Date(iso+'T00:00:00'), t = new Date(todayIso()+'T00:00:00');
     return Math.round((d-t)/86400000);
   }
-  function jobNo(id){ return 'DSX-' + String(id).replace(/[^a-zA-Z0-9]/g,'').slice(-5).toUpperCase(); }
+  function jobNo(id){
+    var o = STATE.orders.find(function(x){ return x.id===id; });
+    if(o && o.jobNumber) return o.jobNumber;
+    return 'DSX-' + String(id).replace(/[^a-zA-Z0-9]/g,'').slice(-5).toUpperCase();
+  }
   function escapeHtml(s){
     return String(s==null?'':s).replace(/[&<>"']/g, function(c){
       return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
@@ -660,7 +666,8 @@ import './platform.js';
   function updateConfig(patch){
     STATE.config = Object.assign({}, STATE.config, patch);
     if(STATE.isLive && STATE.db){
-      STATE.db.doc('config/business').set(STATE.config).catch(function(){});
+      var cref = STATE.db.doc('config/business');
+      (cref.merge ? cref.merge(patch) : cref.set(STATE.config)).catch(function(){});
     }
     render();
   }
@@ -721,10 +728,10 @@ import './platform.js';
 
   function ensureQuoteNumber(o){
     if(o.quoteNumber) return Promise.resolve(o.quoteNumber);
-    var n = STATE.config.nextQuoteNumber || 1;
-    var num = 'DSX-Q' + String(n).padStart(4,'0');
-    updateConfig({nextQuoteNumber: n+1});
-    return updateOrder(o.id, {quoteNumber:num}).then(function(){ return num; });
+    return reserveNumbers('nextQuoteNumber', 1).then(function(n){
+      var num = 'DSX-Q' + String(n).padStart(4,'0');
+      return updateOrder(o.id, {quoteNumber:num}).then(function(){ return num; });
+    });
   }
 
   function saveQuoteDraft(orderId, mode){
@@ -994,12 +1001,13 @@ import './platform.js';
       y += 5.5;
       font('bold', 9.5); color(MAROON); doc.text('Invoice Total '+currency, lx, y, {align:'right'}); doc.text(pdfNum(totals.total), vx, y, {align:'right'});
       y += 6.5;
-      font('normal', 8.8); color(GREY); doc.text('Total Net Payments '+currency, lx, y, {align:'right'}); color(INK); doc.text('0.00', vx, y, {align:'right'});
+      var paidSoFar = o.id ? round2(orderPaid(o.id)) : 0;
+      font('normal', 8.8); color(GREY); doc.text('Total Net Payments '+currency, lx, y, {align:'right'}); color(INK); doc.text(pdfNum(paidSoFar), vx, y, {align:'right'});
       y += 3.5;
       doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(band, y, R-band, 11, 'F');
       font('bold', 11); doc.setTextColor(255,255,255);
       spaced('AMOUNT DUE '+currency, lx, y+7, {align:'right'}, 0.15);
-      doc.text(pdfNum(totals.total), vx, y+7, {align:'right'});
+      doc.text(pdfNum(Math.max(0, totals.total - paidSoFar)), vx, y+7, {align:'right'});
       y += 11 + 5;
     }
     font('bold', 8); color([140,140,132]);
@@ -1121,10 +1129,10 @@ import './platform.js';
 
   function ensureInvoiceNumber(o){
     if(o.invoiceNumber) return Promise.resolve(o.invoiceNumber);
-    var n = STATE.config.nextInvoiceNumber || 1;
-    var num = 'DSX-INV' + String(n).padStart(4,'0');
-    updateConfig({nextInvoiceNumber: n+1});
-    return updateOrder(o.id, {invoiceNumber:num}).then(function(){ return num; });
+    return reserveNumbers('nextInvoiceNumber', 1).then(function(n){
+      var num = 'DSX-INV' + String(n).padStart(4,'0');
+      return updateOrder(o.id, {invoiceNumber:num}).then(function(){ return num; });
+    });
   }
 
   function saveInvoiceDraft(orderId, mode){
@@ -1259,8 +1267,22 @@ import './platform.js';
       STATE.orders = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
       STATE.orders.sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
       render();
+      backfillJobNumbers();
     }, function(){ toast('Could not load jobs — check your connection'); });
     if(isTechnician()) return; // technicians only see the job board — no customers, WhatsApp, files or downloads
+    db.collection('products').onSnapshot(function(qs){
+      STATE.products = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+      render();
+    }, function(){});
+    db.collection('receipts').onSnapshot(function(qs){
+      STATE.receipts = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+      render();
+    }, function(){});
+    db.collection('cashups').onSnapshot(function(qs){
+      var m = {}; qs.docs.forEach(function(d){ m[d.id] = d.data(); });
+      STATE.cashups = m;
+      render();
+    }, function(){});
     db.collection('customers').orderBy('name').onSnapshot(function(qs){
       STATE.customers = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
       render();
@@ -1508,19 +1530,20 @@ import './platform.js';
     var content;
     if(pending.kind==='image') content = {image:{url:pending.url, caption:pending.caption||null}};
     else if(pending.kind==='file') content = {document:{url:pending.url, filename:pending.filename, caption:pending.caption||null}};
+    else if(pending.kind==='template') content = templateContent(pending);
     else content = {text:{body:pending.text}};
 
     waSendCall(phone, content, pending.key).then(function(res){
       var payload = (res && res.payload) || {};
       entry.sending = false;
       entry.pendingSend = null;
-      var isText = pending.kind==='text' || !pending.kind;
+      var isText = pending.kind==='text' || !pending.kind || pending.kind==='template';
       var body = isText ? pending.text : ('📎 '+pending.filename+(pending.caption?('\n'+pending.caption):''));
       entry.list = (entry.list||[]).concat([{message_id: payload.id || ('local-'+Date.now()), body: body, from_me:true, date: new Date().toISOString()}]);
-      if(isText){ STATE.chatDraft[phone] = ''; }
+      if(isText && pending.kind!=='template'){ STATE.chatDraft[phone] = ''; }
       STATE.chatMessages[phone] = entry;
       render();
-      toast(isText ? 'Message sent' : 'File sent');
+      toast(pending.kind==='template' ? 'Template sent' : (isText ? 'Message sent' : 'File sent'));
       if(payload.id) checkWaDelivery(phone, payload.id);
     }).catch(function(err){
       entry.sending = false;
@@ -1614,7 +1637,8 @@ import './platform.js';
       (STATE.newTeamOpen && isOwnerRole() ? renderNewTeamModal() : '') +
       (STATE.customerForm && canAccess('customers') ? renderCustomerForm() : '') +
       (STATE.quoteModalOrderId && canAccess('quotes') ? renderQuoteModal() : '') +
-      (STATE.invoiceModalOrderId && canAccess('quotes') ? renderInvoiceModal() : '');
+      (STATE.invoiceModalOrderId && canAccess('quotes') ? renderInvoiceModal() : '') +
+      (STATE.receiptForm && !isTechnician() ? renderReceiptModal() : '');
     bindEvents();
   }
 
@@ -1625,6 +1649,8 @@ import './platform.js';
     {key:'customers', label:'Customers'},
     {key:'team', label:'Team'},
     {key:'quotes', label:'Quotes & invoicing'},
+    {key:'products', label:'Products'},
+    {key:'cashup', label:'Cash-ups'},
     {key:'reports', label:'Reports'},
     {key:'settings', label:'Settings'}
   ];
@@ -1666,6 +1692,8 @@ import './platform.js';
       case 'customers': return renderCustomersTab();
       case 'team': return renderTeamTab();
       case 'quotes': return renderQuotesTab();
+      case 'products': return renderProductsTab();
+      case 'cashup': return renderCashupTab();
       case 'settings': return renderSettingsTab();
       case 'reports': return renderReportsTab();
       default: return renderDashboardTab();
@@ -1730,7 +1758,7 @@ import './platform.js';
     var af = STATE.boardAssigneeFilter;
     var cols = STATUSES.map(function(s){
       var items = STATE.orders.filter(function(o){ return o.status===s.key; });
-      if(q){ items = items.filter(function(o){ return (o.title+' '+o.customerName+' '+(o.designerName||'')+' '+(o.technicianName||'')).toLowerCase().indexOf(q)>=0; }); }
+      if(q){ items = items.filter(function(o){ return (o.title+' '+o.customerName+' '+(o.designerName||'')+' '+(o.technicianName||'')+' '+(o.jobNumber||'')).toLowerCase().indexOf(q)>=0; }); }
       if(af==='unassigned'){ items = items.filter(function(o){ return !o.designerId && !o.technicianId; }); }
       else if(af && af!=='all'){ items = items.filter(function(o){ return o.designerId===af || o.technicianId===af; }); }
       var cards = items.map(cardHtml).join('');
@@ -2519,9 +2547,10 @@ import './platform.js';
           '<td>'+(o.invoiced ? ('<span class="status-chip status-invoiced">'+escapeHtml(o.invoiceNumber||'Invoiced')+'</span>') : '<button class="btn btn-ghost btn-sm" data-action="open-invoice" data-id="'+o.id+'">Generate</button>')+'</td>' +
           '<td>'+shortDate(o.dueDate)+'</td>' +
           '<td>'+(o.quoteNumber ? ('<span class="mono" style="font-size:11.5px;">'+escapeHtml(o.quoteNumber)+'</span>') : '<button class="btn btn-ghost btn-sm" data-action="open-quote" data-id="'+o.id+'">Generate</button>')+'</td>' +
+          '<td>'+(function(){ var st = payStatus(o); return '<span class="pay-chip pay-'+st.key+'">'+st.label+'</span>'; })()+'</td>' +
         '</tr>'
       );
-    }).join('') : '<tr><td colspan="7" class="empty-note">No quoted jobs yet — set a quote amount from any job card.</td></tr>';
+    }).join('') : '<tr><td colspan="8" class="empty-note">No quoted jobs yet — set a quote amount from any job card.</td></tr>';
 
     return (
       '<div class="topline"><div><h1>Quotes &amp; invoicing</h1><div class="sub">Export selected jobs as a Xero-ready invoice CSV</div></div>' + exampleBadge() + '</div>' +
@@ -2532,7 +2561,7 @@ import './platform.js';
         '<span style="flex:1"></span>' +
         '<button class="btn btn-primary btn-sm" data-action="export-xero" '+(selectedCount?'':'disabled')+'>Export '+(selectedCount||'')+' to Xero CSV</button>' +
       '</div>' +
-      '<div class="panel"><div class="tbl-wrap"><table><thead><tr><th></th><th>Customer</th><th>Job</th><th>Amount</th><th>Invoice</th><th>Due</th><th>Quotation</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>' +
+      '<div class="panel"><div class="tbl-wrap"><table><thead><tr><th></th><th>Customer</th><th>Job</th><th>Amount</th><th>Invoice</th><th>Due</th><th>Quotation</th><th>Payment</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>' +
       '<div class="hint" style="margin-top:10px;">Xero import needs the <strong>ContactName</strong> to match an existing Xero contact exactly, and every line filled in for AccountCode and TaxType — set your defaults in Settings.</div>'
     );
   }
@@ -2649,7 +2678,7 @@ import './platform.js';
     var rows = draft.items.map(function(li, i){
       return (
         '<tr>' +
-          '<td style="min-width:180px;"><input type="text" id="qliDesc-'+i+'" value="'+escapeHtml(li.description)+'" placeholder="What this line covers"></td>' +
+          '<td style="min-width:180px;"><input type="text" id="qliDesc-'+i+'" list="productOptions" autocomplete="off" value="'+escapeHtml(li.description)+'" placeholder="Type or pick a product"></td>' +
           '<td style="width:64px;"><input type="number" id="qliQty-'+i+'" min="0" step="1" value="'+li.qty+'"></td>' +
           '<td style="width:100px;"><input type="number" id="qliPrice-'+i+'" min="0" step="0.01" value="'+li.unitPrice+'"></td>' +
           '<td class="num" id="qliLineTotal-'+i+'" style="white-space:nowrap;">'+money((Number(li.qty)||0)*(Number(li.unitPrice)||0))+'</td>' +
@@ -2666,7 +2695,7 @@ import './platform.js';
           '<div class="modal-head"><div><div class="jobno mono">'+(o.quoteNumber||'Not yet numbered')+'</div><h2>Quotation for '+escapeHtml(o.customerName)+'</h2></div><button class="modal-close" data-action="close-quote-modal" aria-label="Close">&times;</button></div>' +
 
           '<div class="tbl-wrap"><table><thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Line total</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
-          '<button class="btn btn-ghost btn-sm" style="margin:8px 0 16px;" data-action="quote-add-line">+ Add line</button>' +
+          '<button class="btn btn-ghost btn-sm" style="margin:8px 0 16px;" data-action="quote-add-line">+ Add line</button>' + productDatalist() +
 
           '<div class="kv" style="justify-content:flex-end; margin-left:auto; max-width:260px; margin-bottom:16px;">' +
             '<dt>Subtotal</dt><dd class="num" id="qSubtotal">'+money(totals.subtotal)+'</dd>' +
@@ -2702,7 +2731,7 @@ import './platform.js';
     var rows = draft.items.map(function(li, i){
       return (
         '<tr>' +
-          '<td style="min-width:180px;"><input type="text" id="iliDesc-'+i+'" value="'+escapeHtml(li.description)+'" placeholder="What this line covers"></td>' +
+          '<td style="min-width:180px;"><input type="text" id="iliDesc-'+i+'" list="productOptions" autocomplete="off" value="'+escapeHtml(li.description)+'" placeholder="Type or pick a product"></td>' +
           '<td style="width:64px;"><input type="number" id="iliQty-'+i+'" min="0" step="1" value="'+li.qty+'"></td>' +
           '<td style="width:100px;"><input type="number" id="iliPrice-'+i+'" min="0" step="0.01" value="'+li.unitPrice+'"></td>' +
           '<td class="num" id="iliLineTotal-'+i+'" style="white-space:nowrap;">'+money((Number(li.qty)||0)*(Number(li.unitPrice)||0))+'</td>' +
@@ -2721,7 +2750,7 @@ import './platform.js';
           (vendor ? '' : '<p class="hint" style="margin-top:0;">No business VAT number is on file in Settings, so this will be issued as a plain invoice with no VAT charged — not a Tax Invoice.</p>') +
 
           '<div class="tbl-wrap"><table><thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Line total</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
-          '<button class="btn btn-ghost btn-sm" style="margin:8px 0 16px;" data-action="invoice-add-line">+ Add line</button>' +
+          '<button class="btn btn-ghost btn-sm" style="margin:8px 0 16px;" data-action="invoice-add-line">+ Add line</button>' + productDatalist() +
 
           '<div class="kv" style="justify-content:flex-end; margin-left:auto; max-width:260px; margin-bottom:16px;">' +
             '<dt>Subtotal</dt><dd class="num" id="iSubtotal">'+money(totals.subtotal)+'</dd>' +
@@ -2778,12 +2807,14 @@ import './platform.js';
       composeArea = '<div class="chat-preview">Preparing the file for WhatsApp…</div>';
     } else if(entry.pendingSend){
       var pv = entry.pendingSend;
-      var previewLine = (!pv.kind || pv.kind==='text')
+      var previewLine = pv.kind==='template'
+        ? ('<strong>Template: '+escapeHtml(pv.label)+'</strong><br><em>&ldquo;'+escapeHtml(pv.text)+'&rdquo;</em>')
+        : (!pv.kind || pv.kind==='text')
         ? '<em>&ldquo;'+escapeHtml(pv.text)+'&rdquo;</em>'
         : ('📎 <strong>'+escapeHtml(pv.filename)+'</strong>' + (pv.caption ? ('<br><em>&ldquo;'+escapeHtml(pv.caption)+'&rdquo;</em>') : ''));
       composeArea =
         '<div class="chat-preview">Send to '+escapeHtml(o.customerName)+' (+'+escapeHtml(phone)+')?<br>'+previewLine+
-          (!waWindowOpen(phone) && !entry.loading && !entry.sendError ? '<div style="margin-top:6px; color:var(--warning, #9a6700);">This customer hasn\'t messaged you in the last 24 hours, so WhatsApp will probably refuse this. Ask them to send you a message first.</div>' : '') +
+          (pv.kind!=='template' && !waWindowOpen(phone) && !entry.loading && !entry.sendError ? '<div style="margin-top:6px; color:var(--warning, #9a6700);">This customer hasn\'t messaged you in the last 24 hours, so WhatsApp will probably refuse this. Ask them to send you a message first.</div>' : '') +
           (entry.sendError ? ('<div style="margin-top:6px; color:var(--critical);">'+escapeHtml(waErrorNotice(entry.sendError).text)+'</div>') : '') +
           '<div class="actions">' +
             '<button class="btn btn-primary btn-sm" data-action="chat-confirm-send" data-phone="'+phone+'" '+(entry.sending?'disabled':'')+'>'+(entry.sending?'Sending…':'Send now')+'</button>' +
@@ -2793,6 +2824,8 @@ import './platform.js';
     } else {
       var draft = STATE.chatDraft[phone] || '';
       composeArea =
+        (!waWindowOpen(phone) && !entry.loading ? '<div class="hint" style="margin-bottom:6px;">The 24-hour reply window is closed. Send an approved template to restart the conversation; once the customer replies you can chat normally again.</div>' : '') +
+        templatePicker(phone) +
         '<div class="chat-compose">' +
           '<label class="btn btn-sm chat-attach" title="Attach a photo, PDF or document" aria-label="Attach a file">'+CLIP_ICON+'<input type="file" id="chatAttach" data-phone="'+phone+'" accept="image/jpeg,image/png,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt" style="display:none"></label>' +
           '<textarea id="chatCompose" placeholder="Message '+escapeHtml(o.customerName)+'…" rows="2">'+escapeHtml(draft)+'</textarea>' +
@@ -2848,6 +2881,7 @@ import './platform.js';
             '<button class="btn btn-sm" data-action="open-invoice" data-id="'+o.id+'">'+(o.invoiceNumber && o.invoiceGeneratedAt?'Edit invoice':'Generate tax invoice')+'</button>' +
           '</div>'
           )) +
+          (isTechnician() ? '' : renderPaymentsSection(o)) +
           '<div class="field"><label for="ofNotes">Internal notes</label><textarea id="ofNotes">'+escapeHtml(o.notes||'')+'</textarea></div>' +
           (STATE.assets ?
             '<div class="field"><label>Artwork / proof attachments</label><div class="attach-grid">'+attach+'<label class="attach-file" style="cursor:pointer;">+ Add<input type="file" id="ofAttach" accept="image/*,application/pdf" style="display:none"></label></div></div>'
@@ -3042,7 +3076,7 @@ import './platform.js';
         render();
       }
       else if(action==='close-order'){ STATE.openOrderId = null; render(); }
-      else if(action==='close-modal-bg'){ if(e.target===el){ STATE.openOrderId=null; STATE.newOrderOpen=false; STATE.newOrderPrefill=null; STATE.newTeamOpen=false; STATE.quoteModalOrderId=null; STATE.quoteDraft=null; STATE.invoiceModalOrderId=null; STATE.invoiceDraft=null; render(); } }
+      else if(action==='close-modal-bg'){ if(e.target===el && STATE.receiptForm){ STATE.receiptForm = null; render(); } else if(e.target===el){ STATE.openOrderId=null; STATE.newOrderOpen=false; STATE.newOrderPrefill=null; STATE.newTeamOpen=false; STATE.quoteModalOrderId=null; STATE.quoteDraft=null; STATE.invoiceModalOrderId=null; STATE.invoiceDraft=null; render(); } }
       else if(action==='open-add-team'){ if(isOwnerRole()){ STATE.newTeamOpen = true; render(); } }
       else if(action==='close-new-team'){ STATE.newTeamOpen = false; render(); }
       else if(action==='submit-new-team'){ submitNewTeamMember(); }
@@ -3136,6 +3170,25 @@ import './platform.js';
       else if(action==='cf-add-contact'){ var cd = STATE.customerForm && STATE.customerForm.draft; if(cd && cd.contacts.length < MAX_EXTRA_CONTACTS){ cd.contacts.push(blankPerson()); render(); var ni = cd.contacts.length-1; setTimeout(function(){ var x = document.getElementById('cfc'+ni+'f'); if(x) x.focus(); }, 0); } }
       else if(action==='cf-remove-contact'){ var rd = STATE.customerForm && STATE.customerForm.draft; if(rd){ rd.contacts.splice(Number(el.getAttribute('data-i')), 1); render(); } }
       else if(action==='quote-filter'){ STATE.quoteFilter = el.getAttribute('data-filter'); render(); }
+      else if(action==='product-new'){ STATE.productForm = {code:'', description:'', unit:'', price:''}; render(); }
+      else if(action==='product-edit'){ var pe = STATE.products.find(function(x){ return x.id===el.getAttribute('data-id'); }); if(pe){ STATE.productForm = Object.assign({}, pe); render(); } }
+      else if(action==='product-cancel'){ STATE.productForm = null; render(); }
+      else if(action==='product-save'){ saveProduct(); }
+      else if(action==='product-delete'){ deleteProduct(el.getAttribute('data-id')); }
+      else if(action==='product-template'){ e.preventDefault(); downloadProductTemplate(); }
+      else if(action==='product-import-confirm'){ confirmProductImport(); }
+      else if(action==='product-import-cancel'){ STATE.productImport = null; render(); }
+      else if(action==='receipt-new'){ openReceiptForm(el.getAttribute('data-id')); }
+      else if(action==='receipt-method' && STATE.receiptForm){ STATE.receiptForm.method = el.getAttribute('data-m'); render(); }
+      else if(action==='receipt-save'){ saveReceipt(); }
+      else if(action==='receipt-close'){ STATE.receiptForm = null; render(); }
+      else if(action==='receipt-pdf'){ downloadReceipt(el.getAttribute('data-id')); }
+      else if(action==='receipt-wa'){ sendReceiptWhatsapp(el.getAttribute('data-id')); }
+      else if(action==='receipt-void'){ voidReceipt(el.getAttribute('data-id')); }
+      else if(action==='cashup-save'){ saveCashup(); }
+      else if(action==='cashup-reopen'){ reopenCashup(el.getAttribute('data-date')); }
+      else if(action==='cashup-csv'){ exportCashupCsv(el.getAttribute('data-date')); }
+      else if(action==='cashup-date'){ STATE.cashupDate = el.getAttribute('data-date'); STATE.cashupForm = null; render(); }
       else if(action==='select-export'){ STATE.selectedForExport[el.getAttribute('data-id')] = el.checked; render(); }
       else if(action==='export-xero'){ exportXero(); }
       else if(action==='save-whatsapp'){
@@ -3166,6 +3219,9 @@ import './platform.js';
       if(e.target.id==='ofAttach'){ handleAttach(e.target.files[0]); }
       if(e.target.id==='chatAttach'){ attachFromDevice(e.target.getAttribute('data-phone'), e.target.files[0]); e.target.value=''; }
       if(e.target.id==='importFile'){ importBackupFile(e.target.files[0]); e.target.value=''; }
+      if(e.target.id==='productFile'){ importProductsFile(e.target.files[0]); e.target.value=''; }
+      if(e.target.id==='cuDate' && e.target.value){ STATE.cashupDate = e.target.value; STATE.cashupForm = null; render(); }
+      if(e.target.id==='tplPick' && e.target.value){ prepareTemplate(e.target.getAttribute('data-phone'), e.target.value); }
       if(e.target.id==='boardAssignee'){ STATE.boardAssigneeFilter = e.target.value; render(); }
       if(e.target.id==='custExFrom'){ STATE.custExportFrom = e.target.value; render(); }
       if(e.target.id==='custExTo'){ STATE.custExportTo = e.target.value; render(); }
@@ -3185,13 +3241,17 @@ import './platform.js';
       if(e.target.id==='customerSearch'){ STATE.customerQuery = e.target.value; render(); focusEl('customerSearch'); }
       if(e.target.id==='chatCompose'){ var p = currentChatPhone(); if(p){ STATE.chatDraft[p] = e.target.value; } }
       if(e.target.id==='inviteMsg'){ STATE.inviteDraftText = e.target.value; }
+      var pfk = e.target.getAttribute && e.target.getAttribute('data-pf'); if(pfk && STATE.productForm){ STATE.productForm[pfk] = e.target.value; }
+      var rfk = e.target.getAttribute && e.target.getAttribute('data-rf'); if(rfk && STATE.receiptForm){ STATE.receiptForm[rfk] = e.target.value; }
+      var cuk = e.target.getAttribute && e.target.getAttribute('data-cu'); if(cuk && STATE.cashupForm){ STATE.cashupForm[cuk] = e.target.value; refreshCashupTotals(); }
+      if(e.target.id==='productSearch'){ STATE.productQuery = e.target.value; render(); focusEl('productSearch'); }
       if(STATE.quoteDraft){
         var qm = e.target.id.match(/^qli(Desc|Qty|Price)-(\d+)$/);
         if(qm){
           var qi = Number(qm[2]);
           var li = STATE.quoteDraft.items[qi];
           if(li){
-            if(qm[1]==='Desc') li.description = e.target.value;
+            if(qm[1]==='Desc'){ li.description = e.target.value; applyProductToLine('qli', qi, STATE.quoteDraft.items); }
             else if(qm[1]==='Qty') li.qty = e.target.value;
             else if(qm[1]==='Price') li.unitPrice = e.target.value;
             refreshQuoteTotals();
@@ -3210,7 +3270,7 @@ import './platform.js';
           var ii = Number(im[2]);
           var ili = STATE.invoiceDraft.items[ii];
           if(ili){
-            if(im[1]==='Desc') ili.description = e.target.value;
+            if(im[1]==='Desc'){ ili.description = e.target.value; applyProductToLine('ili', ii, STATE.invoiceDraft.items); }
             else if(im[1]==='Qty') ili.qty = e.target.value;
             else if(im[1]==='Price') ili.unitPrice = e.target.value;
             refreshInvoiceTotals();
@@ -3327,7 +3387,7 @@ import './platform.js';
         createdAt: todayIso(),
         updatedAt: todayIso()
       };
-      return persistOrder(order);
+      return reserveNumbers('nextJobNumber', 1).then(function(n){ order.jobNumber = 'DSX-J'+pad4(n); return persistOrder(order); });
     }).then(function(order){
       var pf = STATE.newOrderPrefill;
       if(pf && pf.messageId){ markWaHandled(pf.waPhone, pf.messageId, 'logged', order.id); }
@@ -3621,6 +3681,634 @@ import './platform.js';
       STATE.waMediaCheck = {status:'error', error:err};
       render();
     });
+  }
+
+  /* ============================ numbering ============================ */
+  // Reserves `count` consecutive numbers from config/business[field] and resolves the first one.
+  // Live: a Firestore transaction, so two people can never get the same number.
+  function reserveNumbers(field, count){
+    count = count || 1;
+    if(STATE.isLive && window.DSX && window.DSX.reserveNumbers){
+      return window.DSX.reserveNumbers(field, count).then(function(start){
+        var c = {}; c[field] = start + count;
+        STATE.config = Object.assign({}, STATE.config, c);
+        return start;
+      });
+    }
+    var start = Number(STATE.config[field]) || 1;
+    var patch = {}; patch[field] = start + count;
+    STATE.config = Object.assign({}, STATE.config, patch);
+    return Promise.resolve(start);
+  }
+  function pad4(n){ return String(n).padStart(4,'0'); }
+
+  // Older jobs created before job numbers existed get one, in the order they were created.
+  var _jobBackfillDone = false;
+  function backfillJobNumbers(){
+    if(_jobBackfillDone || !STATE.isLive || !isOwnerRole()) return;
+    var missing = STATE.orders.filter(function(o){ return !o.jobNumber; });
+    _jobBackfillDone = true;
+    if(!missing.length) return;
+    missing.sort(function(a,b){ return String(a.createdAt||'').localeCompare(String(b.createdAt||'')) || String(a.id).localeCompare(String(b.id)); });
+    reserveNumbers('nextJobNumber', missing.length).then(function(start){
+      return updateDocs(missing.map(function(o, i){ return {path:'orders/'+o.id, data:{jobNumber:'DSX-J'+pad4(start+i)}}; }));
+    }).catch(function(){ _jobBackfillDone = false; });
+  }
+  function stripId(o){ var c = Object.assign({}, o); delete c.id; return c; }
+  // Patches several existing documents in one go (only the given fields change).
+  function updateDocs(list){
+    if(!list.length) return Promise.resolve();
+    if(STATE.isLive && window.DSX && window.DSX.updateDocs) return window.DSX.updateDocs(list);
+    list.forEach(function(w){
+      var parts = w.path.split('/'), coll = parts[0], id = parts[1];
+      var arr = coll==='orders' ? STATE.orders : coll==='receipts' ? STATE.receipts : null;
+      var rec = arr && arr.find(function(x){ return x.id===id; });
+      if(rec) Object.assign(rec, w.data);
+    });
+    render();
+    return Promise.resolve();
+  }
+
+  /* ============================ products (catalogue) ============================ */
+  function productLabel(p){ return (p.code ? p.code+' · ' : '') + p.description + ' — ' + money(p.price) + (p.unit ? ' / '+p.unit : ''); }
+  function productDatalist(){
+    return '<datalist id="productOptions">' + STATE.products.filter(function(p){ return p.active!==false; }).map(function(p){
+      return '<option value="'+escapeHtml(p.description)+'" label="'+escapeHtml((p.code?p.code+' · ':'')+money(p.price)+(p.unit?' / '+p.unit:''))+'">';
+    }).join('') + '</datalist>';
+  }
+  function findProductByDescription(desc){
+    var d = String(desc||'').trim().toLowerCase();
+    if(!d) return null;
+    return STATE.products.find(function(p){ return String(p.description||'').trim().toLowerCase()===d; }) || null;
+  }
+  // When a line's description matches a catalogue product, fill in its price.
+  function applyProductToLine(prefix, i, items){
+    var li = items[i]; if(!li) return false;
+    var p = findProductByDescription(li.description);
+    if(!p) return false;
+    li.unitPrice = Number(p.price)||0;
+    if(!Number(li.qty)) li.qty = 1;
+    var priceEl = document.getElementById(prefix+'Price-'+i); if(priceEl) priceEl.value = li.unitPrice;
+    var qtyEl = document.getElementById(prefix+'Qty-'+i); if(qtyEl) qtyEl.value = li.qty;
+    return true;
+  }
+
+  function productDocId(p){
+    var base = String(p.code || p.description || 'item').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,60) || 'item';
+    return 'p-' + base;
+  }
+
+  function saveProduct(){
+    var f = STATE.productForm; if(!f) return;
+    var desc = String(f.description||'').trim();
+    if(!desc){ f.error = 'Add a description.'; render(); return; }
+    var price = Number(String(f.price).replace(/[^0-9.\-]/g,''));
+    if(!(price>=0)){ f.error = 'Enter a valid price.'; render(); return; }
+    var data = {code:String(f.code||'').trim(), description:desc, unit:String(f.unit||'').trim(), price:Math.round(price*100)/100, active:true, updatedAt:new Date().toISOString()};
+    var id = f.id || productDocId(data);
+    if(!f.id && STATE.products.some(function(p){ return p.id===id; })){ id = id + '-' + Math.random().toString(36).slice(2,6); }
+    var done = function(){ STATE.productForm = null; render(); toast('Product saved'); };
+    if(STATE.isLive && STATE.db){ STATE.db.doc('products/'+id).set(data).then(done).catch(function(){ toast('Could not save — try again'); }); }
+    else { var ix = STATE.products.findIndex(function(p){ return p.id===id; }); if(ix>=0) STATE.products[ix] = Object.assign({id:id}, data); else STATE.products.push(Object.assign({id:id}, data)); done(); }
+  }
+  function deleteProduct(id){
+    if(!confirm('Remove this product from the catalogue? Existing quotes and invoices are not affected.')) return;
+    if(STATE.isLive && STATE.db){ STATE.db.doc('products/'+id).delete().catch(function(){ toast('Could not remove — try again'); }); }
+    else { STATE.products = STATE.products.filter(function(p){ return p.id!==id; }); render(); }
+  }
+
+  // Spreadsheet import: CSV in the browser, Excel via SheetJS (loaded only when needed).
+  var XLSX_URL = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+  function loadXlsx(){
+    if(window.XLSX) return Promise.resolve(window.XLSX);
+    return new Promise(function(resolve, reject){
+      var s = document.createElement('script'); s.src = XLSX_URL;
+      s.onload = function(){ window.XLSX ? resolve(window.XLSX) : reject(new Error('Spreadsheet reader did not load')); };
+      s.onerror = function(){ reject(new Error('Could not load the spreadsheet reader — check your internet connection')); };
+      document.head.appendChild(s);
+    });
+  }
+  function parseCsv(text){
+    var rows = [], row = [], cell = '', q = false;
+    for(var i=0;i<text.length;i++){
+      var ch = text[i];
+      if(q){ if(ch==='"'){ if(text[i+1]==='"'){ cell+='"'; i++; } else q = false; } else cell += ch; }
+      else if(ch==='"') q = true;
+      else if(ch===',' || ch===';' || ch==='\t'){ row.push(cell); cell=''; }
+      else if(ch==='\n'){ row.push(cell); rows.push(row); row=[]; cell=''; }
+      else if(ch!=='\r') cell += ch;
+    }
+    if(cell!=='' || row.length){ row.push(cell); rows.push(row); }
+    return rows;
+  }
+  var HEADER_MAP = {
+    code: ['code','sku','item code','product code','itemcode','stock code','ref','reference'],
+    description: ['description','name','item','product','product name','item name','item description','details'],
+    unit: ['unit','uom','unit of measure','units','per'],
+    price: ['price','unit price','selling price','sales price','price excl','price excl vat','price (excl vat)','price ex vat','rate','amount','unitamount','unit amount']
+  };
+  function mapRows(rows){
+    // find the header row: the first row that names a description and a price column
+    var hi = -1, cols = {};
+    for(var r=0; r<Math.min(rows.length, 15); r++){
+      var c = {};
+      rows[r].forEach(function(h, idx){
+        var k = String(h||'').trim().toLowerCase().replace(/\*/g,'');
+        Object.keys(HEADER_MAP).forEach(function(f){ if(c[f]===undefined && HEADER_MAP[f].indexOf(k)>=0) c[f] = idx; });
+      });
+      if(c.description!==undefined && c.price!==undefined){ hi = r; cols = c; break; }
+    }
+    if(hi<0) return {error:'Couldn’t find the column headings. The sheet needs at least a “Description” and a “Price” column (Code and Unit are optional).'};
+    var items = [], skipped = 0;
+    rows.slice(hi+1).forEach(function(row){
+      var desc = String(row[cols.description]||'').trim();
+      if(!desc){ return; }
+      var price = parseMoney(row[cols.price]);
+      var raw = price==null ? '' : String(price);
+      if(raw==='' || isNaN(price)){ skipped++; return; }
+      items.push({code: cols.code!==undefined ? String(row[cols.code]||'').trim() : '', description:desc, unit: cols.unit!==undefined ? String(row[cols.unit]||'').trim() : '', price:Math.round(price*100)/100});
+    });
+    return {items:items, skipped:skipped};
+  }
+  // Accepts 350, "350.00", "R 1 250,50", "R1,250.50" — South African and international formats.
+  function parseMoney(v){
+    if(typeof v==='number') return isFinite(v) ? v : null;
+    var s = String(v==null?'':v).replace(/[R\s\u00a0]/gi,'');
+    if(!s) return null;
+    if(s.indexOf(',')>=0 && s.indexOf('.')>=0) s = s.replace(/,/g,'');
+    else if(s.indexOf(',')>=0) s = (/,\d{1,2}$/.test(s) ? s.replace(/\.(?=\d{3})/g,'').replace(',', '.') : s.replace(/,/g,''));
+    var n = Number(s);
+    return isNaN(n) ? null : n;
+  }
+  function importProductsFile(file){
+    if(!file) return;
+    STATE.productImport = {status:'reading', name:file.name};
+    render();
+    var isCsv = /\.csv$/i.test(file.name) || file.type==='text/csv';
+    var p = isCsv
+      ? file.text().then(function(t){ return parseCsv(t.replace(/^﻿/,'')); })
+      : loadXlsx().then(function(X){
+          return file.arrayBuffer().then(function(buf){
+            var wb = X.read(buf, {type:'array'});
+            return X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1, raw:true, defval:''});
+          });
+        });
+    p.then(function(rows){
+      var res = mapRows(rows);
+      if(res.error){ STATE.productImport = {status:'error', name:file.name, error:res.error}; render(); return; }
+      if(!res.items.length){ STATE.productImport = {status:'error', name:file.name, error:'No products with a price were found in that file.'}; render(); return; }
+      STATE.productImport = {status:'preview', name:file.name, items:res.items, skipped:res.skipped};
+      render();
+    }).catch(function(e){ STATE.productImport = {status:'error', name:file.name, error:(e && e.message) || 'Could not read that file.'}; render(); });
+  }
+  function confirmProductImport(){
+    var imp = STATE.productImport; if(!imp || !imp.items) return;
+    var byCode = {}, byDesc = {};
+    STATE.products.forEach(function(p){ if(p.code) byCode[p.code.toLowerCase()] = p.id; byDesc[String(p.description).toLowerCase()] = p.id; });
+    var now = new Date().toISOString(), used = {};
+    var writes = imp.items.map(function(it){
+      var id = (it.code && byCode[it.code.toLowerCase()]) || byDesc[it.description.toLowerCase()] || productDocId(it);
+      while(used[id]) id = id + '-2';
+      used[id] = true;
+      return {path:'products/'+id, data:Object.assign({}, it, {active:true, updatedAt:now})};
+    });
+    STATE.productImport = {status:'saving', name:imp.name, total:writes.length};
+    render();
+    var finish = function(){ STATE.productImport = {status:'done', name:imp.name, total:writes.length}; render(); toast(writes.length+' products imported'); };
+    if(STATE.isLive && window.DSX){ window.DSX.importDocs(writes).then(finish).catch(function(e){ STATE.productImport = {status:'error', name:imp.name, error:'Import stopped: '+((e&&e.message)||'unknown error')}; render(); }); }
+    else { writes.forEach(function(w){ var id = w.path.split('/')[1]; var ix = STATE.products.findIndex(function(p){ return p.id===id; }); var rec = Object.assign({id:id}, w.data); if(ix>=0) STATE.products[ix] = rec; else STATE.products.push(rec); }); finish(); }
+  }
+  function downloadProductTemplate(){
+    var csv = 'Code,Description,Unit,Price (excl VAT)\r\nVIN-001,Vinyl lettering per m²,m²,350.00\r\nBAN-A1,A1 PVC banner with eyelets,each,280.00\r\nMUG-11,11oz sublimation mug,each,85.00\r\n';
+    var blob = new Blob([csv], {type:'text/csv'});
+    if(STATE.downloads){ STATE.downloads.save({filename:'DsignX-product-catalogue-template.csv', data:blob}).catch(function(){ fallbackDownload(blob, 'DsignX-product-catalogue-template.csv'); }); }
+    else fallbackDownload(blob, 'DsignX-product-catalogue-template.csv');
+  }
+
+  function renderProductsTab(){
+    var q = (STATE.productQuery||'').trim().toLowerCase();
+    var list = STATE.products.slice().sort(function(a,b){ return String(a.description).localeCompare(String(b.description)); });
+    if(q) list = list.filter(function(p){ return (p.code+' '+p.description+' '+p.unit).toLowerCase().indexOf(q)>=0; });
+    var imp = STATE.productImport;
+    var impHtml = '';
+    if(imp){
+      if(imp.status==='reading') impHtml = '<div class="hint">Reading '+escapeHtml(imp.name)+'…</div>';
+      else if(imp.status==='error') impHtml = '<div class="hint" style="color:var(--critical);">'+escapeHtml(imp.error)+'</div>';
+      else if(imp.status==='saving') impHtml = '<div class="hint">Importing '+imp.total+' products…</div>';
+      else if(imp.status==='done') impHtml = '<div class="hint"><strong>Imported '+imp.total+' products from '+escapeHtml(imp.name)+'.</strong></div>';
+      else if(imp.status==='preview'){
+        impHtml = '<div class="hint" style="margin-bottom:8px;">Found <strong>'+imp.items.length+'</strong> products in '+escapeHtml(imp.name)+(imp.skipped?(' ('+imp.skipped+' rows skipped — no price)'):'')+'. Products with the same code (or description) are updated; others are added.</div>' +
+          '<div class="tbl-wrap" style="max-height:220px; overflow:auto; margin-bottom:10px;"><table><thead><tr><th>Code</th><th>Description</th><th>Unit</th><th>Price excl VAT</th></tr></thead><tbody>' +
+          imp.items.slice(0,50).map(function(it){ return '<tr><td class="mono">'+escapeHtml(it.code)+'</td><td>'+escapeHtml(it.description)+'</td><td>'+escapeHtml(it.unit)+'</td><td class="num">'+money(it.price)+'</td></tr>'; }).join('') +
+          (imp.items.length>50 ? '<tr><td colspan="4" class="empty-note">…and '+(imp.items.length-50)+' more</td></tr>' : '') +
+          '</tbody></table></div>' +
+          '<button class="btn btn-primary btn-sm" data-action="product-import-confirm">Import '+imp.items.length+' products</button> <button class="btn btn-ghost btn-sm" data-action="product-import-cancel">Cancel</button>';
+      }
+    }
+    var f = STATE.productForm;
+    var formHtml = f ? (
+      '<div class="panel">' +
+        '<div class="section-label">'+(f.id?'Edit product':'Add product')+'</div>' +
+        (f.error ? '<div class="field-error" style="margin-bottom:8px;">'+escapeHtml(f.error)+'</div>' : '') +
+        '<div class="field-row">' +
+          '<div class="field"><label for="pfCode">Code (optional)</label><input type="text" id="pfCode" data-pf="code" value="'+escapeHtml(f.code||'')+'"></div>' +
+          '<div class="field"><label for="pfUnit">Unit (optional)</label><input type="text" id="pfUnit" data-pf="unit" placeholder="each, m², per hour" value="'+escapeHtml(f.unit||'')+'"></div>' +
+        '</div>' +
+        '<div class="field"><label for="pfDesc">Description</label><input type="text" id="pfDesc" data-pf="description" value="'+escapeHtml(f.description||'')+'"></div>' +
+        '<div class="field"><label for="pfPrice">Price excl VAT ('+escapeHtml(STATE.config.currency||'ZAR')+')</label><input type="number" step="0.01" min="0" id="pfPrice" data-pf="price" value="'+escapeHtml(f.price==null?'':String(f.price))+'"></div>' +
+        '<button class="btn btn-primary btn-sm" data-action="product-save">Save product</button> <button class="btn btn-ghost btn-sm" data-action="product-cancel">Cancel</button>' +
+      '</div>') : '';
+    var rows = list.length ? list.map(function(p){
+      return '<tr><td class="mono">'+escapeHtml(p.code||'')+'</td><td>'+escapeHtml(p.description)+'</td><td>'+escapeHtml(p.unit||'')+'</td><td class="num">'+money(p.price)+'</td>' +
+        '<td style="white-space:nowrap;"><button class="btn btn-ghost btn-sm" data-action="product-edit" data-id="'+p.id+'">Edit</button><button class="btn btn-ghost btn-sm" data-action="product-delete" data-id="'+p.id+'">Remove</button></td></tr>';
+    }).join('') : '<tr><td colspan="5" class="empty-note">'+(STATE.products.length?'No products match your search.':'No products yet — upload your price list or add products one by one.')+'</td></tr>';
+    return (
+      '<div class="topline"><div><h1>Products</h1><div class="sub">Your price list. Pick products while writing quotes and invoices.</div></div>' +
+        '<button class="btn btn-primary" data-action="product-new">+ Add product</button></div>' +
+      formHtml +
+      '<div class="panel">' +
+        '<div class="section-label">Upload a price list</div>' +
+        '<p class="hint" style="margin-top:0;">Excel (.xlsx) or CSV with the columns <strong>Code</strong>, <strong>Description</strong>, <strong>Unit</strong> and <strong>Price</strong> (excl VAT). Only Description and Price are required. <a href="#" data-action="product-template">Download an example file</a>.</p>' +
+        '<label class="btn btn-sm" style="cursor:pointer;">Choose file…<input type="file" id="productFile" accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" style="display:none"></label>' +
+        '<div style="margin-top:10px;">'+impHtml+'</div>' +
+      '</div>' +
+      '<div class="panel">' +
+        '<div class="search" style="margin-bottom:10px;"><input type="text" id="productSearch" placeholder="Search products…" value="'+escapeHtml(STATE.productQuery||'')+'"></div>' +
+        '<div class="tbl-wrap"><table><thead><tr><th>Code</th><th>Description</th><th>Unit</th><th>Price excl VAT</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
+        '<div class="hint" style="margin-top:8px;">'+STATE.products.length+' products in the catalogue.</div>' +
+      '</div>'
+    );
+  }
+
+  /* ============================ receipts ============================ */
+  function orderReceipts(orderId){
+    return STATE.receipts.filter(function(r){ return r.orderId===orderId && !r.voided; })
+      .sort(function(a,b){ return String(a.createdAt).localeCompare(String(b.createdAt)); });
+  }
+  function orderPaid(orderId){ return orderReceipts(orderId).reduce(function(s,r){ return s + (Number(r.amount)||0); }, 0); }
+  function hasInvoiceDoc(o){ return !!(o.invoiceNumber && o.invoiceGeneratedAt && (o.invoiceLineItems||[]).length); }
+  // What the customer owes for the job: the invoice total once invoiced, otherwise the quote.
+  function orderAmountDue(o){
+    if(hasInvoiceDoc(o)) return invoiceTotals({items:o.invoiceLineItems, vatEnabled:!!o.invoiceVatEnabled && isVatVendor()}).total;
+    if((o.lineItems||[]).length) return quoteTotals({items:o.lineItems, vatEnabled:!!o.quoteVatEnabled && isVatVendor()}).total;
+    return Number(o.quoteAmount)||0;
+  }
+  function round2(n){ return Math.round((Number(n)||0)*100)/100; }
+  function payStatus(o){
+    var due = round2(orderAmountDue(o)), paid = round2(orderPaid(o.id));
+    if(!paid) return {key:'unpaid', label:'Unpaid', due:due, paid:0, balance:due};
+    if(due && paid >= due) return {key:'paid', label: paid>due ? 'Overpaid' : 'Paid', due:due, paid:paid, balance:round2(due-paid)};
+    return {key:'part', label: hasInvoiceDoc(o) ? 'Part-paid' : 'Deposit paid', due:due, paid:paid, balance:round2(due-paid)};
+  }
+
+  function openReceiptForm(orderId){
+    var o = STATE.orders.find(function(x){ return x.id===orderId; }); if(!o) return;
+    var st = payStatus(o);
+    STATE.receiptForm = {orderId:orderId, amount: st.balance>0 ? st.balance.toFixed(2) : '', method:'cash', date:todayIso(), note:'', error:'', saved:null};
+    render();
+  }
+  function saveReceipt(){
+    var f = STATE.receiptForm; if(!f || f.busy) return;
+    var o = STATE.orders.find(function(x){ return x.id===f.orderId; }); if(!o) return;
+    var amount = round2(String(f.amount).replace(/[^0-9.\-]/g,''));
+    if(!(amount>0)){ f.error = 'Enter the amount received.'; render(); return; }
+    if(f.method!=='cash' && f.method!=='card'){ f.error = 'Choose cash or card.'; render(); return; }
+    if(!f.date){ f.error = 'Choose the date.'; render(); return; }
+    if(STATE.cashups[f.date]){ f.error = 'The cash-up for '+fullDate(f.date)+' is already done. Use today’s date, or ask the owner to reopen that cash-up.'; render(); return; }
+    f.busy = true; f.error = ''; render();
+    var member = currentTeamMember();
+    reserveNumbers('nextReceiptNumber', 1).then(function(n){
+      var rec = {
+        number:'DSX-R'+pad4(n), date:f.date, createdAt:new Date().toISOString(), amount:amount, method:f.method,
+        orderId:o.id, jobNumber:o.jobNumber||jobNo(o.id), jobTitle:o.title||'', invoiceNumber: hasInvoiceDoc(o) ? o.invoiceNumber : '',
+        kind: hasInvoiceDoc(o) ? 'payment' : 'prepayment', customerId:o.customerId||null, customerName:o.customerName||'', phone:o.phone||'',
+        note:String(f.note||'').trim(), receivedBy: member ? member.name : 'Owner', receivedById: member ? member.id : 'owner', voided:false, cashupDate:null
+      };
+      if(STATE.isLive && STATE.db){
+        return STATE.db.collection('receipts').add(rec).then(function(ref){ return Object.assign({id:ref.id}, rec); });
+      }
+      var r = Object.assign({id:uid()}, rec); STATE.receipts.push(r); return r;
+    }).then(function(r){
+      f.busy = false; f.saved = r;
+      // fully paid after an invoice → move the job to Invoiced if it isn't already
+      render();
+      toast('Receipt '+r.number+' saved');
+    }).catch(function(){ f.busy = false; f.error = 'Couldn’t save — check your connection and try again.'; render(); });
+  }
+  function voidReceipt(id){
+    var r = STATE.receipts.find(function(x){ return x.id===id; }); if(!r || !isOwnerRole()) return;
+    if(r.cashupDate){ toast('This receipt is in a completed cash-up — reopen that cash-up first'); return; }
+    var why = prompt('Void receipt '+r.number+'? Type a reason (it stays on record, marked VOID):');
+    if(why===null) return;
+    var patch = {voided:true, voidReason:String(why||'').trim() || 'Voided', voidedAt:new Date().toISOString()};
+    if(STATE.isLive && STATE.db){ STATE.db.doc('receipts/'+id).update(patch).catch(function(){ toast('Could not void — try again'); }); }
+    else { Object.assign(r, patch); render(); }
+  }
+
+  function receiptPdf(r){
+    if(!window.jspdf || !window.jspdf.jsPDF){ toast('PDF tools are still loading — try again in a moment'); return null; }
+    var cfg = STATE.config;
+    var o = STATE.orders.find(function(x){ return x.id===r.orderId; }) || {};
+    var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
+    var L = 15, R = 195, W = R-L;
+    var MAROON = [78,9,40], INK = [43,43,43], GREY = [95,99,88], SAGE = [121,128,110], PANEL = [244,245,242], RULE = [222,222,216];
+    function color(c){ doc.setTextColor(c[0],c[1],c[2]); }
+    function font(style, size){ doc.setFont('helvetica', style); doc.setFontSize(size); }
+    var vatNo = String(cfg.businessVatNumber||'').trim();
+    var logoW = 56, logoH = logoW*(358/800);
+    doc.addImage(LOGO_PDF_DATA_URL, 'PNG', L, 12, logoW, logoH);
+    font('bold', 11.5); color(MAROON); doc.text(lh('docCompanyName'), R, 18.5, {align:'right'});
+    font('normal', 8.3); color(GREY);
+    doc.text(lh('docAddress'), R, 23, {align:'right'});
+    doc.text('Tel '+lh('docTel')+'   |   WhatsApp '+lh('docWhatsapp'), R, 27.2, {align:'right'});
+    doc.text(lh('docEmail')+'   |   '+lh('docWebsite'), R, 31.4, {align:'right'});
+    doc.text('Reg No '+lh('docRegNo')+(vatNo?('   |   VAT No '+vatNo):''), R, 35.6, {align:'right'});
+    doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, 40.5, W, 0.9, 'F');
+
+    font('bold', 25); color(MAROON); doc.text(r.voided ? 'RECEIPT — VOID' : 'RECEIPT', L, 55);
+    font('bold', 7.2); color(SAGE); doc.text('RECEIVED FROM', L, 62);
+    font('bold', 10.5); color(INK); doc.text(r.customerName||'Customer', L, 67.5);
+    font('normal', 8.8); color(GREY); if(r.phone) doc.text(String(r.phone), L, 72);
+
+    var bx = 115.5, by = 46;
+    var info = [['Receipt Number', r.number, true], ['Date', fullDate(r.date)], ['Payment Method', r.method==='card'?'Card':'Cash'], ['Job Number', r.jobNumber||'']];
+    if(r.invoiceNumber) info.push(['Invoice Number', r.invoiceNumber]);
+    var boxH = 8 + info.length*4.7;
+    doc.setFillColor(PANEL[0],PANEL[1],PANEL[2]); doc.rect(bx, by, R-bx, boxH, 'F');
+    doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(bx, by, R-bx, 0.7, 'F');
+    var iy = by+6.2;
+    info.forEach(function(row){ font('bold', 8.3); color([140,140,132]); doc.text(row[0], bx+3, iy); font(row[2]?'bold':'normal', 8.6); color(INK); doc.text(String(row[1]), R-3, iy, {align:'right'}); iy += 4.7; });
+
+    var y = Math.max(80, by+boxH+10);
+    doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, y, W, 9, 'F');
+    font('bold', 7.6); doc.setTextColor(255,255,255); doc.text('DESCRIPTION', L+2, y+5.8); doc.text('AMOUNT '+(cfg.currency||'ZAR'), R-2, y+5.8, {align:'right'});
+    y += 15;
+    var desc = r.kind==='prepayment'
+      ? ('Pre-payment / deposit for job '+(r.jobNumber||'')+(r.jobTitle?(' — '+r.jobTitle):''))
+      : ('Payment received on invoice '+(r.invoiceNumber||'')+(r.jobTitle?(' — '+r.jobTitle):''));
+    font('normal', 9); color(INK);
+    var dl = doc.splitTextToSize(desc, 130); doc.text(dl, L+2, y); doc.text(pdfNum(r.amount), R-2, y, {align:'right'});
+    y += dl.length*4.2 + 2;
+    if(r.note){ font('normal', 8.4); color(GREY); var nl = doc.splitTextToSize(r.note, 130); doc.text(nl, L+2, y); y += nl.length*3.9; }
+    doc.setDrawColor(RULE[0],RULE[1],RULE[2]); doc.setLineWidth(0.2); doc.line(L, y+1, R, y+1);
+    y += 9;
+
+    var lx = 158, vx = R-1.5;
+    var due = round2(orderAmountDue(o));
+    var paidToDate = STATE.receipts.filter(function(x){ return x.orderId===r.orderId && !x.voided && String(x.createdAt) <= String(r.createdAt); }).reduce(function(s,x){ return s+(Number(x.amount)||0); }, 0);
+    doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(108.5, y, R-108.5, 11, 'F');
+    font('bold', 11); doc.setTextColor(255,255,255); doc.text('AMOUNT RECEIVED', lx, y+7, {align:'right'}); doc.text(pdfNum(r.amount), vx, y+7, {align:'right'});
+    y += 18;
+    font('normal', 8.8);
+    if(due){
+      color(GREY); doc.text(r.kind==='prepayment' ? 'Quoted amount' : 'Invoice total', lx, y, {align:'right'}); color(INK); doc.text(pdfNum(due), vx, y, {align:'right'}); y += 5.5;
+      color(GREY); doc.text('Total paid to date', lx, y, {align:'right'}); color(INK); doc.text(pdfNum(paidToDate), vx, y, {align:'right'}); y += 5.5;
+      font('bold', 9.5); color(MAROON); doc.text('Balance outstanding', lx, y, {align:'right'}); doc.text(pdfNum(Math.max(0, due - paidToDate)), vx, y, {align:'right'}); y += 8;
+    }
+    font('normal', 8.4); color(GREY); doc.text('Received by '+(r.receivedBy||'')+'.', L, y+6);
+
+    doc.setDrawColor(RULE[0],RULE[1],RULE[2]); doc.setLineWidth(0.25); doc.line(L, 277, R, 277);
+    font('bold', 8.5); color(MAROON); doc.text('Thank you for your business!', 105, 281.5, {align:'center'});
+    font('normal', 6.8); color(GREY);
+    doc.text([lh('docCompanyName'), 'Reg No '+lh('docRegNo')].concat(vatNo?['VAT No '+vatNo]:[]).concat([lh('docAddress')]).join('  ·  '), 105, 285, {align:'center'});
+    return {blob:doc.output('blob'), filename:r.number+'.pdf'};
+  }
+  function downloadReceipt(id){
+    var r = STATE.receipts.find(function(x){ return x.id===id; }); if(!r) return;
+    var built = receiptPdf(r); if(!built) return;
+    if(STATE.downloads){ STATE.downloads.save({filename:built.filename, data:built.blob}).catch(function(err){ if(!err||err.code!=='declined') fallbackDownload(built.blob, built.filename); }); }
+    else fallbackDownload(built.blob, built.filename);
+  }
+  function sendReceiptWhatsapp(id){
+    var r = STATE.receipts.find(function(x){ return x.id===id; }); if(!r) return;
+    var phone = waPhone(r.phone); if(!phone){ toast('No phone number on file for this customer'); return; }
+    if(!STATE.mcp){ toast('WhatsApp isn’t set up — download the receipt instead'); return; }
+    var built = receiptPdf(r); if(!built) return;
+    STATE.receiptForm = null;
+    STATE.openOrderId = r.orderId;
+    openOrderChat(phone);
+    attachFileToChat(phone, built.blob, built.filename, 'application/pdf', 'Hi '+(r.customerName||'there')+', thank you for your payment of '+money(r.amount)+'. Here is your receipt '+r.number+'.');
+    render();
+  }
+
+  function renderPaymentsSection(o){
+    var st = payStatus(o);
+    var list = STATE.receipts.filter(function(r){ return r.orderId===o.id; }).sort(function(a,b){ return String(a.createdAt).localeCompare(String(b.createdAt)); });
+    var rows = list.map(function(r){
+      return '<div class="pay-row'+(r.voided?' voided':'')+'"><span class="mono">'+escapeHtml(r.number)+'</span><span>'+shortDate(r.date)+'</span><span>'+(r.method==='card'?'Card':'Cash')+(r.kind==='prepayment'?' · pre-payment':'')+'</span><span class="num">'+money(r.amount)+'</span>' +
+        '<span class="pay-actions">' + (r.voided ? '<em>VOID</em>' :
+          '<button class="btn btn-ghost btn-sm" data-action="receipt-pdf" data-id="'+r.id+'">PDF</button>' +
+          (waPhone(r.phone) && STATE.mcp ? '<button class="btn btn-ghost btn-sm" data-action="receipt-wa" data-id="'+r.id+'">WhatsApp</button>' : '') +
+          (isOwnerRole() && !r.cashupDate ? '<button class="btn btn-ghost btn-sm" data-action="receipt-void" data-id="'+r.id+'">Void</button>' : '')) +
+        '</span></div>';
+    }).join('');
+    var chip = '<span class="pay-chip pay-'+st.key+'">'+st.label+'</span>';
+    return (
+      '<div class="field" style="background:var(--surface-2); border-radius:var(--radius-s); padding:10px 12px;">' +
+        '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px;">' +
+          '<span style="font-size:12.5px; color:var(--ink-soft);"><strong style="color:var(--ink);">Payments</strong> '+chip+'</span>' +
+          '<button class="btn btn-sm" data-action="receipt-new" data-id="'+o.id+'">Receive payment</button>' +
+        '</div>' +
+        '<div style="font-size:12.5px; color:var(--ink-soft); margin-bottom:'+(rows?'8px':'0')+';">'+(hasInvoiceDoc(o)?'Invoice total ':'Quoted ')+money(st.due)+' &middot; Paid '+money(st.paid)+' &middot; <strong style="color:var(--ink);">Balance '+money(Math.max(0,st.balance))+'</strong></div>' +
+        rows +
+      '</div>'
+    );
+  }
+
+  function renderReceiptModal(){
+    var f = STATE.receiptForm; if(!f) return '';
+    var o = STATE.orders.find(function(x){ return x.id===f.orderId; }); if(!o) return '';
+    if(f.saved){
+      var r = f.saved;
+      return '<div class="overlay" data-action="close-modal-bg"><div class="modal" role="dialog" aria-modal="true" aria-label="Receipt saved" style="max-width:460px;">' +
+        '<div class="modal-head"><div><div class="jobno mono">'+escapeHtml(r.number)+'</div><h2>Receipt saved</h2></div><button class="modal-close" data-action="receipt-close" aria-label="Close">&times;</button></div>' +
+        '<p style="margin-top:0;">'+money(r.amount)+' '+(r.method==='card'?'card':'cash')+' payment from '+escapeHtml(r.customerName)+' on '+fullDate(r.date)+'.</p>' +
+        '<div class="modal-foot">' +
+          '<button class="btn btn-ghost" data-action="receipt-close">Done</button>' +
+          '<button class="btn" data-action="receipt-pdf" data-id="'+r.id+'">Download PDF</button>' +
+          (waPhone(r.phone) && STATE.mcp ? '<button class="btn btn-primary" data-action="receipt-wa" data-id="'+r.id+'">Send via WhatsApp</button>' : '') +
+        '</div></div></div>';
+    }
+    var st = payStatus(o);
+    return '<div class="overlay" data-action="close-modal-bg"><div class="modal" role="dialog" aria-modal="true" aria-label="Receive payment" style="max-width:460px;">' +
+      '<div class="modal-head"><div><div class="jobno mono">'+escapeHtml(o.jobNumber||jobNo(o.id))+'</div><h2>Receive payment</h2></div><button class="modal-close" data-action="receipt-close" aria-label="Close">&times;</button></div>' +
+      '<p class="hint" style="margin-top:0;">'+escapeHtml(o.customerName)+' &middot; '+escapeHtml(o.title||'')+'<br>'+(hasInvoiceDoc(o)?('Invoice '+escapeHtml(o.invoiceNumber)+' — '):'No invoice yet, so this is recorded as a <strong>pre-payment</strong>. ')+'Balance '+money(Math.max(0,st.balance))+'.</p>' +
+      (f.error ? '<div class="field-error" style="margin-bottom:8px;">'+escapeHtml(f.error)+'</div>' : '') +
+      '<div class="field"><label for="rfAmount">Amount received ('+escapeHtml(STATE.config.currency||'ZAR')+')</label><input type="number" step="0.01" min="0" id="rfAmount" data-rf="amount" value="'+escapeHtml(String(f.amount))+'"></div>' +
+      '<div class="field"><label>Paid by</label><div style="display:flex; gap:8px;">' +
+        '<button type="button" class="chip-toggle '+(f.method==='cash'?'active':'')+'" data-action="receipt-method" data-m="cash">Cash</button>' +
+        '<button type="button" class="chip-toggle '+(f.method==='card'?'active':'')+'" data-action="receipt-method" data-m="card">Card</button>' +
+      '</div></div>' +
+      '<div class="field"><label for="rfDate">Date</label><input type="date" id="rfDate" data-rf="date" value="'+escapeHtml(f.date)+'"></div>' +
+      '<div class="field"><label for="rfNote">Note (optional)</label><input type="text" id="rfNote" data-rf="note" placeholder="e.g. 80% deposit" value="'+escapeHtml(f.note||'')+'"></div>' +
+      '<div class="modal-foot"><button class="btn btn-ghost" data-action="receipt-close">Cancel</button><button class="btn btn-primary" data-action="receipt-save" '+(f.busy?'disabled':'')+'>'+(f.busy?'Saving…':'Save receipt')+'</button></div>' +
+    '</div></div>';
+  }
+
+  /* ============================ cash-ups ============================ */
+  function receiptsOn(date){ return STATE.receipts.filter(function(r){ return r.date===date && !r.voided; }).sort(function(a,b){ return String(a.createdAt).localeCompare(String(b.createdAt)); }); }
+  function defaultFloat(){ var f = Number(STATE.config.cashFloat); return isNaN(f) || STATE.config.cashFloat==null || STATE.config.cashFloat==='' ? 350 : f; }
+  function cashupFormFor(date){
+    var c = STATE.cashups[date];
+    return c ? {date:date, cashCounted:String(c.cashCounted), cardTotal:String(c.cardTotal), float:String(c.float), notes:c.notes||''}
+             : {date:date, cashCounted:'', cardTotal:'', float:String(defaultFloat()), notes:''};
+  }
+  function cashupCalc(date, f){
+    var recs = receiptsOn(date);
+    var cashExp = round2(recs.filter(function(r){ return r.method==='cash'; }).reduce(function(s,r){ return s+Number(r.amount||0); }, 0));
+    var cardExp = round2(recs.filter(function(r){ return r.method==='card'; }).reduce(function(s,r){ return s+Number(r.amount||0); }, 0));
+    var counted = round2(f.cashCounted), flt = round2(f.float), card = round2(f.cardTotal);
+    var cashTakings = round2(counted - flt);
+    var cashDiff = round2(cashTakings - cashExp), cardDiff = round2(card - cardExp);
+    return {recs:recs, cashExp:cashExp, cardExp:cardExp, counted:counted, float:flt, card:card, cashTakings:cashTakings, cashDiff:cashDiff, cardDiff:cardDiff,
+            totalExp:round2(cashExp+cardExp), totalActual:round2(cashTakings+card), totalDiff:round2(cashDiff+cardDiff)};
+  }
+  function diffLabel(d){ return Math.abs(d)<0.005 ? '<span class="pay-chip pay-paid">Balanced</span>' : (d>0 ? '<span class="pay-chip pay-part">Over '+money(d)+'</span>' : '<span class="pay-chip pay-unpaid">Short '+money(-d)+'</span>'); }
+
+  function saveCashup(){
+    var date = STATE.cashupDate, f = STATE.cashupForm; if(!f) return;
+    if(f.cashCounted==='' || isNaN(Number(f.cashCounted))){ toast('Enter the cash counted in the drawer'); return; }
+    if(f.cardTotal==='' || isNaN(Number(f.cardTotal))){ toast('Enter the card machine total (0 if none)'); return; }
+    var calc = cashupCalc(date, f);
+    var member = currentTeamMember();
+    var data = {date:date, cashCounted:calc.counted, float:calc.float, cardTotal:calc.card, cashTakings:calc.cashTakings,
+      cashExpected:calc.cashExp, cardExpected:calc.cardExp, cashDifference:calc.cashDiff, cardDifference:calc.cardDiff, totalDifference:calc.totalDiff,
+      receiptIds:calc.recs.map(function(r){ return r.id; }), receiptCount:calc.recs.length, notes:String(f.notes||'').trim(),
+      closedBy: member ? member.name : 'Owner', closedAt:new Date().toISOString()};
+    var lock = calc.recs.map(function(r){ return {path:'receipts/'+r.id, data:{cashupDate:date}}; });
+    var done = function(){ toast('Cash-up for '+fullDate(date)+' saved'); render(); };
+    if(STATE.isLive && STATE.db){
+      STATE.db.doc('cashups/'+date).set(data).then(function(){ return updateDocs(lock); }).then(done).catch(function(){ toast('Could not save the cash-up — try again'); });
+    } else { STATE.cashups[date] = data; calc.recs.forEach(function(r){ r.cashupDate = date; }); done(); }
+  }
+  function reopenCashup(date){
+    if(!isOwnerRole()) return;
+    if(!confirm('Reopen the cash-up for '+fullDate(date)+'? Its receipts can then be changed again, and it must be cashed up again afterwards.')) return;
+    var recs = STATE.receipts.filter(function(r){ return r.cashupDate===date; });
+    if(STATE.isLive && STATE.db){
+      STATE.db.doc('cashups/'+date).delete().then(function(){
+        return updateDocs(recs.map(function(r){ return {path:'receipts/'+r.id, data:{cashupDate:null}}; }));
+      }).then(function(){ STATE.cashupForm = cashupFormFor(date); render(); toast('Cash-up reopened'); }).catch(function(){ toast('Could not reopen — try again'); });
+    } else { delete STATE.cashups[date]; recs.forEach(function(r){ r.cashupDate = null; }); STATE.cashupForm = cashupFormFor(date); render(); }
+  }
+  function exportCashupCsv(date){
+    var c = STATE.cashups[date]; var f = STATE.cashupForm || cashupFormFor(date); var calc = cashupCalc(date, c ? {cashCounted:c.cashCounted, float:c.float, cardTotal:c.cardTotal} : f);
+    var lines = [['Receipt','Time','Customer','Job','Invoice','Method','Amount']];
+    calc.recs.forEach(function(r){ lines.push([r.number, String(r.createdAt).slice(11,16), r.customerName, r.jobNumber, r.invoiceNumber, r.method, Number(r.amount).toFixed(2)]); });
+    lines.push([]);
+    lines.push(['Cash counted','','','','','',calc.counted.toFixed(2)]);
+    lines.push(['Less float','','','','','',calc.float.toFixed(2)]);
+    lines.push(['Cash takings','','','','','',calc.cashTakings.toFixed(2)]);
+    lines.push(['Cash receipts','','','','','',calc.cashExp.toFixed(2)]);
+    lines.push(['Cash difference','','','','','',calc.cashDiff.toFixed(2)]);
+    lines.push(['Card machine total','','','','','',calc.card.toFixed(2)]);
+    lines.push(['Card receipts','','','','','',calc.cardExp.toFixed(2)]);
+    lines.push(['Card difference','','','','','',calc.cardDiff.toFixed(2)]);
+    var csv = lines.map(function(l){ return l.map(csvCell).join(','); }).join('\r\n');
+    var blob = new Blob([csv], {type:'text/csv'}), name = 'DsignX-cash-up-'+date+'.csv';
+    if(STATE.downloads){ STATE.downloads.save({filename:name, data:blob}).catch(function(){ fallbackDownload(blob, name); }); } else fallbackDownload(blob, name);
+  }
+
+  function renderCashupTab(){
+    var date = STATE.cashupDate || todayIso();
+    STATE.cashupDate = date;
+    if(!STATE.cashupForm || STATE.cashupForm.date!==date) STATE.cashupForm = cashupFormFor(date);
+    var f = STATE.cashupForm, closed = STATE.cashups[date];
+    var calc = cashupCalc(date, f);
+    var late = closed ? calc.recs.filter(function(r){ return (closed.receiptIds||[]).indexOf(r.id)<0; }) : [];
+    var dis = closed ? ' disabled' : '';
+    var recRows = calc.recs.length ? calc.recs.map(function(r){
+      return '<tr><td class="mono">'+escapeHtml(r.number)+'</td><td>'+escapeHtml(String(r.createdAt).slice(11,16))+'</td><td class="row-btn" data-action="open-order" data-id="'+r.orderId+'">'+escapeHtml(r.customerName)+'</td><td class="mono">'+escapeHtml(r.jobNumber||'')+'</td><td>'+(r.method==='card'?'Card':'Cash')+'</td><td class="num">'+money(r.amount)+'</td></tr>';
+    }).join('') : '<tr><td colspan="6" class="empty-note">No receipts captured for this day.</td></tr>';
+    var history = Object.keys(STATE.cashups).sort().reverse().slice(0,14).map(function(d){
+      var c = STATE.cashups[d];
+      return '<tr class="row-btn" data-action="cashup-date" data-date="'+d+'"><td>'+fullDate(d)+'</td><td class="num">'+money(c.cashTakings)+'</td><td class="num">'+money(c.cardTotal)+'</td><td>'+diffLabel(Number(c.totalDifference)||0)+'</td><td>'+escapeHtml(c.closedBy||'')+'</td></tr>';
+    }).join('');
+    return (
+      '<div class="topline"><div><h1>Cash-ups</h1><div class="sub">Count the drawer at the end of the day and match it to the receipts captured.</div></div></div>' +
+      '<div class="panel">' +
+        '<div class="field-row" style="align-items:flex-end;">' +
+          '<div class="field"><label for="cuDate">Day</label><input type="date" id="cuDate" value="'+date+'"></div>' +
+          '<div class="field">'+(closed ? '<span class="pay-chip pay-paid">Cashed up by '+escapeHtml(closed.closedBy||'')+'</span>' : '<span class="pay-chip pay-part">Open</span>')+'</div>' +
+        '</div>' +
+        (late.length ? '<div class="hint" style="color:var(--critical); margin-bottom:8px;">'+late.length+' receipt(s) were captured after this cash-up was saved. Ask the owner to reopen and redo it.</div>' : '') +
+        '<div class="section-label" style="margin-top:6px;">Receipts captured</div>' +
+        '<div class="tbl-wrap"><table><thead><tr><th>Receipt</th><th>Time</th><th>Customer</th><th>Job</th><th>Method</th><th>Amount</th></tr></thead><tbody>'+recRows+'</tbody></table></div>' +
+        '<div class="hint" style="margin-top:6px;">Cash '+money(calc.cashExp)+' &middot; Card '+money(calc.cardExp)+' &middot; Total '+money(calc.totalExp)+'</div>' +
+      '</div>' +
+      '<div class="panel">' +
+        '<div class="section-label">Count</div>' +
+        '<div class="field-row">' +
+          '<div class="field"><label for="cuCash">Cash counted in drawer</label><input type="number" step="0.01" min="0" id="cuCash" data-cu="cashCounted" value="'+escapeHtml(f.cashCounted)+'"'+dis+'></div>' +
+          '<div class="field"><label for="cuFloat">Less float</label><input type="number" step="0.01" min="0" id="cuFloat" data-cu="float" value="'+escapeHtml(f.float)+'"'+dis+'></div>' +
+          '<div class="field"><label for="cuCard">Card machine total (batch slip)</label><input type="number" step="0.01" min="0" id="cuCard" data-cu="cardTotal" value="'+escapeHtml(f.cardTotal)+'"'+dis+'></div>' +
+        '</div>' +
+        '<div class="tbl-wrap"><table class="cashup-table"><thead><tr><th></th><th>Counted</th><th>Receipts</th><th>Difference</th></tr></thead><tbody>' +
+          '<tr><td>Cash (after float)</td><td class="num" id="cuCashTakings">'+money(calc.cashTakings)+'</td><td class="num">'+money(calc.cashExp)+'</td><td id="cuCashDiff">'+diffLabel(calc.cashDiff)+'</td></tr>' +
+          '<tr><td>Card</td><td class="num" id="cuCardActual">'+money(calc.card)+'</td><td class="num">'+money(calc.cardExp)+'</td><td id="cuCardDiff">'+diffLabel(calc.cardDiff)+'</td></tr>' +
+          '<tr style="font-weight:700;"><td>Total</td><td class="num" id="cuTotalActual">'+money(calc.totalActual)+'</td><td class="num">'+money(calc.totalExp)+'</td><td id="cuTotalDiff">'+diffLabel(calc.totalDiff)+'</td></tr>' +
+        '</tbody></table></div>' +
+        '<div class="field" style="margin-top:10px;"><label for="cuNotes">Notes (explain any difference)</label><input type="text" id="cuNotes" data-cu="notes" value="'+escapeHtml(f.notes||'')+'"'+dis+'></div>' +
+        (closed
+          ? (isOwnerRole() ? '<button class="btn btn-sm" data-action="cashup-reopen" data-date="'+date+'">Reopen cash-up</button> ' : '')
+          : '<button class="btn btn-primary btn-sm" data-action="cashup-save">Save cash-up</button> ') +
+        '<button class="btn btn-ghost btn-sm" data-action="cashup-csv" data-date="'+date+'">Download CSV</button>' +
+      '</div>' +
+      (history ? '<div class="panel"><div class="section-label">Recent cash-ups</div><div class="tbl-wrap"><table><thead><tr><th>Day</th><th>Cash takings</th><th>Card</th><th>Result</th><th>By</th></tr></thead><tbody>'+history+'</tbody></table></div></div>' : '')
+    );
+  }
+  function refreshCashupTotals(){
+    var date = STATE.cashupDate, f = STATE.cashupForm; if(!f) return;
+    var c = cashupCalc(date, f);
+    var set = function(id, html){ var el = document.getElementById(id); if(el) el.innerHTML = html; };
+    set('cuCashTakings', money(c.cashTakings)); set('cuCardActual', money(c.card)); set('cuTotalActual', money(c.totalActual));
+    set('cuCashDiff', diffLabel(c.cashDiff)); set('cuCardDiff', diffLabel(c.cardDiff)); set('cuTotalDiff', diffLabel(c.totalDiff));
+  }
+
+  /* ============================ WhatsApp templates ============================ */
+  // Approved (by Meta) message templates — the only messages WhatsApp delivers once
+  // 24 hours have passed since the customer last wrote.
+  function custFirstName(o){
+    var c = STATE.customers.find(function(x){ return x.id===o.customerId; });
+    if(c && c.firstName) return c.firstName;
+    return o.customerName || 'there';
+  }
+  var WA_TEMPLATES = [
+    {slug:'dsignx_follow_up', label:'General follow-up',
+      text:'Hi {{customer_name}}, this is DsignX following up on your recent enquiry with us. Please reply to this message so we can continue helping you.',
+      params:function(o){ return {customer_name:custFirstName(o)}; }},
+    {slug:'dsignx_quote_ready', label:'Quote ready',
+      text:'Hi {{customer_name}}, your quotation {{quote_number}} for {{job_title}} is ready. Reply to this message and we will send it to you here.',
+      needs:function(o){ return o.quoteNumber ? '' : 'Generate the quotation first.'; },
+      params:function(o){ return {customer_name:custFirstName(o), quote_number:o.quoteNumber||'', job_title:o.title||'your job'}; }},
+    {slug:'dsignx_order_ready', label:'Order ready for collection',
+      text:'Hi {{customer_name}}, good news! Your order {{order_ref}} is ready for collection at DsignX, Corcomm Building, 36 Reitz Street, Kroonstad.',
+      params:function(o){ return {customer_name:custFirstName(o), order_ref:(o.jobNumber||jobNo(o.id))+(o.title?(' ('+o.title+')'):'')}; }},
+    {slug:'dsignx_payment_reminder', label:'Payment reminder',
+      text:'Hi {{customer_name}}, this is a friendly reminder that invoice {{invoice_number}} for {{amount}} is due on {{due_date}}. Please use the invoice number as your payment reference. Thank you!',
+      needs:function(o){ if (!hasInvoiceDoc(o)) return 'Generate the invoice first.'; return payStatus(o).balance > 0.004 ? '' : 'This invoice is fully paid.'; },
+      params:function(o){ var st = payStatus(o); return {customer_name:custFirstName(o), invoice_number:o.invoiceNumber||'', amount:money(Math.max(0,st.balance)), due_date:fullDate(addDays(o.invoiceGeneratedAt||todayIso(), o.invoiceDueDays!=null?Number(o.invoiceDueDays):(Number(STATE.config.invoiceDueDays)||7)))}; }}
+  ];
+  function fillTemplate(text, params){ return text.replace(/\{\{(\w+)\}\}/g, function(m, k){ return params[k]!=null ? params[k] : m; }); }
+  function prepareTemplate(phone, slug){
+    var o = STATE.orders.find(function(x){ return x.id===STATE.openOrderId; }); if(!o) return;
+    var t = WA_TEMPLATES.find(function(x){ return x.slug===slug; }); if(!t) return;
+    var why = t.needs ? t.needs(o) : '';
+    if(why){ toast(why); return; }
+    var params = t.params(o);
+    var entry = Object.assign({}, STATE.chatMessages[phone]);
+    entry.sendError = null;
+    entry.pendingSend = {kind:'template', slug:t.slug, label:t.label, params:params, text:fillTemplate(t.text, params)};
+    STATE.chatMessages[phone] = entry;
+    render();
+  }
+  function templateContent(p){
+    return {template:{slug:p.slug, language:'en', components:[{type:'body', parameters:Object.keys(p.params).map(function(k){ return {type:'text', name:k, text:String(p.params[k])}; })}]}};
+  }
+  function templatePicker(phone){
+    return '<div class="tpl-row"><select id="tplPick" data-phone="'+phone+'"><option value="">Send an approved template…</option>' +
+      WA_TEMPLATES.map(function(t){ return '<option value="'+t.slug+'">'+escapeHtml(t.label)+'</option>'; }).join('') +
+      '</select></div>';
   }
 
   /* ============================ boot ============================ */

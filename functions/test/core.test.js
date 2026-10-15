@@ -31,6 +31,18 @@ test('Bird send always uses the server number and passes idempotency', () => {
   assert.throws(() => core.birdRequest('whatsapp_send', { to: '+1', text: {}, image: {} }, { apiKey: 'k', from: '+1' }));
 });
 
+test('Bird send drops empty caption', () => {
+  const r = core.birdRequest('whatsapp_send', { to: '+27731112222', document: { url: 'https://x/a.pdf', filename: 'a.pdf', caption: null } }, { apiKey: 'bk_us1_x', from: '+27604934689' });
+  assert.deepStrictEqual(JSON.parse(r.body).document, { url: 'https://x/a.pdf', filename: 'a.pdf' });
+});
+
+test('Bird template send passes named parameters', () => {
+  const t = { slug: 'dsignx_follow_up', language: 'en', components: [{ type: 'body', parameters: [{ type: 'text', name: 'customer_name', text: 'Riaan' }] }] };
+  const r = core.birdRequest('whatsapp_send', { to: '+27731112222', template: t }, { apiKey: 'bk_us1_x', from: '+27604934689' });
+  assert.deepStrictEqual(JSON.parse(r.body).template, t);
+  assert.throws(() => core.birdRequest('whatsapp_send', { to: '+1', template: { slug: 'bird_otp' } }, { apiKey: 'k', from: '+1' }));
+});
+
 test('Bird list builds query string', () => {
   const r = core.birdRequest('whatsapp_list', { from: '+27731112222', direction: 'inbound', limit: 30 }, { apiKey: 'bk_us1_x' });
   assert.strictEqual(r.url, 'https://us1.platform.bird.com/v1/whatsapp/messages?limit=30&from=%2B27731112222&direction=inbound');
@@ -67,4 +79,6 @@ test('pasted secrets are cleaned up', () => {
 test('provider errors keep their code', async () => {
   const fakeFetch = async () => ({ ok: false, status: 422, text: async () => JSON.stringify({ error: { code: 'E15044', message: 'Outside the customer service window' } }) });
   await assert.rejects(core.send(fakeFetch, { url: 'x', method: 'GET' }), /E15044: Outside the customer service window/);
+  const f2 = async () => ({ ok: false, status: 422, text: async () => JSON.stringify({ error: { code: 'E01001', message: 'Request has 1 validation error.', details: [{ param: 'document.caption', message: 'must be a string' }] } }) });
+  await assert.rejects(core.send(f2, { url: 'x', method: 'GET' }), /document\.caption: must be a string/);
 });

@@ -84,6 +84,23 @@ service cloud.firestore {
       allow read, write: if isStaff();
     }
 
+    // Product catalogue (price list used on quotes and invoices).
+    match /products/{id} {
+      allow read, write: if isStaff();
+    }
+
+    // Payments received. Never deleted: the owner can mark one void instead.
+    match /receipts/{id} {
+      allow read, create, update: if isStaff();
+      allow delete: if false;
+    }
+
+    // Daily cash-ups. Only the owner can reopen (delete) one.
+    match /cashups/{date} {
+      allow read, create, update: if isStaff();
+      allow delete: if isOwner();
+    }
+
     // Everything else (including the functions' rate-limit records) is closed.
     match /{document=**} {
       allow read, write: if false;

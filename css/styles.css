@@ -446,6 +446,18 @@ img{max-width:100%}
   .chat-msg .t{display:block; font-size:10px; opacity:.7; margin-top:3px;}
   .chat-compose{display:flex; gap:8px; align-items:flex-end;}
   .chat-compose textarea{flex:1; min-height:44px; font-size:12.5px;}
+  .pay-chip{display:inline-block; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; padding:2px 7px; border-radius:99px; vertical-align:middle;}
+  .pay-unpaid{background:#F6E3E3; color:#8A1C1C;}
+  .pay-part{background:#FBF0D9; color:#7A5300;}
+  .pay-paid{background:#E2F0E4; color:#1E6B34;}
+  .pay-row{display:grid; grid-template-columns:auto auto 1fr auto auto; gap:10px; align-items:center; font-size:12.5px; padding:5px 0; border-top:1px solid var(--line);}
+  .pay-row.voided{opacity:.55; text-decoration:line-through;}
+  .pay-row .pay-actions{display:flex; gap:2px; justify-content:flex-end;}
+  .pay-row .pay-actions em{font-style:normal; font-weight:700; color:var(--critical);}
+  .tpl-row{margin-bottom:6px;}
+  .tpl-row select{width:100%; font-size:12.5px;}
+  .cashup-table td, .cashup-table th{padding:7px 8px;}
+  @media (max-width:640px){ .pay-row{grid-template-columns:1fr 1fr; } .pay-row .pay-actions{grid-column:1 / -1; justify-content:flex-start;} }
   .chat-attach{cursor:pointer; padding:6px 9px; align-self:flex-end; display:inline-flex; align-items:center;}
   .chat-preview{background:var(--warning-soft); color:var(--ink); border-radius:var(--radius-s); padding:10px 12px; font-size:12.5px;}
   .chat-preview em{font-style:normal; font-weight:600;}
