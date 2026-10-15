@@ -457,6 +457,12 @@ img{max-width:100%}
   .tpl-row{margin-bottom:6px;}
   .tpl-row select{width:100%; font-size:12.5px;}
   .cashup-table td, .cashup-table th{padding:7px 8px;}
+  .cash-calc{margin:4px 0 12px; border:1px solid var(--line); border-radius:var(--radius-s); padding:8px 10px;}
+  .cash-calc summary{cursor:pointer; font-weight:600; font-size:12.5px;}
+  .den-table{max-width:420px; margin-top:8px;}
+  .den-table .den-head td{font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; opacity:.65; padding-top:10px;}
+  .den-table input.den-qty{width:90px; text-align:right;}
+  .den-table tfoot td{border-top:1px solid var(--line);}
   @media (max-width:640px){ .pay-row{grid-template-columns:1fr 1fr; } .pay-row .pay-actions{grid-column:1 / -1; justify-content:flex-start;} }
   .chat-attach{cursor:pointer; padding:6px 9px; align-self:flex-end; display:inline-flex; align-items:center;}
   .chat-preview{background:var(--warning-soft); color:var(--ink); border-radius:var(--radius-s); padding:10px 12px; font-size:12.5px;}

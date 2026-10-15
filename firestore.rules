@@ -28,6 +28,8 @@ service cloud.firestore {
     function role() { return isOwner() ? 'owner' : (memberOk() ? get(memberPath()).data.get('role', 'none') : 'none'); }
     function isTeam() { return role() in ['owner', 'designer', 'technician']; }
     function isStaff() { return role() in ['owner', 'designer']; }
+    // Cash-ups: the owner, plus members the owner ticked "Can do cash-ups" (team/{id}.canCashup).
+    function canCashup() { return isOwner() || (memberOk() && get(memberPath()).data.get('canCashup', false) == true); }
 
     // First-time setup marker: who the owner is.
     match /meta/owner {
@@ -74,6 +76,7 @@ service cloud.firestore {
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
               'title', 'status', 'category', 'description', 'qty', 'dueDate', 'notes',
               'designerId', 'designerName', 'technicianId', 'technicianName',
+              'technician2Id', 'technician2Name',
               'updatedAt', 'invoicedAt'
             ])
             && (!('status' in request.resource.data.diff(resource.data).affectedKeys())
@@ -89,15 +92,21 @@ service cloud.firestore {
       allow read, write: if isStaff();
     }
 
-    // Payments received. Never deleted: the owner can mark one void instead.
+    // Payments received (owner and designers issue receipts). Never deleted: the owner can mark one void instead.
+    // People allowed to cash up may read receipts and lock them to a cash-up.
     match /receipts/{id} {
-      allow read, create, update: if isStaff();
+      allow read: if isStaff() || canCashup();
+      allow create: if isStaff();
+      allow update: if isStaff()
+        || (canCashup() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['cashupDate']));
       allow delete: if false;
     }
 
-    // Daily cash-ups. Only the owner can reopen (delete) one.
+    // Daily cash-ups. Designers can see them (a cashed-up day can't take new receipts);
+    // only the owner and people allowed to cash up can save one; only the owner can reopen (delete) one.
     match /cashups/{date} {
-      allow read, create, update: if isStaff();
+      allow read: if isStaff() || canCashup();
+      allow create, update: if canCashup();
       allow delete: if isOwner();
     }
 

@@ -75,7 +75,7 @@ import './platform.js';
     custExportFrom:'', custExportTo:'', custExportMode:'added',
     customerForm:null,
     products:[], productForm:null, productImport:null, productQuery:'',
-    receipts:[], receiptForm:null, cashups:{}, cashupDate:'', cashupForm:null,
+    receipts:[], receiptForm:null, cashups:{}, cashupDate:'', cashupForm:null, rxFrom:'', rxTo:'', rxMethod:'all',
     user:null, links:{},
     auth:{phase:'checking', uid:null, isOwner:false, memberId:null, role:null, error:'', busy:false, myAuth:null, myLink:null, teamLoaded:false, fails:0, lockUntil:0}
   };
@@ -94,7 +94,9 @@ import './platform.js';
   function currentRole(){ return STATE.auth.role || null; }
   function isOwnerRole(){ return currentRole()==='owner'; }
   function isTechnician(){ return currentRole()==='technician'; }
-  function canAccess(tab){ var r = currentRole(); return !!(r && ROLE_TABS[r] && ROLE_TABS[r].indexOf(tab)>=0); }
+  // Cash-ups: the owner, plus team members the owner has ticked on the Team tab.
+  function canCashup(){ if(isOwnerRole()) return true; var m = currentTeamMember(); return !!(m && m.canCashup && m.active!==false); }
+  function canAccess(tab){ if(tab==='cashup') return canCashup(); var r = currentRole(); return !!(r && ROLE_TABS[r] && ROLE_TABS[r].indexOf(tab)>=0); }
   function firstAllowedTab(){ var r = currentRole(); return (r && ROLE_TABS[r]) ? ROLE_TABS[r][0] : 'board'; }
   function currentTeamMember(){
     if(!STATE.currentUserId) return null;
@@ -1238,7 +1240,21 @@ import './platform.js';
   }
 
   // Business data only loads after sign-in, and only what the person's role may read.
-  var _feedsStarted = false;
+  var _feedsStarted = false, _cashFeedsStarted = false;
+  function startCashupFeeds(){
+    if(_cashFeedsStarted || !STATE.db) return;
+    _cashFeedsStarted = true;
+    STATE.db.collection('receipts').onSnapshot(function(qs){
+      STATE.receipts = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+      render();
+    }, function(){});
+    STATE.db.collection('cashups').onSnapshot(function(qs){
+      var m = {}; qs.docs.forEach(function(d){ m[d.id] = d.data(); });
+      STATE.cashups = m;
+      render();
+    }, function(){});
+    if(!STATE.downloads && window.DSX) STATE.downloads = window.DSX.downloads;
+  }
   function startDataFeeds(){
     if(_feedsStarted || !STATE.db) return;
     _feedsStarted = true;
@@ -1246,6 +1262,7 @@ import './platform.js';
     var A = STATE.auth;
     db.collection('team').orderBy('name').onSnapshot(function(qs){
       STATE.team = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+      if(isTechnician() && canCashup()) startCashupFeeds();
       render();
     }, function(){});
     if(A.role==='owner'){
@@ -1274,15 +1291,7 @@ import './platform.js';
       STATE.products = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
       render();
     }, function(){});
-    db.collection('receipts').onSnapshot(function(qs){
-      STATE.receipts = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
-      render();
-    }, function(){});
-    db.collection('cashups').onSnapshot(function(qs){
-      var m = {}; qs.docs.forEach(function(d){ m[d.id] = d.data(); });
-      STATE.cashups = m;
-      render();
-    }, function(){});
+    startCashupFeeds();
     db.collection('customers').orderBy('name').onSnapshot(function(qs){
       STATE.customers = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
       render();
@@ -1709,7 +1718,7 @@ import './platform.js';
   function renderDashboardTab(){
     var member = currentTeamMember();
     var open = ordersActive();
-    if(member){ open = open.filter(function(o){ return o.designerId===member.id || o.technicianId===member.id; }); }
+    if(member){ open = open.filter(function(o){ return onJob(o, member.id); }); }
     var dueSoon = open.filter(function(o){ return o.dueDate; }).sort(function(a,b){ return a.dueDate.localeCompare(b.dueDate); }).slice(0,6);
     var quotedValue = STATE.orders.filter(function(o){ return o.quoteAmount && !o.invoiced; }).reduce(function(s,o){ return s+Number(o.quoteAmount); },0);
     var thisWeek = open.filter(function(o){ var d=daysUntil(o.dueDate); return d!==null && d<=7 && d>=0; }).length;
@@ -1758,9 +1767,9 @@ import './platform.js';
     var af = STATE.boardAssigneeFilter;
     var cols = STATUSES.map(function(s){
       var items = STATE.orders.filter(function(o){ return o.status===s.key; });
-      if(q){ items = items.filter(function(o){ return (o.title+' '+o.customerName+' '+(o.designerName||'')+' '+(o.technicianName||'')+' '+(o.jobNumber||'')).toLowerCase().indexOf(q)>=0; }); }
-      if(af==='unassigned'){ items = items.filter(function(o){ return !o.designerId && !o.technicianId; }); }
-      else if(af && af!=='all'){ items = items.filter(function(o){ return o.designerId===af || o.technicianId===af; }); }
+      if(q){ items = items.filter(function(o){ return (o.title+' '+o.customerName+' '+(o.designerName||'')+' '+techNames(o)+' '+(o.jobNumber||'')).toLowerCase().indexOf(q)>=0; }); }
+      if(af==='unassigned'){ items = items.filter(isUnassigned); }
+      else if(af && af!=='all'){ items = items.filter(function(o){ return onJob(o, af); }); }
       var cards = items.map(cardHtml).join('');
       return (
         '<div class="col" data-status="'+s.key+'">' +
@@ -1794,6 +1803,7 @@ import './platform.js';
     var avatars = '';
     if(o.designerName) avatars += '<div class="avatar designer" title="Designer: '+escapeHtml(o.designerName)+'">'+initials(o.designerName)+'</div>';
     if(o.technicianName) avatars += '<div class="avatar technician" title="Technician: '+escapeHtml(o.technicianName)+'">'+initials(o.technicianName)+'</div>';
+    if(o.technician2Name) avatars += '<div class="avatar technician" title="Technician: '+escapeHtml(o.technician2Name)+'">'+initials(o.technician2Name)+'</div>';
     return (
       '<div class="card" draggable="true" data-id="'+o.id+'" data-action="open-order">' +
         '<div class="jobno">'+jobNo(o.id)+'</div>' +
@@ -1944,12 +1954,12 @@ import './platform.js';
   function commissionRows(r){
     var sales = salesInRange(r.from, r.to);
     var rows = STATE.team.map(function(m){
-      var jobs = sales.filter(function(o){ return o.designerId===m.id || o.technicianId===m.id; });
+      var jobs = sales.filter(function(o){ return onJob(o, m.id); });
       var total = round2(jobs.reduce(function(s,o){ return s + saleExVat(o); }, 0));
       var c = commissionFor(total);
       return {member:m, jobs:jobs, total:total, rate:c.rate, tier:c.tier, commission:c.amount, next:c.next};
     });
-    var unassigned = sales.filter(function(o){ return !o.designerId && !o.technicianId; });
+    var unassigned = sales.filter(isUnassigned);
     return {
       rows: rows,
       salesTotal: round2(sales.reduce(function(s,o){ return s + saleExVat(o); }, 0)),
@@ -1988,7 +1998,7 @@ import './platform.js';
       var detail = '';
       if(open){
         var jr = r.jobs.length ? r.jobs.slice().sort(function(a,b){ return String(saleDate(a)).localeCompare(String(saleDate(b))); }).map(function(o){
-          var asRole = (o.designerId===r.member.id && o.technicianId===r.member.id) ? 'Designer & technician' : (o.designerId===r.member.id ? 'Designer' : 'Technician');
+          var asRole = (o.designerId===r.member.id && isTechOn(o, r.member.id)) ? 'Designer & technician' : (o.designerId===r.member.id ? 'Designer' : 'Technician'+(o.technicianId && o.technician2Id ? ' (shared)' : ''));
           return '<tr><td>'+shortDate(String(saleDate(o)).slice(0,10))+'</td><td>'+escapeHtml(o.invoiceNumber||jobNo(o.id))+'</td><td>'+escapeHtml(o.title)+'<div style="font-size:11px; color:var(--ink-faint);">'+escapeHtml(o.customerName||'')+' &middot; '+asRole+'</div></td><td class="num">'+money(saleExVat(o))+'</td></tr>';
         }).join('') : '<tr><td colspan="4" class="empty-note">No invoiced jobs in this '+periodWord+'.</td></tr>';
         detail = '<tr><td colspan="5" style="padding:0 0 4px;"><div class="breakdown"><table><thead><tr><th>Date</th><th>Invoice</th><th>Job</th><th style="text-align:right;">Excl. VAT</th></tr></thead><tbody>'+jr+'</tbody></table></div></td></tr>';
@@ -2104,7 +2114,7 @@ import './platform.js';
     var cust = STATE.customers.find(function(c){ return c.id===o.customerId; }) || {};
     var date = invoiceDateOf(o);
     var due = addDays(date, o.invoiceDueDays!=null ? o.invoiceDueDays : (STATE.config.invoiceDueDays||7));
-    var reps = [o.designerName, o.technicianName].filter(Boolean).map(firstName).filter(function(n,i,a){ return a.indexOf(n)===i; }).join(' & ');
+    var reps = [o.designerName, o.technicianName, o.technician2Name].filter(Boolean).map(firstName).filter(function(n,i,a){ return a.indexOf(n)===i; }).join(' & ');
     var paid = 0;
     return lines.map(function(l){
       var r = {};
@@ -2345,9 +2355,22 @@ import './platform.js';
   }
 
   /* ============================ team ============================ */
+  function toggleCashupPermission(id, on){
+    if(!isOwnerRole()) return;
+    var m = STATE.team.find(function(x){ return x.id===id; }); if(!m) return;
+    if(STATE.isLive && STATE.db){
+      STATE.db.doc('team/'+id).update({canCashup:!!on}).then(function(){ toast(m.name+(on?' can now do cash-ups':' can no longer do cash-ups')); })
+        .catch(function(){ toast('Could not save — try again'); render(); });
+    } else { m.canCashup = !!on; render(); toast(m.name+(on?' can now do cash-ups':' can no longer do cash-ups')); }
+  }
+  // A job can have a designer and up to two technicians.
+  function onJob(o, id){ return !!id && (o.designerId===id || o.technicianId===id || o.technician2Id===id); }
+  function isTechOn(o, id){ return !!id && (o.technicianId===id || o.technician2Id===id); }
+  function isUnassigned(o){ return !o.designerId && !o.technicianId && !o.technician2Id; }
+  function techNames(o){ return [o.technicianName, o.technician2Name].filter(Boolean).join(' & '); }
   function jobCountFor(memberId){
     return STATE.orders.filter(function(o){
-      return (o.designerId===memberId || o.technicianId===memberId) && o.status!=='delivered' && o.status!=='invoiced';
+      return onJob(o, memberId) && o.status!=='delivered' && o.status!=='invoiced';
     }).length;
   }
 
@@ -2375,7 +2398,8 @@ import './platform.js';
               '<br>'+inviteStatus+'<br>' +
               '<button class="btn btn-ghost btn-sm" style="padding:2px 8px; margin-top:2px;" data-action="invite-team" data-id="'+m.id+'">'+((linksFor(m.id).length||m.inviteHash)?'New code':'Invite')+'</button> ' +
               ((linksFor(m.id).length||m.inviteHash) ? '<button class="btn btn-ghost btn-sm" style="padding:2px 8px; margin-top:2px;" data-action="revoke-team" data-id="'+m.id+'">Revoke</button> ' : '') +
-              '<button class="btn btn-ghost btn-sm" style="padding:2px 8px; margin-top:2px;" data-action="delete-team" data-id="'+m.id+'">Remove</button>') : '') +
+              '<button class="btn btn-ghost btn-sm" style="padding:2px 8px; margin-top:2px;" data-action="delete-team" data-id="'+m.id+'">Remove</button>' +
+              '<br><label class="perm-toggle"><input type="checkbox" data-action="team-cashup" data-id="'+m.id+'"'+(m.canCashup?' checked':'')+'> Can do cash-ups</label>') : (m.canCashup ? '<br><span style="font-size:11px; color:var(--ink-faint);">Does cash-ups</span>' : '')) +
             '</div>' +
           '</div>' +
           panel +
@@ -2400,7 +2424,7 @@ import './platform.js';
       '<div class="panel"><div class="panel-head"><h2>Access &amp; security</h2></div>' +
         '<div class="hint" style="margin:-4px 0 12px; font-size:12.5px;">To give someone access: 1) add them below, 2) tap <strong>Invite</strong> to send the website link and their one-time code. They create their own account (email and password) with the code. Codes expire after '+CODE_TTL_DAYS+' days. Everyone is signed out after 30 minutes without activity, or when they close the tab. <strong>Revoke</strong> signs a person out immediately.</div>' +
         '<div class="tbl-wrap"><table class="perm-table"><thead><tr><th>Section</th><th>Owner</th><th>Designer</th><th>Technician</th></tr></thead><tbody>' +
-          row('Job board', 1,1,1) + row('Dashboard', 1,1,0) + row('WhatsApp inbox', 1,1,0) + row('Customers', 1,1,0) + row('Quotes &amp; invoicing', 1,1,0) + row('Reports (designers see only their own commission)', 1,1,0) + row('Team (view)', 1,1,0) + row('Invite / revoke people', 1,0,0) + row('Settings', 1,0,0) +
+          row('Job board', 1,1,1) + row('Dashboard', 1,1,0) + row('WhatsApp inbox', 1,1,0) + row('Customers', 1,1,0) + row('Quotes &amp; invoicing', 1,1,0) + row('Receive payments &amp; issue receipts', 1,1,0) + '<tr><td>Cash-ups</td><td><span style="color:var(--success); font-weight:700;">✓</span></td><td colspan="2" style="font-size:12px;">Only people ticked “Can do cash-ups” below</td></tr>' + row('Void a receipt / reopen a cash-up', 1,0,0) + row('Reports (designers see only their own commission)', 1,1,0) + row('Team (view)', 1,1,0) + row('Invite / revoke people', 1,0,0) + row('Settings', 1,0,0) +
         '</tbody></table></div>' +
         '<div class="hint" style="margin-top:8px;">Technicians see job cards without prices and can’t delete jobs, create orders, or open quotes and invoices.</div>' +
       '</div>' +
@@ -2465,6 +2489,7 @@ import './platform.js';
       '<div class="field-row">' +
         '<div class="field"><label for="'+prefix+'AsgDesigner">Designer</label><select id="'+prefix+'AsgDesigner">'+optionsFor('designer', order.designerId)+'</select></div>' +
         '<div class="field"><label for="'+prefix+'AsgTechnician">Technician</label><select id="'+prefix+'AsgTechnician">'+optionsFor('technician', order.technicianId)+'</select></div>' +
+        '<div class="field"><label for="'+prefix+'AsgTechnician2">Second technician</label><select id="'+prefix+'AsgTechnician2">'+optionsFor('technician', order.technician2Id)+'</select></div>' +
       '</div>'
     );
   }
@@ -3188,6 +3213,8 @@ import './platform.js';
       else if(action==='cashup-save'){ saveCashup(); }
       else if(action==='cashup-reopen'){ reopenCashup(el.getAttribute('data-date')); }
       else if(action==='cashup-csv'){ exportCashupCsv(el.getAttribute('data-date')); }
+      else if(action==='receipts-export'){ exportReceiptsCsv(); }
+      else if(action==='team-cashup'){ toggleCashupPermission(el.getAttribute('data-id'), el.checked); }
       else if(action==='cashup-date'){ STATE.cashupDate = el.getAttribute('data-date'); STATE.cashupForm = null; render(); }
       else if(action==='select-export'){ STATE.selectedForExport[el.getAttribute('data-id')] = el.checked; render(); }
       else if(action==='export-xero'){ exportXero(); }
@@ -3221,6 +3248,8 @@ import './platform.js';
       if(e.target.id==='importFile'){ importBackupFile(e.target.files[0]); e.target.value=''; }
       if(e.target.id==='productFile'){ importProductsFile(e.target.files[0]); e.target.value=''; }
       if(e.target.id==='cuDate' && e.target.value){ STATE.cashupDate = e.target.value; STATE.cashupForm = null; render(); }
+      if((e.target.id==='rxFrom' || e.target.id==='rxTo') && e.target.value){ STATE[e.target.id] = e.target.value; render(); }
+      if(e.target.id==='rxMethod'){ STATE.rxMethod = e.target.value; render(); }
       if(e.target.id==='tplPick' && e.target.value){ prepareTemplate(e.target.getAttribute('data-phone'), e.target.value); }
       if(e.target.id==='boardAssignee'){ STATE.boardAssigneeFilter = e.target.value; render(); }
       if(e.target.id==='custExFrom'){ STATE.custExportFrom = e.target.value; render(); }
@@ -3243,6 +3272,7 @@ import './platform.js';
       if(e.target.id==='inviteMsg'){ STATE.inviteDraftText = e.target.value; }
       var pfk = e.target.getAttribute && e.target.getAttribute('data-pf'); if(pfk && STATE.productForm){ STATE.productForm[pfk] = e.target.value; }
       var rfk = e.target.getAttribute && e.target.getAttribute('data-rf'); if(rfk && STATE.receiptForm){ STATE.receiptForm[rfk] = e.target.value; }
+      var denk = e.target.getAttribute && e.target.getAttribute('data-den'); if(denk){ onDenomInput(denk, e.target.value); }
       var cuk = e.target.getAttribute && e.target.getAttribute('data-cu'); if(cuk && STATE.cashupForm){ STATE.cashupForm[cuk] = e.target.value; refreshCashupTotals(); }
       if(e.target.id==='productSearch'){ STATE.productQuery = e.target.value; render(); focusEl('productSearch'); }
       if(STATE.quoteDraft){
@@ -3342,8 +3372,15 @@ import './platform.js';
     var techMember = STATE.team.find(function(m){ return m.id===techId; });
     patch.designerId = desId || null;
     patch.designerName = desMember ? desMember.name : '';
+    var tech2El = document.getElementById('ofAsgTechnician2');
+    var tech2Id = tech2El ? tech2El.value : '';
+    if(tech2Id && tech2Id===techId) tech2Id = '';
+    if(!techId && tech2Id){ techId = tech2Id; techMember = STATE.team.find(function(m){ return m.id===techId; }); tech2Id = ''; }
+    var tech2Member = STATE.team.find(function(m){ return m.id===tech2Id; });
     patch.technicianId = techId || null;
     patch.technicianName = techMember ? techMember.name : '';
+    patch.technician2Id = tech2Id || null;
+    patch.technician2Name = tech2Member ? tech2Member.name : '';
     updateOrder(id, patch);
     STATE.openOrderId = null;
     render();
@@ -3359,6 +3396,10 @@ import './platform.js';
     var desEl = document.getElementById('noAsgDesigner'), techEl = document.getElementById('noAsgTechnician');
     var desMember = desEl ? STATE.team.find(function(m){ return m.id===desEl.value; }) : null;
     var techMember = techEl ? STATE.team.find(function(m){ return m.id===techEl.value; }) : null;
+    var tech2El = document.getElementById('noAsgTechnician2');
+    var tech2Member = tech2El ? STATE.team.find(function(m){ return m.id===tech2El.value; }) : null;
+    if(tech2Member && techMember && tech2Member.id===techMember.id) tech2Member = null;
+    if(!techMember && tech2Member){ techMember = tech2Member; tech2Member = null; }
 
     var existing = findCustomerByName(name);
     var customerPromise = existing ? Promise.resolve(existing) : persistCustomer({name:name, phone:phone, email:'', notes:''});
@@ -3369,6 +3410,8 @@ import './platform.js';
         designerName: desMember ? desMember.name : '',
         technicianId: techMember ? techMember.id : null,
         technicianName: techMember ? techMember.name : '',
+        technician2Id: tech2Member ? tech2Member.id : null,
+        technician2Name: tech2Member ? tech2Member.name : '',
         customerId: cust.id,
         customerName: cust.name,
         phone: phone || cust.phone || '',
@@ -4150,8 +4193,52 @@ import './platform.js';
   function defaultFloat(){ var f = Number(STATE.config.cashFloat); return isNaN(f) || STATE.config.cashFloat==null || STATE.config.cashFloat==='' ? 350 : f; }
   function cashupFormFor(date){
     var c = STATE.cashups[date];
-    return c ? {date:date, cashCounted:String(c.cashCounted), cardTotal:String(c.cardTotal), float:String(c.float), notes:c.notes||''}
-             : {date:date, cashCounted:'', cardTotal:'', float:String(defaultFloat()), notes:''};
+    return c ? {date:date, cashCounted:String(c.cashCounted), cardTotal:String(c.cardTotal), float:String(c.float), notes:c.notes||'', denoms:Object.assign({}, c.denominations||{})}
+             : {date:date, cashCounted:'', cardTotal:'', float:String(defaultFloat()), notes:'', denoms:{}};
+  }
+  /* Cash calculator — count the drawer by note and coin. */
+  var CASH_DENOMS = [
+    {key:'n200', value:200, label:'R200', type:'Notes'}, {key:'n100', value:100, label:'R100', type:'Notes'},
+    {key:'n50', value:50, label:'R50', type:'Notes'}, {key:'n20', value:20, label:'R20', type:'Notes'},
+    {key:'n10', value:10, label:'R10', type:'Notes'},
+    {key:'c5', value:5, label:'R5', type:'Coins'}, {key:'c2', value:2, label:'R2', type:'Coins'},
+    {key:'c1', value:1, label:'R1', type:'Coins'}, {key:'c050', value:0.5, label:'50c', type:'Coins'},
+    {key:'c020', value:0.2, label:'20c', type:'Coins'}, {key:'c010', value:0.1, label:'10c', type:'Coins'}
+  ];
+  function denomQty(f, key){ var q = parseInt((f.denoms||{})[key], 10); return isNaN(q) || q < 0 ? 0 : q; }
+  function denomTotals(f){
+    var notes = 0, coins = 0, used = false;
+    CASH_DENOMS.forEach(function(d){ var q = denomQty(f, d.key); if(q) used = true; var v = q * d.value; if(d.type==='Notes') notes += v; else coins += v; });
+    return {notes:round2(notes), coins:round2(coins), total:round2(notes+coins), used:used};
+  }
+  function renderCashCalculator(f, dis){
+    var t = denomTotals(f), lastType = '';
+    var rows = CASH_DENOMS.map(function(d){
+      var q = denomQty(f, d.key), head = '';
+      if(d.type !== lastType){ lastType = d.type; head = '<tr class="den-head"><td colspan="3">'+d.type+'</td></tr>'; }
+      return head + '<tr><td>'+d.label+'</td><td><input type="number" min="0" step="1" inputmode="numeric" class="den-qty" data-den="'+d.key+'" aria-label="Number of '+d.label+' '+d.type.toLowerCase()+'" value="'+(q||'')+'"'+dis+'></td><td class="num" id="den-'+d.key+'">'+money(q*d.value)+'</td></tr>';
+    }).join('');
+    return '<details class="cash-calc"'+(t.used || !f.cashCounted ? ' open' : '')+'><summary>Cash calculator &mdash; count notes and coins</summary>' +
+      '<div class="tbl-wrap"><table class="cashup-table den-table"><thead><tr><th>Note / coin</th><th>Quantity</th><th>Value</th></tr></thead><tbody>' + rows +
+      '</tbody><tfoot>' +
+        '<tr><td>Notes</td><td></td><td class="num" id="denNotes">'+money(t.notes)+'</td></tr>' +
+        '<tr><td>Coins</td><td></td><td class="num" id="denCoins">'+money(t.coins)+'</td></tr>' +
+        '<tr style="font-weight:700;"><td>Total in drawer</td><td></td><td class="num" id="denTotal">'+money(t.total)+'</td></tr>' +
+      '</tfoot></table></div>' +
+      '<div class="hint">The total fills in “Cash counted in drawer” below. The float is deducted after that.</div>' +
+    '</details>';
+  }
+  function onDenomInput(key, val){
+    var f = STATE.cashupForm; if(!f) return;
+    f.denoms = f.denoms || {}; f.denoms[key] = val;
+    var d = CASH_DENOMS.find(function(x){ return x.key===key; });
+    var cell = document.getElementById('den-'+key); if(cell && d) cell.innerHTML = money(denomQty(f, key) * d.value);
+    var t = denomTotals(f);
+    var set = function(id, html){ var el = document.getElementById(id); if(el) el.innerHTML = html; };
+    set('denNotes', money(t.notes)); set('denCoins', money(t.coins)); set('denTotal', money(t.total));
+    f.cashCounted = t.used ? t.total.toFixed(2) : '';
+    var cash = document.getElementById('cuCash'); if(cash) cash.value = f.cashCounted;
+    refreshCashupTotals();
   }
   function cashupCalc(date, f){
     var recs = receiptsOn(date);
@@ -4167,6 +4254,7 @@ import './platform.js';
 
   function saveCashup(){
     var date = STATE.cashupDate, f = STATE.cashupForm; if(!f) return;
+    if(!canCashup()){ toast('Only the owner and people allowed on the Team tab can cash up.'); return; }
     if(f.cashCounted==='' || isNaN(Number(f.cashCounted))){ toast('Enter the cash counted in the drawer'); return; }
     if(f.cardTotal==='' || isNaN(Number(f.cardTotal))){ toast('Enter the card machine total (0 if none)'); return; }
     var calc = cashupCalc(date, f);
@@ -4174,6 +4262,7 @@ import './platform.js';
     var data = {date:date, cashCounted:calc.counted, float:calc.float, cardTotal:calc.card, cashTakings:calc.cashTakings,
       cashExpected:calc.cashExp, cardExpected:calc.cardExp, cashDifference:calc.cashDiff, cardDifference:calc.cardDiff, totalDifference:calc.totalDiff,
       receiptIds:calc.recs.map(function(r){ return r.id; }), receiptCount:calc.recs.length, notes:String(f.notes||'').trim(),
+      denominations:(function(){ var o = {}; CASH_DENOMS.forEach(function(d){ var q = denomQty(f, d.key); if(q) o[d.key] = q; }); return o; })(),
       closedBy: member ? member.name : 'Owner', closedAt:new Date().toISOString()};
     var lock = calc.recs.map(function(r){ return {path:'receipts/'+r.id, data:{cashupDate:date}}; });
     var done = function(){ toast('Cash-up for '+fullDate(date)+' saved'); render(); };
@@ -4196,6 +4285,8 @@ import './platform.js';
     var lines = [['Receipt','Time','Customer','Job','Invoice','Method','Amount']];
     calc.recs.forEach(function(r){ lines.push([r.number, String(r.createdAt).slice(11,16), r.customerName, r.jobNumber, r.invoiceNumber, r.method, Number(r.amount).toFixed(2)]); });
     lines.push([]);
+    var fd = c ? {denoms:c.denominations||{}} : f;
+    CASH_DENOMS.forEach(function(d){ var q = denomQty(fd, d.key); if(q) lines.push([d.label+' x '+q,'','','','','',(q*d.value).toFixed(2)]); });
     lines.push(['Cash counted','','','','','',calc.counted.toFixed(2)]);
     lines.push(['Less float','','','','','',calc.float.toFixed(2)]);
     lines.push(['Cash takings','','','','','',calc.cashTakings.toFixed(2)]);
@@ -4207,6 +4298,58 @@ import './platform.js';
     var csv = lines.map(function(l){ return l.map(csvCell).join(','); }).join('\r\n');
     var blob = new Blob([csv], {type:'text/csv'}), name = 'DsignX-cash-up-'+date+'.csv';
     if(STATE.downloads){ STATE.downloads.save({filename:name, data:blob}).catch(function(){ fallbackDownload(blob, name); }); } else fallbackDownload(blob, name);
+  }
+
+  /* Receipts export — bank statement import layout:
+     *Date,*Amount,Payee,Description,Reference,Check Number  (dates DD/MM/YYYY) */
+  function receiptExportDefaults(){
+    var t = todayIso();
+    if(!STATE.rxFrom) STATE.rxFrom = t.slice(0,8)+'01';
+    if(!STATE.rxTo) STATE.rxTo = t;
+    if(!STATE.rxMethod) STATE.rxMethod = 'all';
+  }
+  function receiptsBetween(from, to, method){
+    return STATE.receipts.filter(function(r){
+      return !r.voided && r.date>=from && r.date<=to && (method==='all' || r.method===method);
+    }).sort(function(a,b){ return String(a.date+a.createdAt).localeCompare(String(b.date+b.createdAt)); });
+  }
+  function ddmmyyyy(iso){ var p = String(iso||'').split('-'); return p.length===3 ? p[2]+'/'+p[1]+'/'+p[0] : ''; }
+  function receiptExportRows(recs){
+    return recs.map(function(r){
+      var what = (r.method==='card' ? 'Card' : 'Cash') + (r.kind==='prepayment' ? ' deposit' : ' payment');
+      var job = [r.jobNumber, r.jobTitle].filter(Boolean).join(' ');
+      return [ddmmyyyy(r.date), Number(r.amount).toFixed(2), r.customerName||'', what + (job ? ' - '+job : ''), [r.number, r.invoiceNumber].filter(Boolean).join(' / '), ''];
+    });
+  }
+  function exportReceiptsCsv(){
+    receiptExportDefaults();
+    var from = STATE.rxFrom, to = STATE.rxTo, method = STATE.rxMethod;
+    if(from > to){ toast('The From date is after the To date.'); return; }
+    var recs = receiptsBetween(from, to, method);
+    if(!recs.length){ toast('No receipts in that period.'); return; }
+    var lines = [['*Date','*Amount','Payee','Description','Reference','Check Number']].concat(receiptExportRows(recs));
+    var csv = lines.map(function(l){ return l.map(csvCell).join(','); }).join('\r\n') + '\r\n';
+    var blob = new Blob([csv], {type:'text/csv'});
+    var name = 'DsignX-receipts-'+from+'-to-'+to+(method==='all'?'':'-'+method)+'.csv';
+    if(STATE.downloads){ STATE.downloads.save({filename:name, data:blob}).catch(function(){ fallbackDownload(blob, name); }); } else fallbackDownload(blob, name);
+    toast(recs.length+' receipt'+(recs.length===1?'':'s')+' downloaded');
+  }
+  function renderReceiptExportPanel(){
+    receiptExportDefaults();
+    var recs = STATE.rxFrom <= STATE.rxTo ? receiptsBetween(STATE.rxFrom, STATE.rxTo, STATE.rxMethod) : [];
+    var total = recs.reduce(function(s,r){ return s + (Number(r.amount)||0); }, 0);
+    var opt = function(v,l){ return '<option value="'+v+'"'+(STATE.rxMethod===v?' selected':'')+'>'+l+'</option>'; };
+    return '<div class="panel">' +
+      '<div class="section-label">Download receipts</div>' +
+      '<div class="field-row" style="align-items:flex-end;">' +
+        '<div class="field"><label for="rxFrom">From</label><input type="date" id="rxFrom" value="'+STATE.rxFrom+'"></div>' +
+        '<div class="field"><label for="rxTo">To</label><input type="date" id="rxTo" value="'+STATE.rxTo+'"></div>' +
+        '<div class="field"><label for="rxMethod">Payment method</label><select id="rxMethod">'+opt('all','Cash and card')+opt('cash','Cash only')+opt('card','Card only')+'</select></div>' +
+        '<div class="field"><button class="btn btn-primary btn-sm" data-action="receipts-export">Download CSV</button></div>' +
+      '</div>' +
+      '<div class="hint" id="rxSummary">'+(STATE.rxFrom > STATE.rxTo ? 'The From date is after the To date.' : recs.length+' receipt'+(recs.length===1?'':'s')+' &middot; '+money(total)+' (voided receipts are left out)')+'</div>' +
+      '<div class="hint">Columns: *Date, *Amount, Payee, Description, Reference, Check Number &mdash; ready for bank statement import.</div>' +
+    '</div>';
   }
 
   function renderCashupTab(){
@@ -4238,6 +4381,7 @@ import './platform.js';
       '</div>' +
       '<div class="panel">' +
         '<div class="section-label">Count</div>' +
+        renderCashCalculator(f, dis) +
         '<div class="field-row">' +
           '<div class="field"><label for="cuCash">Cash counted in drawer</label><input type="number" step="0.01" min="0" id="cuCash" data-cu="cashCounted" value="'+escapeHtml(f.cashCounted)+'"'+dis+'></div>' +
           '<div class="field"><label for="cuFloat">Less float</label><input type="number" step="0.01" min="0" id="cuFloat" data-cu="float" value="'+escapeHtml(f.float)+'"'+dis+'></div>' +
@@ -4254,6 +4398,7 @@ import './platform.js';
           : '<button class="btn btn-primary btn-sm" data-action="cashup-save">Save cash-up</button> ') +
         '<button class="btn btn-ghost btn-sm" data-action="cashup-csv" data-date="'+date+'">Download CSV</button>' +
       '</div>' +
+      renderReceiptExportPanel() +
       (history ? '<div class="panel"><div class="section-label">Recent cash-ups</div><div class="tbl-wrap"><table><thead><tr><th>Day</th><th>Cash takings</th><th>Card</th><th>Result</th><th>By</th></tr></thead><tbody>'+history+'</tbody></table></div></div>' : '')
     );
   }
