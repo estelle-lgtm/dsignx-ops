@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js';
+import './platform.js?v=2026-10-15.10';
 
 (function(){
   "use strict";
@@ -1697,7 +1697,7 @@ import './platform.js';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa</div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-15.10</span></div>' +
       '</div>'
     );
   }
@@ -2503,9 +2503,14 @@ import './platform.js';
     prefix = prefix || 'of';
     function optionsFor(role, selectedId){
       var opts = '<option value="">Unassigned</option>';
-      STATE.team.filter(function(m){ return m.role===role; }).forEach(function(m){
-        opts += '<option value="'+m.id+'" '+(selectedId===m.id?'selected':'')+'>'+escapeHtml(m.name)+'</option>';
-      });
+      var opt = function(m){ return '<option value="'+m.id+'" '+(selectedId===m.id?'selected':'')+'>'+escapeHtml(m.name)+'</option>'; };
+      var active = STATE.team.filter(function(m){ return m.active!==false || m.id===selectedId; });
+      var main = active.filter(function(m){ return m.role===role; });
+      if(role!=='technician') return opts + main.map(opt).join('');
+      // Technicians first; anyone else on the team can also be put on a job as a technician.
+      var others = active.filter(function(m){ return m.role!=='technician'; });
+      opts += main.length ? '<optgroup label="Technicians">'+main.map(opt).join('')+'</optgroup>' : '';
+      opts += others.length ? '<optgroup label="Other team members">'+others.map(opt).join('')+'</optgroup>' : '';
       return opts;
     }
     return (
