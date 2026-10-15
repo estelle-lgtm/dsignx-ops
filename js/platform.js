@@ -133,6 +133,16 @@ function setup(appMod, authMod, fsMod, fnMod) {
     }
   }
 
+  // Invoice stock: records what an invoice has taken out of stock on the job, and moves
+  // the product quantities by the difference — in one batch, using increments so two
+  // devices can't overwrite each other.
+  async function adjustStock(orderId, deducted, deltas) {
+    const batch = fsMod.writeBatch(fs);
+    batch.update(fsMod.doc(fs, `orders/${orderId}`), { stockDeducted: deducted });
+    deltas.forEach((d) => batch.update(fsMod.doc(fs, `products/${d.pid}`), { stockQty: fsMod.increment(-d.qty) }));
+    await batch.commit();
+  }
+
   // The first owner: allowed once, for the owner email named in firestore.rules.
   async function ownerClaimable() {
     const email = String((auth.currentUser && auth.currentUser.email) || '').toLowerCase();
@@ -251,6 +261,7 @@ function setup(appMod, authMod, fsMod, fnMod) {
     downloads,
     importDocs,
     updateDocs,
+    adjustStock,
     reserveNumbers,
     ownerClaimable,
     claimOwner,

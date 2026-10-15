@@ -92,6 +92,12 @@ service cloud.firestore {
       allow read, write: if isStaff();
     }
 
+    // Stock takes: everyone on staff can see them; only the owner starts, counts and finalises.
+    match /stocktakes/{id} {
+      allow read: if isStaff();
+      allow create, update, delete: if isOwner();
+    }
+
     // Payments received (owner and designers issue receipts). Never deleted: the owner can mark one void instead.
     // People allowed to cash up may read receipts and lock them to a cash-up.
     match /receipts/{id} {

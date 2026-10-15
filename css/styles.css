@@ -468,6 +468,8 @@ img{max-width:100%}
   .den-table .den-head td{font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; opacity:.65; padding-top:10px;}
   .den-table input.den-qty{width:90px; text-align:right;}
   .den-table tfoot td{border-top:1px solid var(--line);}
+  .stock-table input.st-count{width:110px; text-align:right;}
+  .stock-tick{width:16px; height:16px; cursor:pointer;}
   @media (max-width:640px){ .pay-row{grid-template-columns:1fr 1fr; } .pay-row .pay-actions{grid-column:1 / -1; justify-content:flex-start;} }
   .chat-attach{cursor:pointer; padding:6px 9px; align-self:flex-end; display:inline-flex; align-items:center;}
   .chat-preview{background:var(--warning-soft); color:var(--ink); border-radius:var(--radius-s); padding:10px 12px; font-size:12.5px;}
