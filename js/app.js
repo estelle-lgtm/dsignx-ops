@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-10-15.15';
+import './platform.js?v=2026-10-15.16';
 
 (function(){
   "use strict";
@@ -1712,7 +1712,7 @@ import './platform.js?v=2026-10-15.15';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-15.15</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-15.16</span></div>' +
       '</div>'
     );
   }
@@ -2008,6 +2008,7 @@ import './platform.js?v=2026-10-15.15';
 
   function renderReportsTab(){
     var range = reportRange();
+    if(STATE.reportView==='cashup' && canCashup()) return renderCashupReport(range);
     var data = commissionRows(range);
     var isMonth = rangeIsMonth(range);
     var periodWord = isMonth ? 'month' : 'period';
@@ -2067,6 +2068,7 @@ import './platform.js?v=2026-10-15.15';
       '<div class="topline"><div><h1>Reports</h1><div class="sub">Commission report &middot; '+rangeLabel(range)+(ownerView?'':' &middot; your figures only')+'</div></div>' + exampleBadge() +
         (ownerView ? '<button class="btn btn-sm" data-action="report-export">Download CSV</button>' : '') +
       '</div>' +
+      reportSwitcher() +
       '<div class="panel" style="padding:12px 14px; margin-bottom:16px;">' +
         '<div class="period-bar">' +
           reportPresets().map(function(p){
@@ -3193,6 +3195,10 @@ import './platform.js?v=2026-10-15.15';
         var nb = monthBounds(new Date(base.getFullYear(), base.getMonth()+Number(el.getAttribute('data-by')), 1));
         STATE.reportFrom = nb.from; STATE.reportTo = nb.to; STATE.reportOpenMember = null; render();
       }
+      else if(action==='report-view'){ STATE.reportView = el.getAttribute('data-view'); render(); }
+      else if(action==='cashrep-pdf'){ cashupReportPdf(); }
+      else if(action==='cashrep-xlsx'){ cashupReportXlsx(); }
+      else if(action==='cashup-open-day' && canAccess('cashup')){ STATE.tab = 'cashup'; STATE.cashupDate = el.getAttribute('data-date'); STATE.cashupForm = null; render(); }
       else if(action==='report-preset'){ STATE.reportFrom = el.getAttribute('data-from'); STATE.reportTo = el.getAttribute('data-to'); STATE.reportOpenMember = null; render(); }
       else if(action==='report-toggle'){ var rid = el.getAttribute('data-id'); STATE.reportOpenMember = (STATE.reportOpenMember===rid) ? null : rid; render(); }
       else if(action==='report-export'){ if(isOwnerRole()) exportCommissionCsv(); }
@@ -4955,6 +4961,208 @@ import './platform.js?v=2026-10-15.15';
     deltas.forEach(function(d){ var p = STATE.products.find(function(x){ return x.id===d.pid; }); if(p) p.stockQty = stockQtyOf(p) - d.qty; });
     o.stockDeducted = want; note();
     return Promise.resolve();
+  }
+  /* ============================ reports: daily cash-up ============================ */
+  // One row per day in the period: what was counted against what the receipts say.
+  // Days with receipts but no saved cash-up are listed as "Not cashed up".
+  function cashupReportRows(from, to){
+    var days = {};
+    Object.keys(STATE.cashups).forEach(function(d){ if((!from || d>=from) && (!to || d<=to)) days[d] = true; });
+    STATE.receipts.forEach(function(r){ if(!r.voided && r.date && (!from || r.date>=from) && (!to || r.date<=to)) days[r.date] = true; });
+    return Object.keys(days).sort().map(function(d){
+      var c = STATE.cashups[d] || null, recs = receiptsOn(d);
+      var cashRec = round2(recs.filter(function(r){ return r.method==='cash'; }).reduce(function(s,r){ return s+Number(r.amount||0); },0));
+      var cardRec = round2(recs.filter(function(r){ return r.method==='card'; }).reduce(function(s,r){ return s+Number(r.amount||0); },0));
+      if(!c) return {date:d, done:false, receipts:recs.length, cashRec:cashRec, cardRec:cardRec};
+      return {date:d, done:true, receipts:recs.length, counted:Number(c.cashCounted)||0, float:Number(c.float)||0, takings:Number(c.cashTakings)||0,
+        cashRec:Number(c.cashExpected!=null?c.cashExpected:cashRec)||0, cashDiff:Number(c.cashDifference)||0,
+        card:Number(c.cardTotal)||0, cardRec:Number(c.cardExpected!=null?c.cardExpected:cardRec)||0, cardDiff:Number(c.cardDifference)||0,
+        totalDiff:Number(c.totalDifference)||0, by:c.closedBy||'', notes:c.notes||'', late:recs.filter(function(r){ return (c.receiptIds||[]).indexOf(r.id)<0; }).length};
+    });
+  }
+  function cashupReportTotals(rows){
+    var t = {days:rows.length, done:0, open:0, counted:0, float:0, takings:0, cashRec:0, cashDiff:0, card:0, cardRec:0, cardDiff:0, totalDiff:0, openRec:0};
+    rows.forEach(function(r){
+      if(r.done){ t.done++; ['counted','float','takings','cashRec','cashDiff','card','cardRec','cardDiff','totalDiff'].forEach(function(k){ t[k] += r[k]; }); }
+      else { t.open++; t.openRec += r.cashRec + r.cardRec; }
+    });
+    Object.keys(t).forEach(function(k){ if(typeof t[k]==='number' && k!=='days' && k!=='done' && k!=='open') t[k] = round2(t[k]); });
+    return t;
+  }
+  function reportSwitcher(){
+    if(!canCashup()) return '';
+    var v = STATE.reportView==='cashup' ? 'cashup' : 'commission';
+    return '<div class="filterbar" style="margin:-6px 0 14px;">' +
+      '<button class="chip-toggle '+(v==='commission'?'active':'')+'" data-action="report-view" data-view="commission">Commission</button>' +
+      '<button class="chip-toggle '+(v==='cashup'?'active':'')+'" data-action="report-view" data-view="cashup">Daily cash-up</button></div>';
+  }
+  function renderCashupReport(range){
+    var rows = cashupReportRows(range.from, range.to), t = cashupReportTotals(rows);
+    var dcell = function(v){ return '<td class="num">'+(v===0 ? '<span style="color:var(--ink-faint);">0.00</span>' : diffLabel(v))+'</td>'; };
+    var body = rows.length ? rows.map(function(r){
+      if(!r.done) return '<tr class="cr-open"><td>'+fullDate(r.date)+'</td><td><span class="pay-chip pay-unpaid">Not cashed up</span></td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">'+money(r.cashRec)+'</td><td class="num">—</td><td class="num">—</td><td class="num">'+money(r.cardRec)+'</td><td class="num">—</td><td class="num">—</td><td></td></tr>';
+      return '<tr class="row-btn" data-action="cashup-open-day" data-date="'+r.date+'"><td>'+fullDate(r.date)+'</td><td><span class="pay-chip pay-paid">Cashed up</span>'+(r.late?' <span class="pay-chip pay-part" title="Receipts captured after the cash-up was saved">+'+r.late+' late</span>':'')+'</td>' +
+        '<td class="num">'+money(r.counted)+'</td><td class="num">'+money(r.float)+'</td><td class="num">'+money(r.takings)+'</td><td class="num">'+money(r.cashRec)+'</td>'+dcell(r.cashDiff) +
+        '<td class="num">'+money(r.card)+'</td><td class="num">'+money(r.cardRec)+'</td>'+dcell(r.cardDiff)+dcell(r.totalDiff)+'<td>'+escapeHtml(r.by)+'</td></tr>' +
+        (r.notes ? '<tr class="cr-note"><td></td><td colspan="11">Note: '+escapeHtml(r.notes)+'</td></tr>' : '');
+    }).join('') + '<tr class="total-row"><td>Total</td><td>'+t.done+' of '+t.days+' day'+(t.days===1?'':'s')+'</td><td class="num">'+money(t.counted)+'</td><td class="num">'+money(t.float)+'</td><td class="num">'+money(t.takings)+'</td><td class="num">'+money(t.cashRec)+'</td><td class="num">'+money(t.cashDiff)+'</td><td class="num">'+money(t.card)+'</td><td class="num">'+money(t.cardRec)+'</td><td class="num">'+money(t.cardDiff)+'</td><td class="num">'+money(t.totalDiff)+'</td><td></td></tr>'
+      : '<tr><td colspan="12" class="empty-note">No receipts or cash-ups in this period.</td></tr>';
+    var bar = '<div class="panel" style="padding:12px 14px; margin-bottom:16px;"><div class="period-bar">' +
+      reportPresets().map(function(p){ var on = range.from===p.from && range.to===p.to; return '<button type="button" class="chip-toggle'+(on?' active':'')+'" data-action="report-preset" data-from="'+p.from+'" data-to="'+p.to+'">'+p.label+'</button>'; }).join('') +
+      '<span style="flex:1"></span>' +
+      '<label for="reportFrom" style="margin:0;">From</label><input type="date" id="reportFrom" value="'+escapeHtml(range.from||'')+'" style="width:auto;">' +
+      '<label for="reportTo" style="margin:0;">To</label><input type="date" id="reportTo" value="'+escapeHtml(range.to||'')+'" style="width:auto;">' +
+      '</div></div>';
+    return '<div class="topline"><div><h1>Reports</h1><div class="sub">Daily cash-up report &middot; '+rangeLabel(range)+'</div></div>' +
+        '<div style="display:flex; gap:8px;"><button class="btn btn-sm" data-action="cashrep-xlsx"'+(rows.length?'':' disabled')+'>Download Excel</button><button class="btn btn-primary btn-sm" data-action="cashrep-pdf"'+(rows.length?'':' disabled')+'>Download PDF</button></div></div>' +
+      reportSwitcher() + bar +
+      '<div class="tiles">' +
+        tile('Cash takings', money(t.takings), 'After the float, '+t.done+' day'+(t.done===1?'':'s')+' cashed up') +
+        tile('Card', money(t.card), 'Card machine totals') +
+        tile('Over / short', (t.totalDiff===0?'R 0.00':diffLabel(t.totalDiff)), 'Counted vs receipts') +
+        tile('Not cashed up', String(t.open), t.open ? (money(t.openRec)+' in receipts') : 'Every day is done') +
+      '</div>' +
+      '<div class="panel"><div class="tbl-wrap"><table class="cashrep-table"><thead><tr><th>Day</th><th>Status</th><th class="num">Cash counted</th><th class="num">Float</th><th class="num">Cash takings</th><th class="num">Cash receipts</th><th class="num">Cash diff.</th><th class="num">Card machine</th><th class="num">Card receipts</th><th class="num">Card diff.</th><th class="num">Total diff.</th><th>Cashed up by</th></tr></thead><tbody>'+body+'</tbody></table></div>' +
+      '<div class="hint" style="margin-top:8px;">Click a day to open its cash-up. Cash takings = cash counted less the float.</div></div>';
+  }
+
+  /* ---- PDF (A4 landscape) ---- */
+  function cashupReportPdf(){
+    if(!window.jspdf || !window.jspdf.jsPDF){ toast('PDF tools are still loading — try again in a moment'); return; }
+    var range = reportRange(), rows = cashupReportRows(range.from, range.to), t = cashupReportTotals(rows);
+    var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4', orientation:'landscape'});
+    var L = 12, R = 285, MAROON = [78,9,40];
+    var cols = [['DAY',L+1,'l'],['STATUS',L+31,'l'],['COUNTED',L+90,'r'],['FLOAT',L+109,'r'],['TAKINGS',L+131,'r'],['CASH REC.',L+153,'r'],['CASH DIFF',L+173,'r'],['CARD',L+195,'r'],['CARD REC.',L+217,'r'],['CARD DIFF',L+237,'r'],['TOTAL DIFF',L+258,'r'],['BY',L+261,'l']];
+    var header = function(){
+      try { doc.addImage(LOGO_PDF_DATA_URL, 'PNG', L, 8, 36, 36*(358/800)); } catch(e){}
+      doc.setFont('helvetica','bold'); doc.setFontSize(10.5); doc.setTextColor(MAROON[0],MAROON[1],MAROON[2]); doc.text(lh('docCompanyName'), R, 13, {align:'right'});
+      doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(95,99,88); doc.text(lh('docAddress'), R, 17.5, {align:'right'});
+      doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, 26, R-L, 0.7, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.setTextColor(MAROON[0],MAROON[1],MAROON[2]); doc.text('DAILY CASH-UP REPORT', L, 35);
+      doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(60,60,60); doc.text(rangeLabel(range)+'   ·   Generated '+fullDate(todayIso()), L, 40.5);
+      var y = 45;
+      doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, y, R-L, 7.5, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(255,255,255);
+      cols.forEach(function(c){ doc.text(c[0], c[1], y+5, c[2]==='r'?{align:'right'}:{}); });
+      return y + 7.5;
+    };
+    var num = function(v){ return pdfNum(v); };
+    var y = header();
+    rows.forEach(function(r, i){
+      var h = r.notes ? 11 : 7;
+      if(y + h > 190){ doc.addPage(); y = header(); }
+      if(i%2===1){ doc.setFillColor(246,245,241); doc.rect(L, y, R-L, h, 'F'); }
+      doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(43,43,43);
+      var v = r.done ? [fullDate(r.date), 'Cashed up'+(r.late?(' (+'+r.late+' late)'):''), num(r.counted), num(r.float), num(r.takings), num(r.cashRec), num(r.cashDiff), num(r.card), num(r.cardRec), num(r.cardDiff), num(r.totalDiff), r.by]
+                     : [fullDate(r.date), 'NOT CASHED UP', '—', '—', '—', num(r.cashRec), '—', '—', num(r.cardRec), '—', '—', ''];
+      v.forEach(function(val, k){
+        var neg = r.done && (k===6||k===9||k===10) && Number(String(val).replace(/[^0-9.\-]/g,''))!==0;
+        if(neg){ var n = [r.cashDiff, r.cardDiff, r.totalDiff][k===6?0:(k===9?1:2)]; doc.setTextColor(n<0?150:30, n<0?30:107, n<0?30:52); doc.setFont('helvetica','bold'); }
+        if(!r.done && k===1){ doc.setTextColor(150,30,30); doc.setFont('helvetica','bold'); }
+        doc.text(String(val), cols[k][1], y+4.8, cols[k][2]==='r'?{align:'right'}:{});
+        doc.setTextColor(43,43,43); doc.setFont('helvetica','normal');
+      });
+      if(r.notes){ doc.setFont('helvetica','italic'); doc.setFontSize(7.5); doc.setTextColor(95,99,88); doc.text(doc.splitTextToSize('Note: '+r.notes, R-L-34)[0], cols[1][1], y+9); }
+      y += h;
+    });
+    if(y + 9 > 190){ doc.addPage(); y = header(); }
+    doc.setDrawColor(MAROON[0],MAROON[1],MAROON[2]); doc.setLineWidth(0.4); doc.line(L, y+0.5, R, y+0.5);
+    doc.setFont('helvetica','bold'); doc.setFontSize(8.2); doc.setTextColor(43,43,43);
+    var tv = ['TOTAL', t.done+' of '+t.days+' days cashed up', num(t.counted), num(t.float), num(t.takings), num(t.cashRec), num(t.cashDiff), num(t.card), num(t.cardRec), num(t.cardDiff), num(t.totalDiff), ''];
+    tv.forEach(function(val, k){ doc.text(String(val), cols[k][1], y+5.5, cols[k][2]==='r'?{align:'right'}:{}); });
+    y += 13;
+    if(t.open){ if(y > 185){ doc.addPage(); y = header(); } doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(150,30,30); doc.text(t.open+' day'+(t.open===1?' has':'s have')+' receipts ('+money(t.openRec)+') but no saved cash-up.', L, y); y += 6; }
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(95,99,88);
+    doc.text('Cash takings = cash counted less the float. Differences: positive = over, negative = short. Amounts in '+(STATE.config.currency||'ZAR')+'.', L, Math.min(y, 192));
+    var n = doc.getNumberOfPages();
+    for(var i=1;i<=n;i++){ doc.setPage(i); doc.setFontSize(7.5); doc.setTextColor(140,140,132); doc.text('Page '+i+' of '+n, R, 203, {align:'right'}); }
+    var name = 'DsignX-cash-up-report-'+(range.from||'start')+'-to-'+(range.to||todayIso())+'.pdf';
+    var blob = doc.output('blob');
+    if(STATE.downloads){ STATE.downloads.save({filename:name, data:blob}).catch(function(){ fallbackDownload(blob, name); }); } else fallbackDownload(blob, name);
+  }
+
+  /* ---- Excel (.xlsx) — written directly, no add-on needed ---- */
+  var _crcTable = null;
+  function crc32(bytes){
+    if(!_crcTable){ _crcTable = []; for(var n=0;n<256;n++){ var c=n; for(var k=0;k<8;k++) c = (c&1) ? (0xEDB88320 ^ (c>>>1)) : (c>>>1); _crcTable[n] = c>>>0; } }
+    var crc = 0xFFFFFFFF; for(var i=0;i<bytes.length;i++) crc = _crcTable[(crc ^ bytes[i]) & 0xFF] ^ (crc>>>8); return (crc ^ 0xFFFFFFFF)>>>0;
+  }
+  function zipStore(files){ // files: [{name, data:Uint8Array}] — stored (no compression), valid for Excel
+    var enc = new TextEncoder(), parts = [], central = [], offset = 0;
+    var u16 = function(v){ return [v&255, (v>>>8)&255]; }, u32 = function(v){ return [v&255, (v>>>8)&255, (v>>>16)&255, (v>>>24)&255]; };
+    files.forEach(function(f){
+      var nm = enc.encode(f.name), crc = crc32(f.data), sz = f.data.length;
+      var head = [].concat(u32(0x04034b50), u16(20), u16(0x0800), u16(0), u16(0), u16(0x21), u32(crc), u32(sz), u32(sz), u16(nm.length), u16(0));
+      parts.push(new Uint8Array(head), nm, f.data);
+      central.push([].concat(u32(0x02014b50), u16(20), u16(20), u16(0x0800), u16(0), u16(0), u16(0x21), u32(crc), u32(sz), u32(sz), u16(nm.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(offset)), nm);
+      offset += head.length + nm.length + sz;
+    });
+    var cdStart = offset, cdSize = 0, cparts = [];
+    central.forEach(function(c){ if(Array.isArray(c)){ var a = new Uint8Array(c); cparts.push(a); cdSize += a.length; } else { cparts.push(c); cdSize += c.length; } });
+    var end = new Uint8Array([].concat(u32(0x06054b50), u16(0), u16(0), u16(files.length), u16(files.length), u32(cdSize), u32(cdStart), u16(0)));
+    return new Blob(parts.concat(cparts, [end]), {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  }
+  function xmlEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, ''); }
+  function colName(i){ var s = ''; i++; while(i>0){ var m = (i-1)%26; s = String.fromCharCode(65+m) + s; i = Math.floor((i-1)/26); } return s; }
+  // sheet: {name, widths:[..], rows:[[cell]]}; cell = string | number | {v, s} with s: 1 bold, 2 money, 3 bold money, 4 header, 5 red money
+  function sheetXml(sh){
+    var rows = sh.rows.map(function(row, ri){
+      return '<row r="'+(ri+1)+'">' + row.map(function(cell, ci){
+        if(cell===null || cell===undefined || cell==='') return '';
+        var v = (typeof cell==='object') ? cell.v : cell, st = (typeof cell==='object' && cell.s) ? cell.s : (typeof v==='number' ? 2 : 0);
+        var ref = colName(ci)+(ri+1);
+        if(typeof v==='number') return '<c r="'+ref+'" s="'+st+'"><v>'+v+'</v></c>';
+        return '<c r="'+ref+'" s="'+st+'" t="inlineStr"><is><t xml:space="preserve">'+xmlEsc(v)+'</t></is></c>';
+      }).join('') + '</row>';
+    }).join('');
+    var cols = (sh.widths||[]).map(function(w, i){ return '<col min="'+(i+1)+'" max="'+(i+1)+'" width="'+w+'" customWidth="1"/>'; }).join('');
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="'+(sh.freeze||1)+'" topLeftCell="A'+((sh.freeze||1)+1)+'" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' +
+      (cols ? '<cols>'+cols+'</cols>' : '') + '<sheetData>'+rows+'</sheetData></worksheet>';
+  }
+  function buildXlsx(sheets){
+    var enc = new TextEncoder(), f = function(name, xml){ return {name:name, data:enc.encode(xml)}; };
+    var files = [
+      f('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
+        sheets.map(function(s, i){ return '<Override PartName="/xl/worksheets/sheet'+(i+1)+'.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'; }).join('') + '</Types>'),
+      f('_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'),
+      f('xl/workbook.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' +
+        sheets.map(function(s, i){ return '<sheet name="'+xmlEsc(s.name).slice(0,31)+'" sheetId="'+(i+1)+'" r:id="rId'+(i+1)+'"/>'; }).join('') + '</sheets></workbook>'),
+      f('xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+        sheets.map(function(s, i){ return '<Relationship Id="rId'+(i+1)+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet'+(i+1)+'.xml"/>'; }).join('') +
+        '<Relationship Id="rId'+(sheets.length+1)+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'),
+      f('xl/styles.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+        '<numFmts count="1"><numFmt numFmtId="164" formatCode="&quot;R&quot;\\ #,##0.00;[Red]\\-&quot;R&quot;\\ #,##0.00"/></numFmts>' +
+        '<fonts count="3"><font><sz val="10"/><name val="Calibri"/></font><font><b/><sz val="10"/><name val="Calibri"/></font><font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts>' +
+        '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF4E0928"/><bgColor indexed="64"/></patternFill></fill></fills>' +
+        '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+        '<cellXfs count="6"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="164" fontId="1" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/><xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs>' +
+        '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>')
+    ];
+    sheets.forEach(function(s, i){ files.push(f('xl/worksheets/sheet'+(i+1)+'.xml', sheetXml(s))); });
+    return zipStore(files);
+  }
+  function cashupReportXlsx(){
+    var range = reportRange(), rows = cashupReportRows(range.from, range.to), t = cashupReportTotals(rows);
+    var H = function(x){ return {v:x, s:4}; };
+    var days = [[H('Day'),H('Status'),H('Cash counted'),H('Float'),H('Cash takings'),H('Cash receipts'),H('Cash difference'),H('Card machine'),H('Card receipts'),H('Card difference'),H('Total difference'),H('Cashed up by'),H('Notes')]];
+    rows.forEach(function(r){
+      days.push(r.done ? [r.date, 'Cashed up'+(r.late?(' (+'+r.late+' late receipts)'):''), r.counted, r.float, r.takings, r.cashRec, r.cashDiff, r.card, r.cardRec, r.cardDiff, r.totalDiff, r.by, r.notes]
+                       : [r.date, 'Not cashed up', '', '', '', r.cashRec, '', '', r.cardRec, '', '', '', '']);
+    });
+    var B = function(v){ return {v:v, s:3}; };
+    days.push([]);
+    days.push([{v:'Total', s:1}, {v:t.done+' of '+t.days+' days cashed up', s:1}, B(t.counted), B(t.float), B(t.takings), B(t.cashRec), B(t.cashDiff), B(t.card), B(t.cardRec), B(t.cardDiff), B(t.totalDiff)]);
+    var recs = [[H('Date'),H('Time'),H('Receipt'),H('Customer'),H('Job'),H('Invoice'),H('Method'),H('Type'),H('Amount'),H('Cash-up')]];
+    STATE.receipts.filter(function(r){ return !r.voided && r.date && (!range.from || r.date>=range.from) && (!range.to || r.date<=range.to); })
+      .sort(function(a,b){ return String(a.date+a.createdAt).localeCompare(String(b.date+b.createdAt)); })
+      .forEach(function(r){ recs.push([r.date, String(r.createdAt||'').slice(11,16), r.number, r.customerName||'', r.jobNumber||'', r.invoiceNumber||'', r.method==='card'?'Card':'Cash', r.kind==='prepayment'?'Deposit':'Payment', Number(r.amount)||0, r.cashupDate ? 'Cashed up' : 'Open']); });
+    var blob = buildXlsx([
+      {name:'Daily cash-ups', widths:[12,26,14,10,14,14,15,14,14,15,15,16,40], rows:days},
+      {name:'Receipts', widths:[12,7,13,28,12,14,8,10,13,11], rows:recs}
+    ]);
+    var name = 'DsignX-cash-up-report-'+(range.from||'start')+'-to-'+(range.to||todayIso())+'.xlsx';
+    if(STATE.downloads){ STATE.downloads.save({filename:name, data:blob}).catch(function(){ fallbackDownload(blob, name); }); } else fallbackDownload(blob, name);
   }
   /* ============================ boot ============================ */
   if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', init); } else { init(); }

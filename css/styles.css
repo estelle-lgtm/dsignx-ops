@@ -472,6 +472,10 @@ img{max-width:100%}
   .stock-tick{width:16px; height:16px; cursor:pointer;}
   .li-note-row td{padding-top:0 !important; border-top:none !important;}
   .po-tag{display:inline-block; font-size:10px; font-weight:600; color:var(--ink-soft, #5d5a55); background:var(--surface-2, #f1eee8); border-radius:4px; padding:0 5px; margin-left:4px; font-family:'IBM Plex Mono', monospace;}
+  .cashrep-table th, .cashrep-table td{white-space:nowrap; font-size:12px; padding:8px 7px;}
+  .cashrep-table .pay-chip{font-size:9.5px;}
+  .cashrep-table tr.cr-note td{white-space:normal; font-style:italic; color:var(--ink-soft, #5d5a55); padding-top:0; border-top:none;}
+  .cashrep-table tr.cr-open td{background:#fbf3f1;}
   textarea.li-note{width:100%; min-height:30px; font-size:12px; padding:5px 8px; font-style:italic; resize:vertical; background:var(--surface-2, #f6f3ee);}
   @media (max-width:640px){ .pay-row{grid-template-columns:1fr 1fr; } .pay-row .pay-actions{grid-column:1 / -1; justify-content:flex-start;} }
   .chat-attach{cursor:pointer; padding:6px 9px; align-self:flex-end; display:inline-flex; align-items:center;}
