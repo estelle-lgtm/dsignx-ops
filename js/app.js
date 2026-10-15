@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-10-15.14';
+import './platform.js?v=2026-10-15.15';
 
 (function(){
   "use strict";
@@ -681,9 +681,15 @@ import './platform.js?v=2026-10-15.14';
     render();
   }
 
+  /* ---- line amounts: qty x unit price, less the line discount % ---- */
+  function lineDiscPct(li){ var d = Number(li && li.discount); return isFinite(d) ? Math.min(100, Math.max(0, d)) : 0; }
+  function lineGross(li){ return (Number(li.qty)||0) * (Number(li.unitPrice)||0); }
+  function lineNet(li){ return Math.round(lineGross(li) * (1 - lineDiscPct(li)/100) * 100) / 100; }
+  function linesDiscount(items){ return Math.round((items||[]).reduce(function(s,li){ return s + (lineGross(li) - lineNet(li)); }, 0) * 100) / 100; }
+
   /* ============================ quotations ============================ */
   function quoteTotals(draft){
-    var subtotal = draft.items.reduce(function(s,li){ return s + (Number(li.qty)||0) * (Number(li.unitPrice)||0); }, 0);
+    var subtotal = draft.items.reduce(function(s,li){ return s + lineNet(li); }, 0);
     var vat = draft.vatEnabled ? subtotal * (Number(STATE.config.vatRate)||0) / 100 : 0;
     return {subtotal:subtotal, vat:vat, total:subtotal+vat};
   }
@@ -728,7 +734,7 @@ import './platform.js?v=2026-10-15.14';
     var t = quoteTotals(STATE.quoteDraft);
     STATE.quoteDraft.items.forEach(function(li, i){
       var el = document.getElementById('qliLineTotal-'+i);
-      if(el) el.textContent = money((Number(li.qty)||0) * (Number(li.unitPrice)||0));
+      if(el) el.textContent = money(lineNet(li));
     });
     var sub = document.getElementById('qSubtotal'); if(sub) sub.textContent = money(t.subtotal);
     var vatRow = document.getElementById('qVatAmount'); if(vatRow) vatRow.textContent = money(t.vat);
@@ -753,7 +759,7 @@ import './platform.js?v=2026-10-15.14';
     var draft = STATE.quoteDraft;
     var totals = quoteTotals(draft);
     var patch = {
-      lineItems: draft.items.map(function(li){ return {description:li.description||'', qty:Number(li.qty)||0, unitPrice:Number(li.unitPrice)||0, note:String(li.note||'').trim()}; }),
+      lineItems: draft.items.map(function(li){ return {description:li.description||'', qty:Number(li.qty)||0, unitPrice:Number(li.unitPrice)||0, discount:lineDiscPct(li), note:String(li.note||'').trim()}; }),
       quoteAmount: totals.subtotal,
       quoteTerms: draft.terms,
       quoteValidDays: Number(draft.validDays)||14,
@@ -986,9 +992,9 @@ import './platform.js?v=2026-10-15.14';
       if(nl.length){ font('italic', 7.8); color(GREY); doc.text(nl, C.desc, y + dl.length*4 + 0.3); font('normal', 8.8); color(INK); }
       doc.text(pdfQty(li.qty), C.qty, y, {align:'right'});
       doc.text(pdfNum(li.unitPrice), C.price, y, {align:'right'});
-      doc.text('0.00', C.disc, y, {align:'right'});
+      doc.text(lineDiscPct(li) ? pdfNum(lineDiscPct(li)) : '0.00', C.disc, y, {align:'right'});
       doc.text(vatOn ? (rate+'%') : 'No VAT', C.tax, y, {align:'right'});
-      doc.text(pdfNum((Number(li.qty)||0)*(Number(li.unitPrice)||0)), C.amt, y, {align:'right'});
+      doc.text(pdfNum(lineNet(li)), C.amt, y, {align:'right'});
       y += rowH;
       doc.setDrawColor(RULE[0],RULE[1],RULE[2]); doc.setLineWidth(0.2); doc.line(L, y-4, R, y-4);
     });
@@ -1025,7 +1031,7 @@ import './platform.js?v=2026-10-15.14';
       y += 11 + 5;
     }
     font('bold', 8); color([140,140,132]);
-    doc.text('Total Discount Given', lx, y, {align:'right'}); doc.text('0.00', vx, y, {align:'right'});
+    doc.text('Total Discount Given', lx, y, {align:'right'}); doc.text(pdfNum(linesDiscount(items)), vx, y, {align:'right'});
     y += 12;
 
     /* ---- banking + payment / terms ---- */
@@ -1086,7 +1092,7 @@ import './platform.js?v=2026-10-15.14';
   function isVatVendor(){ return !!(STATE.config.businessVatNumber && String(STATE.config.businessVatNumber).trim()); }
 
   function invoiceTotals(draft){
-    var subtotal = draft.items.reduce(function(s,li){ return s + (Number(li.qty)||0) * (Number(li.unitPrice)||0); }, 0);
+    var subtotal = draft.items.reduce(function(s,li){ return s + lineNet(li); }, 0);
     var vat = (draft.vatEnabled && isVatVendor()) ? subtotal * (Number(STATE.config.vatRate)||0) / 100 : 0;
     return {subtotal:subtotal, vat:vat, total:subtotal+vat};
   }
@@ -1134,7 +1140,7 @@ import './platform.js?v=2026-10-15.14';
     var t = invoiceTotals(STATE.invoiceDraft);
     STATE.invoiceDraft.items.forEach(function(li, i){
       var el = document.getElementById('iliLineTotal-'+i);
-      if(el) el.textContent = money((Number(li.qty)||0) * (Number(li.unitPrice)||0));
+      if(el) el.textContent = money(lineNet(li));
     });
     var sub = document.getElementById('iSubtotal'); if(sub) sub.textContent = money(t.subtotal);
     var vatRow = document.getElementById('iVatAmount'); if(vatRow) vatRow.textContent = money(t.vat);
@@ -1158,7 +1164,7 @@ import './platform.js?v=2026-10-15.14';
     var vatEnabled = !!draft.vatEnabled && isVatVendor();
     var totals = invoiceTotals(draft);
     var patch = {
-      invoiceLineItems: draft.items.map(function(li){ return {description:li.description||'', qty:Number(li.qty)||0, unitPrice:Number(li.unitPrice)||0, note:String(li.note||'').trim()}; }),
+      invoiceLineItems: draft.items.map(function(li){ return {description:li.description||'', qty:Number(li.qty)||0, unitPrice:Number(li.unitPrice)||0, discount:lineDiscPct(li), note:String(li.note||'').trim()}; }),
       quoteAmount: totals.subtotal, // keep the job's headline amount (dashboard, Xero export) matching what was actually invoiced
       invoiceTerms: draft.terms,
       invoiceDueDays: Number(draft.dueDays)||7,
@@ -1706,7 +1712,7 @@ import './platform.js?v=2026-10-15.14';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-15.14</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-15.15</span></div>' +
       '</div>'
     );
   }
@@ -1925,7 +1931,7 @@ import './platform.js?v=2026-10-15.14';
   function saleDate(o){ return o.invoiceGeneratedAt || o.invoicedAt || o.updatedAt || o.createdAt || ''; }
   function saleExVat(o){
     if(o.invoiceLineItems && o.invoiceLineItems.length){
-      return round2(o.invoiceLineItems.reduce(function(s,li){ return s + (Number(li.qty)||0)*(Number(li.unitPrice)||0); }, 0));
+      return round2(o.invoiceLineItems.reduce(function(s,li){ return s + lineNet(li); }, 0));
     }
     return round2(Number(o.quoteAmount)||0); // quote amounts are stored excl. VAT
   }
@@ -2138,8 +2144,8 @@ import './platform.js?v=2026-10-15.14';
     var rate = vatOn ? (Number(STATE.config.vatRate)||0)/100 : 0;
     var lines = items.map(function(li){
       var qty = Number(li.qty)||0, unit = Number(li.unitPrice)||0;
-      var amount = round2(qty*unit);
-      return {desc:li.description||o.title||'', qty:qty, unit:unit, amount:amount, tax:round2(amount*rate)};
+      var amount = round2(lineNet(li));
+      return {desc:li.description||o.title||'', qty:qty, unit:unit, disc:lineDiscPct(li), amount:amount, tax:round2(amount*rate)};
     });
     var taxTotal = round2(lines.reduce(function(s,l){ return s+l.tax; },0));
     var total = round2(lines.reduce(function(s,l){ return s+l.amount; },0) + taxTotal);
@@ -2167,6 +2173,7 @@ import './platform.js?v=2026-10-15.14';
       r.Description = l.desc;
       r.Quantity = f4(l.qty);
       r.UnitAmount = f4(l.unit);
+      r.Discount = l.disc ? f4(l.disc) : '';
       r.LineAmount = f4(l.amount);
       r.AccountCode = STATE.config.accountCode || '200';
       r.TaxType = vatOn ? (STATE.config.xeroTaxVat || 'Standard Rate Sales') : (STATE.config.xeroTaxNoVat || 'No VAT');
@@ -2747,10 +2754,11 @@ import './platform.js?v=2026-10-15.14';
           '<td style="min-width:180px;"><input type="text" id="qliDesc-'+i+'" list="productOptions" autocomplete="off" value="'+escapeHtml(li.description)+'" placeholder="Type or pick a product"></td>' +
           '<td style="width:64px;"><input type="number" id="qliQty-'+i+'" min="0" step="1" value="'+li.qty+'"></td>' +
           '<td style="width:100px;"><input type="number" id="qliPrice-'+i+'" min="0" step="0.01" value="'+li.unitPrice+'"></td>' +
-          '<td class="num" id="qliLineTotal-'+i+'" style="white-space:nowrap;">'+money((Number(li.qty)||0)*(Number(li.unitPrice)||0))+'</td>' +
+          '<td style="width:74px;"><input type="number" id="qliDisc-'+i+'" min="0" max="100" step="0.01" placeholder="0" value="'+(lineDiscPct(li)||'')+'" title="Line discount %"></td>' +
+          '<td class="num" id="qliLineTotal-'+i+'" style="white-space:nowrap;">'+money(lineNet(li))+'</td>' +
           '<td><button class="btn btn-ghost btn-sm" data-action="quote-remove-line" data-i="'+i+'" title="Remove line">&times;</button></td>' +
         '</tr>' +
-        '<tr class="li-note-row"><td colspan="5"><textarea id="qliNote-'+i+'" rows="1" class="li-note" placeholder="Notes for this item (optional) — printed under it on the PDF">'+escapeHtml(li.note||'')+'</textarea></td></tr>'
+        '<tr class="li-note-row"><td colspan="6"><textarea id="qliNote-'+i+'" rows="1" class="li-note" placeholder="Notes for this item (optional) — printed under it on the PDF">'+escapeHtml(li.note||'')+'</textarea></td></tr>'
       );
     }).join('');
 
@@ -2761,7 +2769,7 @@ import './platform.js?v=2026-10-15.14';
         '<div class="modal" role="dialog" aria-modal="true" aria-label="Quotation" style="max-width:680px;">' +
           '<div class="modal-head"><div><div class="jobno mono">'+(o.quoteNumber||'Not yet numbered')+'</div><h2>Quotation for '+escapeHtml(o.customerName)+'</h2></div><button class="modal-close" data-action="close-quote-modal" aria-label="Close">&times;</button></div>' +
 
-          '<div class="tbl-wrap"><table><thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Line total</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
+          '<div class="tbl-wrap"><table><thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Disc %</th><th>Line total</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
           '<button class="btn btn-ghost btn-sm" style="margin:8px 0 16px;" data-action="quote-add-line">+ Add line</button>' + productDatalist() +
 
           '<div class="kv" style="justify-content:flex-end; margin-left:auto; max-width:260px; margin-bottom:16px;">' +
@@ -2802,10 +2810,11 @@ import './platform.js?v=2026-10-15.14';
           '<td style="min-width:180px;"><input type="text" id="iliDesc-'+i+'" list="productOptions" autocomplete="off" value="'+escapeHtml(li.description)+'" placeholder="Type or pick a product"></td>' +
           '<td style="width:64px;"><input type="number" id="iliQty-'+i+'" min="0" step="1" value="'+li.qty+'"></td>' +
           '<td style="width:100px;"><input type="number" id="iliPrice-'+i+'" min="0" step="0.01" value="'+li.unitPrice+'"></td>' +
-          '<td class="num" id="iliLineTotal-'+i+'" style="white-space:nowrap;">'+money((Number(li.qty)||0)*(Number(li.unitPrice)||0))+'</td>' +
+          '<td style="width:74px;"><input type="number" id="iliDisc-'+i+'" min="0" max="100" step="0.01" placeholder="0" value="'+(lineDiscPct(li)||'')+'" title="Line discount %"></td>' +
+          '<td class="num" id="iliLineTotal-'+i+'" style="white-space:nowrap;">'+money(lineNet(li))+'</td>' +
           '<td><button class="btn btn-ghost btn-sm" data-action="invoice-remove-line" data-i="'+i+'" title="Remove line">&times;</button></td>' +
         '</tr>' +
-        '<tr class="li-note-row"><td colspan="5"><textarea id="iliNote-'+i+'" rows="1" class="li-note" placeholder="Notes for this item (optional) — printed under it on the PDF">'+escapeHtml(li.note||'')+'</textarea></td></tr>'
+        '<tr class="li-note-row"><td colspan="6"><textarea id="iliNote-'+i+'" rows="1" class="li-note" placeholder="Notes for this item (optional) — printed under it on the PDF">'+escapeHtml(li.note||'')+'</textarea></td></tr>'
       );
     }).join('');
 
@@ -2818,7 +2827,7 @@ import './platform.js?v=2026-10-15.14';
 
           (vendor ? '' : '<p class="hint" style="margin-top:0;">No business VAT number is on file in Settings, so this will be issued as a plain invoice with no VAT charged — not a Tax Invoice.</p>') +
 
-          '<div class="tbl-wrap"><table><thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Line total</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
+          '<div class="tbl-wrap"><table><thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Disc %</th><th>Line total</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
           '<button class="btn btn-ghost btn-sm" style="margin:8px 0 16px;" data-action="invoice-add-line">+ Add line</button>' + productDatalist() +
 
           '<div class="kv" style="justify-content:flex-end; margin-left:auto; max-width:260px; margin-bottom:16px;">' +
@@ -3423,7 +3432,7 @@ import './platform.js?v=2026-10-15.14';
       if(e.target.classList && e.target.classList.contains('st-count')){ onCountInput(e.target.getAttribute('data-st'), e.target.getAttribute('data-pid'), e.target.value); }
       if(e.target.id==='stockSearch'){ STATE.stockQuery = e.target.value; render(); focusEl('stockSearch'); }
       if(STATE.quoteDraft){
-        var qm = e.target.id.match(/^qli(Desc|Qty|Price|Note)-(\d+)$/);
+        var qm = e.target.id.match(/^qli(Desc|Qty|Price|Disc|Note)-(\d+)$/);
         if(qm){
           var qi = Number(qm[2]);
           var li = STATE.quoteDraft.items[qi];
@@ -3432,6 +3441,7 @@ import './platform.js?v=2026-10-15.14';
             else if(qm[1]==='Qty') li.qty = e.target.value;
             else if(qm[1]==='Price') li.unitPrice = e.target.value;
             else if(qm[1]==='Note') li.note = e.target.value;
+            else if(qm[1]==='Disc') li.discount = e.target.value;
             refreshQuoteTotals();
           }
         }
@@ -3443,7 +3453,7 @@ import './platform.js?v=2026-10-15.14';
         if(e.target.id==='qTerms'){ STATE.quoteDraft.terms = e.target.value; }
       }
       if(STATE.invoiceDraft){
-        var im = e.target.id.match(/^ili(Desc|Qty|Price|Note)-(\d+)$/);
+        var im = e.target.id.match(/^ili(Desc|Qty|Price|Disc|Note)-(\d+)$/);
         if(im){
           var ii = Number(im[2]);
           var ili = STATE.invoiceDraft.items[ii];
@@ -3452,6 +3462,7 @@ import './platform.js?v=2026-10-15.14';
             else if(im[1]==='Qty') ili.qty = e.target.value;
             else if(im[1]==='Price') ili.unitPrice = e.target.value;
             else if(im[1]==='Note') ili.note = e.target.value;
+            else if(im[1]==='Disc') ili.discount = e.target.value;
             refreshInvoiceTotals();
           }
         }
