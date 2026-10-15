@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-10-15.13';
+import './platform.js?v=2026-10-15.14';
 
 (function(){
   "use strict";
@@ -928,6 +928,7 @@ import './platform.js?v=2026-10-15.13';
       [['Quote Number', number, true], ['Date', fullDate(issued)], ['Valid Until', fullDate(until)], ['Reference', o.title||jobNo(o.id)]] :
       [['Invoice Number', number, true], ['Invoice Date', fullDate(issued)], ['Due Date', fullDate(until)], ['Reference', o.title||jobNo(o.id)]];
     var acct = (o.quoteOnly && !o.jobNumber) ? [] : [['Job Number', jobNo(o.id)]];
+    if(String(o.poNumber||'').trim()) acct.push(['Customer PO', String(o.poNumber).trim()]);
     var boxH = 8 + info.length*4.7 + 2 + acct.length*4.7;
     doc.setFillColor(PANEL[0],PANEL[1],PANEL[2]); doc.rect(bx, by, R-bx, boxH, 'F');
     doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(bx, by, R-bx, 0.7, 'F');
@@ -1705,7 +1706,7 @@ import './platform.js?v=2026-10-15.13';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-15.13</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-15.14</span></div>' +
       '</div>'
     );
   }
@@ -1783,7 +1784,7 @@ import './platform.js?v=2026-10-15.13';
     var af = STATE.boardAssigneeFilter;
     var cols = STATUSES.map(function(s){
       var items = STATE.orders.filter(function(o){ return o.status===s.key; });
-      if(q){ items = items.filter(function(o){ return (o.title+' '+o.customerName+' '+(o.designerName||'')+' '+techNames(o)+' '+(o.jobNumber||'')).toLowerCase().indexOf(q)>=0; }); }
+      if(q){ items = items.filter(function(o){ return (o.title+' '+o.customerName+' '+(o.designerName||'')+' '+techNames(o)+' '+(o.jobNumber||'')+' '+(o.poNumber||'')).toLowerCase().indexOf(q)>=0; }); }
       if(af==='unassigned'){ items = items.filter(isUnassigned); }
       else if(af && af!=='all'){ items = items.filter(function(o){ return onJob(o, af); }); }
       var cards = items.map(cardHtml).join('');
@@ -1824,7 +1825,7 @@ import './platform.js?v=2026-10-15.13';
       '<div class="card" draggable="true" data-id="'+o.id+'" data-action="open-order">' +
         '<div class="jobno">'+jobNo(o.id)+'</div>' +
         '<h4>'+escapeHtml(o.title)+'</h4>' +
-        '<div class="who">'+escapeHtml(o.customerName)+'</div>' +
+        '<div class="who">'+escapeHtml(o.customerName)+(o.poNumber ? ' <span class="po-tag">PO '+escapeHtml(o.poNumber)+'</span>' : '')+'</div>' +
         '<span class="cat"><span class="dot" style="background:'+catMeta(o.category).dot+'"></span>'+catMeta(o.category).label+'</span>' +
         (avatars ? '<div class="assignee-row">'+avatars+'</div>' : '') +
         '<div class="meta">' +
@@ -2156,7 +2157,7 @@ import './platform.js?v=2026-10-15.13';
       r.POAddressLine1 = ipa.line1||''; r.POAddressLine2 = ipa.line2||''; r.POCity = ipa.city||''; r.PORegion = ipa.region||''; r.POPostalCode = ipa.postalCode||''; r.POCountry = addrHasData(ipa) ? (ipa.country||'') : '';
       r.SAAddressLine1 = ida.line1||''; r.SAAddressLine2 = ida.line2||''; r.SACity = ida.city||''; r.SARegion = ida.region||''; r.SAPostalCode = ida.postalCode||''; r.SACountry = addrHasData(ida) ? (ida.country||'') : '';
       r.InvoiceNumber = o.invoiceNumber || jobNo(o.id);
-      r.Reference = o.title || '';
+      r.Reference = (o.poNumber ? 'PO '+o.poNumber : '') || o.title || '';
       r.InvoiceDate = dmy(date);
       r.DueDate = dmy(due);
       r.Total = f4(total);
@@ -2925,7 +2926,10 @@ import './platform.js?v=2026-10-15.13';
         '<div class="modal" role="dialog" aria-modal="true" aria-label="Job details">' +
           '<div class="modal-head"><div><div class="jobno mono">'+(o.quoteOnly ? 'Quotation only' : jobNo(o.id))+'</div><h2>'+escapeHtml(o.title)+'</h2></div><button class="modal-close" data-action="close-order" aria-label="Close">&times;</button></div>' +
           (o.quoteOnly ? quoteOnlyBanner(o) : '') +
-          '<div class="field"><label for="ofTitle">Job title</label><input type="text" id="ofTitle" value="'+escapeHtml(o.title)+'"></div>' +
+          '<div class="field-row">' +
+            '<div class="field" style="flex:2;"><label for="ofTitle">Job title</label><input type="text" id="ofTitle" value="'+escapeHtml(o.title)+'"></div>' +
+            '<div class="field"><label for="ofPo">Customer PO number</label><input type="text" id="ofPo" autocomplete="off" placeholder="'+(isTechnician()?'':'Optional')+'" value="'+escapeHtml(o.poNumber||'')+'"'+(isTechnician()?' disabled':'')+'></div>' +
+          '</div>' +
           '<div class="field-row">' +
             '<div class="field"><label for="ofStatus">Status</label><select id="ofStatus">'+statusOpts+'</select></div>' +
             '<div class="field"><label for="ofCategory">Category</label><select id="ofCategory">'+catOpts+'</select></div>' +
@@ -3055,7 +3059,10 @@ import './platform.js?v=2026-10-15.13';
             '<div class="field"><label for="noCategory">Category</label><select id="noCategory">'+catOpts+'</select></div>' +
             '<div class="field"><label for="noSource">How did it come in?</label><select id="noSource">'+srcOpts+'</select></div>' +
           '</div>' +
-          '<div class="field"><label for="noTitle">Job title</label><input type="text" id="noTitle" placeholder="e.g. Shopfront fascia sign" value="'+escapeHtml(pf.title||'')+'"></div>' +
+          '<div class="field-row">' +
+            '<div class="field" style="flex:2;"><label for="noTitle">Job title</label><input type="text" id="noTitle" placeholder="e.g. Shopfront fascia sign" value="'+escapeHtml(pf.title||'')+'"></div>' +
+            '<div class="field"><label for="noPo">Customer PO number</label><input type="text" id="noPo" placeholder="Optional" autocomplete="off" value="'+escapeHtml(pf.poNumber||'')+'"></div>' +
+          '</div>' +
           '<div class="field"><label for="noDesc">Details</label><textarea id="noDesc" placeholder="Size, material, files supplied...">'+escapeHtml(pf.description||'')+'</textarea></div>' +
           '<div class="field-row">' +
             '<div class="field"><label for="noQty">Quantity</label><input type="number" id="noQty" min="1" value="1"></div>' +
@@ -3097,7 +3104,7 @@ import './platform.js?v=2026-10-15.13';
         csvCell(STATE.config.accountCode||''),
         csvCell(STATE.config.taxType||''),
         csvCell(STATE.config.currency||'ZAR'),
-        csvCell(jobNo(o.id))
+        csvCell(o.poNumber ? ('PO '+o.poNumber) : jobNo(o.id))
       ].join(','));
     });
     var csv = lines.join('\r\n');
@@ -3378,7 +3385,7 @@ import './platform.js?v=2026-10-15.13';
 
     app.onchange = function(e){
       if(e.target.id==='cfDelSame' && STATE.customerForm){ STATE.customerForm.draft.deliverySame = e.target.checked; render(); return; }
-      if(e.target.id==='boardSearch'){ STATE.boardQuery = e.target.value; render(); focusEl('boardSearch'); }
+      if(e.target.id==='boardSearch' && STATE.boardQuery!==e.target.value){ STATE.boardQuery = e.target.value; render(); focusEl('boardSearch'); }
       if(e.target.id==='customerSearch'){ STATE.customerQuery = e.target.value; render(); focusEl('customerSearch'); }
       if(e.target.id==='ofAttach'){ handleAttach(e.target.files[0]); }
       if(e.target.id==='chatAttach'){ attachFromDevice(e.target.getAttribute('data-phone'), e.target.files[0]); e.target.value=''; }
@@ -3404,7 +3411,7 @@ import './platform.js?v=2026-10-15.13';
     app.oninput = function(e){
       var cfp = e.target.getAttribute && e.target.getAttribute('data-cf');
       if(cfp && STATE.customerForm){ setDraftPath(cfp, e.target.value); if(cfp==='name' && STATE.customerForm.errors && STATE.customerForm.errors.name){ STATE.customerForm.errors.name = null; e.target.classList.remove('invalid'); } return; }
-      if(e.target.id==='boardSearch'){ STATE.boardQuery = e.target.value; render(); focusEl('boardSearch'); }
+      if(e.target.id==='boardSearch' && STATE.boardQuery!==e.target.value){ STATE.boardQuery = e.target.value; render(); focusEl('boardSearch'); }
       if(e.target.id==='customerSearch'){ STATE.customerQuery = e.target.value; render(); focusEl('customerSearch'); }
       if(e.target.id==='chatCompose'){ var p = currentChatPhone(); if(p){ STATE.chatDraft[p] = e.target.value; } }
       if(e.target.id==='inviteMsg'){ STATE.inviteDraftText = e.target.value; }
@@ -3501,6 +3508,8 @@ import './platform.js?v=2026-10-15.13';
       dueDate: document.getElementById('ofDue').value,
       notes: document.getElementById('ofNotes').value
     };
+    var poEl = document.getElementById('ofPo');
+    if(poEl && !isTechnician()) patch.poNumber = poEl.value.trim();
     if(!isTechnician() && document.getElementById('ofQuote')){
       patch.invoiceNumber = document.getElementById('ofInvNo').value.trim();
       patch.invoiced = document.getElementById('ofInvoiced').checked;
@@ -3562,6 +3571,7 @@ import './platform.js?v=2026-10-15.13';
         category: document.getElementById('noCategory').value,
         title: title,
         description: document.getElementById('noDesc').value,
+        poNumber: ((document.getElementById('noPo')||{}).value||'').trim(),
         qty: Number(document.getElementById('noQty').value)||1,
         status: 'new',
         quoteAmount: quoteVal===''? null : Number(quoteVal),
