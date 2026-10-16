@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-10-16.18';
+import './platform.js?v=2026-10-16.19';
 
 (function(){
   "use strict";
@@ -1365,6 +1365,86 @@ import './platform.js?v=2026-10-16.18';
     if(m.template) return '(template message)';
     return '';
   }
+  // Photo / document / video / voice note a customer sent: what we need to fetch it from Bird.
+  var WA_MEDIA_KINDS = {image:'photo', document:'document', video:'video', audio:'voice note', sticker:'sticker'};
+  function waMediaOf(m){
+    if(!m || m.direction!=='inbound') return null;
+    for(var k in WA_MEDIA_KINDS){
+      var c = m[k];
+      if(c && c.id) return {kind:k, id:String(c.id), mime:c.mime_type||'', filename:c.filename||'', messageId:m.id};
+    }
+    return null;
+  }
+  function waMediaButtons(media, withSave){
+    if(!media) return '';
+    var label = media.kind==='image' ? 'View photo' : media.kind==='document' ? ('Open '+(/pdf/i.test(media.mime) ? 'PDF' : 'document')) : ('Open '+WA_MEDIA_KINDS[media.kind]);
+    var attrs = ' data-msg="'+escapeHtml(media.messageId)+'" data-media="'+escapeHtml(media.id)+'" data-kind="'+media.kind+'" data-mime="'+escapeHtml(media.mime)+'" data-name="'+escapeHtml(media.filename)+'"';
+    return '<span class="wa-media-btns">' +
+      '<button type="button" class="btn btn-sm" data-action="wa-media"'+attrs+'>'+label+'</button>' +
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="wa-media-dl"'+attrs+'>Download</button>' +
+      (withSave && STATE.assets && STATE.openOrderId && (media.kind==='image' || media.kind==='document') ? '<button type="button" class="btn btn-ghost btn-sm" data-action="wa-media-save"'+attrs+'>Save to job</button>' : '') +
+    '</span>';
+  }
+  function waMediaFilename(el, mime){
+    var name = el.getAttribute('data-name');
+    if(name) return name;
+    var ext = (/jpe?g/.test(mime) ? 'jpg' : /png/.test(mime) ? 'png' : /webp/.test(mime) ? 'webp' : /pdf/.test(mime) ? 'pdf' : /mp4/.test(mime) ? 'mp4' : /ogg/.test(mime) ? 'ogg' : 'bin');
+    return 'whatsapp-'+(el.getAttribute('data-kind')||'file')+'-'+todayIso()+'.'+ext;
+  }
+  function waMediaError(err){
+    var msg = String((err && err.message) || '');
+    if(/media_expired|410/.test(msg)) return 'This file has expired — WhatsApp only keeps customer files for 30 days. Ask the customer to send it again.';
+    if(/too_large/.test(msg)) return 'The file is too big to save here (over 7 MB). Use Download instead.';
+    if(/Unknown tool/.test(msg)) return 'The server needs updating before files can be opened — run the functions deploy.';
+    return 'Couldn’t open the file — ' + waErrorNotice(err||{}).text;
+  }
+  function b64ToBlob(b64, mime){
+    var bin = atob(b64), arr = new Uint8Array(bin.length);
+    for(var i=0;i<bin.length;i++) arr[i] = bin.charCodeAt(i);
+    return new Blob([arr], {type:mime||'application/octet-stream'});
+  }
+  function fetchWaMedia(el, inline){
+    return STATE.mcp.callTool(WA_SERVER, 'whatsapp_media', {message_id:el.getAttribute('data-msg'), media_id:el.getAttribute('data-media'), inline:!!inline})
+      .then(function(r){ return (r && r.payload) || {}; });
+  }
+  // Opens in a new tab. The tab is opened straight away (so pop-up blockers allow it) and
+  // pointed at the file once the short-lived link comes back.
+  function openWaMedia(el){
+    if(!STATE.mcp) return;
+    var w = null;
+    try { w = window.open('', '_blank'); if(w && w.document){ w.document.title = 'Opening…'; w.document.body.innerHTML = '<p style="font:15px system-ui;padding:24px;color:#555;">Opening the customer’s file…</p>'; } } catch(e){}
+    toast('Opening file…');
+    fetchWaMedia(el, false).then(function(d){
+      var url = d.url || (d.data ? URL.createObjectURL(b64ToBlob(d.data, d.mime || el.getAttribute('data-mime'))) : '');
+      if(!url) throw new Error('No file came back');
+      if(w && !w.closed) w.location.href = url; else window.open(url, '_blank', 'noopener');
+    }).catch(function(err){ if(w && !w.closed) w.close(); toast(waMediaError(err)); });
+  }
+  function downloadWaMedia(el){
+    if(!STATE.mcp) return;
+    toast('Downloading…');
+    fetchWaMedia(el, true).then(function(d){
+      if(d.url && !d.data){ window.open(d.url, '_blank', 'noopener'); return; }
+      var mime = d.mime || el.getAttribute('data-mime');
+      var blob = b64ToBlob(d.data, mime), name = waMediaFilename(el, mime);
+      if(STATE.downloads){ STATE.downloads.save({filename:name, data:blob}).catch(function(e){ if(!e || e.code!=='declined') fallbackDownload(blob, name); }); }
+      else fallbackDownload(blob, name);
+    }).catch(function(err){ toast(waMediaError(err)); });
+  }
+  // Copies the customer's photo/document onto the open job as an artwork attachment.
+  function saveWaMediaToJob(el){
+    if(!STATE.mcp || !STATE.assets || !STATE.openOrderId) return;
+    toast('Saving to the job…');
+    fetchWaMedia(el, true).then(function(d){
+      if(!d.data) throw new Error('too_large');
+      var mime = d.mime || el.getAttribute('data-mime');
+      if(mime.indexOf('image/')!==0 && mime!=='application/pdf'){ toast('Only photos and PDFs can be saved to a job — use Download for other files'); return; }
+      var name = waMediaFilename(el, mime), blob = b64ToBlob(d.data, mime), file;
+      try { file = new File([blob], name, {type:mime}); } catch(e){ file = blob; file.name = name; }
+      handleAttach(file);
+    }).catch(function(err){ toast(waMediaError(err)); });
+  }
+
   function waContactPhone(m){
     var side = m.direction==='inbound' ? m.from : m.to;
     return side && side.phone_number ? waPhone(side.phone_number) : '';
@@ -1395,7 +1475,7 @@ import './platform.js?v=2026-10-16.18';
       var m = latest[p];
       if(m.direction!=='inbound') return;
       convs.push({phone:p, name:(m.from && m.from.display_name) || '', last_message_date:m.created_at});
-      STATE.waMessages[p] = {body: waBodyOf(m) || '(open WhatsApp to view this message)', messageId: m.id, _for: m.created_at};
+      STATE.waMessages[p] = {body: waBodyOf(m) || '(open WhatsApp to view this message)', messageId: m.id, _for: m.created_at, media: waMediaOf(m)};
     });
     Object.keys(latestInbound).forEach(function(p){ STATE.waLastInbound[p] = latestInbound[p].created_at; });
     convs.sort(function(a,b){ return String(b.last_message_date).localeCompare(String(a.last_message_date)); });
@@ -1455,7 +1535,7 @@ import './platform.js?v=2026-10-16.18';
       rs.forEach(function(res){ all = all.concat(((res && res.payload) || {}).data || []); });
       all.sort(function(a,b){ return String(a.created_at).localeCompare(String(b.created_at)); });
       var list = all.map(function(m){
-        return {message_id:m.id, body:waBodyOf(m), from_me:m.direction==='outbound', date:m.created_at,
+        return {message_id:m.id, body:waBodyOf(m), from_me:m.direction==='outbound', date:m.created_at, media:waMediaOf(m),
                 failed:m.status==='failed', failReason:(m.last_error && (m.last_error.description||m.last_error.code))||''};
       });
       var lastIn = all.filter(function(m){ return m.direction==='inbound'; }).pop();
@@ -1720,7 +1800,7 @@ import './platform.js?v=2026-10-16.18';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-16.18</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-16.19</span></div>' +
       '</div>'
     );
   }
@@ -1887,7 +1967,7 @@ import './platform.js?v=2026-10-16.18';
       return (
         '<div class="wa-card">' +
           '<div class="wa-card-head"><span class="nm">'+escapeHtml(c.name||c.phone)+'</span><span class="ph">+'+escapeHtml(c.phone)+'</span><span class="when">'+relTime(c.last_message_date)+'</span></div>' +
-          '<div class="wa-body">'+bodyHtml+'</div>' +
+          '<div class="wa-body">'+bodyHtml+(m && m.media && !m.error ? '<div style="margin-top:8px;">'+waMediaButtons(m.media, false)+'</div>' : '')+'</div>' +
           '<div class="wa-actions">' +
             '<button class="btn btn-primary btn-sm" data-action="log-wa-order" data-phone="'+escapeHtml(c.phone)+'" data-name="'+escapeHtml(c.name||'')+'" data-msgid="'+escapeHtml(msgId)+'" '+(m?'':'disabled')+'>Log as order</button>' +
             '<button class="btn btn-sm" data-action="inbox-reply" data-phone="'+escapeHtml(c.phone)+'" data-name="'+escapeHtml(c.name||'')+'" data-date="'+escapeHtml(c.last_message_date||'')+'">'+(replying ? 'Close reply' : 'Reply')+'</button>' +
@@ -2877,7 +2957,7 @@ import './platform.js?v=2026-10-16.18';
     } else if(entry.list && entry.list.length){
       body = '<div class="chat-thread">' + entry.list.map(function(m){
         var cls = m.from_me ? 'out' : 'in';
-        return '<div class="chat-msg '+cls+'">'+escapeHtml(m.body||'(no text — open WhatsApp to view)')+'<span class="t">'+relTime(m.date)+(m.failed?(' · <span style="color:var(--critical);">not delivered'+(m.failReason?(': '+escapeHtml(m.failReason)):'')+'</span>'):'')+'</span></div>';
+        return '<div class="chat-msg '+cls+'">'+escapeHtml(m.body||'(no text — open WhatsApp to view)')+(m.media ? waMediaButtons(m.media, true) : '')+'<span class="t">'+relTime(m.date)+(m.failed?(' · <span style="color:var(--critical);">not delivered'+(m.failReason?(': '+escapeHtml(m.failReason)):'')+'</span>'):'')+'</span></div>';
       }).join('') + '</div>';
     } else {
       body = '<div class="empty-note">No WhatsApp messages with this customer yet.</div>';
@@ -3196,6 +3276,9 @@ import './platform.js?v=2026-10-16.18';
         var nb = monthBounds(new Date(base.getFullYear(), base.getMonth()+Number(el.getAttribute('data-by')), 1));
         STATE.reportFrom = nb.from; STATE.reportTo = nb.to; STATE.reportOpenMember = null; render();
       }
+      else if(action==='wa-media'){ openWaMedia(el); }
+      else if(action==='wa-media-dl'){ downloadWaMedia(el); }
+      else if(action==='wa-media-save'){ saveWaMediaToJob(el); }
       else if(action==='cn-new'){ openCreditForm(el.getAttribute('data-id')); }
       else if(action==='cn-close'){ STATE.creditForm = null; render(); }
       else if(action==='cn-add-line'){ if(STATE.creditForm){ STATE.creditForm.items.push({description:'', qty:1, unitPrice:0, discount:''}); render(); } }

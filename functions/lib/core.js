@@ -37,7 +37,7 @@ function birdHost(apiKey) {
   return `https://${m ? m[1] : 'us1'}.platform.bird.com`;
 }
 
-const BIRD_TOOLS = ['whatsapp_list', 'whatsapp_send', 'whatsapp_get', 'whatsapp_mark_read'];
+const BIRD_TOOLS = ['whatsapp_list', 'whatsapp_send', 'whatsapp_get', 'whatsapp_mark_read', 'whatsapp_media'];
 
 // Turns an app tool call into an HTTP request for the Bird API.
 function birdRequest(tool, input, opts) {
@@ -54,6 +54,13 @@ function birdRequest(tool, input, opts) {
   if (tool === 'whatsapp_get') {
     if (!input.message_id) throw badInput('message_id is required');
     return { method: 'GET', url: `${host}/v1/whatsapp/messages/${encodeURIComponent(input.message_id)}`, headers };
+  }
+  if (tool === 'whatsapp_media') {
+    // Photos and documents customers send. Bird answers with a redirect to a storage URL
+    // that is valid for 15 minutes and needs no key, so the key never reaches the browser.
+    if (!input.message_id || !input.media_id) throw badInput('message_id and media_id are required');
+    if (!/^[A-Za-z0-9_.-]+$/.test(String(input.message_id)) || !/^[A-Za-z0-9_.-]+$/.test(String(input.media_id))) throw badInput('Invalid media reference');
+    return { method: 'GET', url: `${host}/v1/whatsapp/messages/${encodeURIComponent(input.message_id)}/media/${encodeURIComponent(input.media_id)}`, headers, media: true, inline: !!input.inline };
   }
   if (tool === 'whatsapp_mark_read') {
     if (!input.message_id) throw badInput('message_id is required');
@@ -207,7 +214,43 @@ async function send(fetchImpl, req) {
   return json;
 }
 
+const MEDIA_INLINE_MAX = 7 * 1024 * 1024; // callable responses are capped at ~10 MB once base64-encoded
+
+// Fetches a received WhatsApp file. Returns {url} (short-lived link) or, with inline, {data, mime, size}.
+async function fetchMedia(fetchImpl, req) {
+  let res;
+  try {
+    res = await fetchImpl(req.url, { method: 'GET', headers: req.headers, redirect: 'manual' });
+  } catch (e) {
+    const err = new Error('Could not reach the service: ' + (e && e.message)); err.kind = 'unavailable'; throw err;
+  }
+  if (res.status === 410) {
+    const err = new Error('media_expired: WhatsApp files are only kept for 30 days after they arrive.'); err.kind = 'tool'; err.status = 410; throw err;
+  }
+  let bytesRes = null, url = null;
+  if (res.status >= 300 && res.status < 400) {
+    url = res.headers.get('location');
+    if (!url) { const err = new Error('No file link came back from Bird.'); err.kind = 'unavailable'; throw err; }
+    if (!req.inline) return { url, expires_in: 900 };
+    // The storage link must be fetched WITHOUT the Bird key.
+    try { bytesRes = await fetchImpl(url, { method: 'GET' }); } catch (e) { const err = new Error('Could not download the file: ' + (e && e.message)); err.kind = 'unavailable'; throw err; }
+  } else if (res.ok) {
+    bytesRes = res;
+  } else {
+    return send(async () => res, req); // reuses the error mapping
+  }
+  if (!bytesRes.ok) { const err = new Error(`HTTP ${bytesRes.status} downloading the file`); err.kind = bytesRes.status >= 500 ? 'unavailable' : 'tool'; throw err; }
+  const mime = (bytesRes.headers.get('content-type') || 'application/octet-stream').split(';')[0];
+  const buf = Buffer.from(await bytesRes.arrayBuffer());
+  if (buf.length > MEDIA_INLINE_MAX) {
+    if (url) return { url, expires_in: 900, too_large: true, size: buf.length };
+    const err = new Error('too_large: the file is bigger than 7 MB'); err.kind = 'tool'; throw err;
+  }
+  return { data: buf.toString('base64'), mime, size: buf.length };
+}
+
 module.exports = {
+  fetchMedia,
   normalizeCode, hashCode, codeMatches, todayInJoburg,
   birdHost, birdRequest, BIRD_TOOLS,
   cleanSecret, cleanBirdKey, parseCloudinaryUrl, cloudinarySignature, cloudinaryRequest, CLOUDINARY_TOOLS,

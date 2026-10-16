@@ -127,6 +127,7 @@ exports.connector = onCall(
       if (!birdKey) throw new HttpsError('failed-precondition', 'BIRD_API_KEY is not set on the server.', { code: 'server_not_connected', server });
       try {
         const r = core.birdRequest(tool, input, { apiKey: birdKey, from: WA_FROM.value() });
+        if (r.media) return await core.fetchMedia(fetch, r);
         return await core.send(fetch, r);
       } catch (e) {
         logger.warn('Bird call failed', { tool, message: e.message });

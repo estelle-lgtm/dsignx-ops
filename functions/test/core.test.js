@@ -82,3 +82,32 @@ test('provider errors keep their code', async () => {
   const f2 = async () => ({ ok: false, status: 422, text: async () => JSON.stringify({ error: { code: 'E01001', message: 'Request has 1 validation error.', details: [{ param: 'document.caption', message: 'must be a string' }] } }) });
   await assert.rejects(core.send(f2, { url: 'x', method: 'GET' }), /document\.caption: must be a string/);
 });
+
+test('WhatsApp media: link mode returns the storage link, never the key', async () => {
+  const r = core.birdRequest('whatsapp_media', { message_id: 'wam_1', media_id: 'waf_2' }, { apiKey: 'bk_us1_x' });
+  assert.strictEqual(r.url, 'https://us1.platform.bird.com/v1/whatsapp/messages/wam_1/media/waf_2');
+  const calls = [];
+  const fake = async (url, opts) => { calls.push([url, opts]); return { status: 302, ok: false, headers: new Map([['location', 'https://store.example/f?sig=1']]) }; };
+  const out = await core.fetchMedia(fake, r);
+  assert.deepStrictEqual(out, { url: 'https://store.example/f?sig=1', expires_in: 900 });
+  assert.strictEqual(calls[0][1].redirect, 'manual');
+});
+
+test('WhatsApp media: inline mode downloads without the Bird key', async () => {
+  const r = core.birdRequest('whatsapp_media', { message_id: 'wam_1', media_id: 'waf_2', inline: true }, { apiKey: 'bk_us1_x' });
+  const calls = [];
+  const fake = async (url, opts) => {
+    calls.push([url, opts]);
+    if (calls.length === 1) return { status: 302, ok: false, headers: new Map([['location', 'https://store.example/f']]) };
+    return { status: 200, ok: true, headers: new Map([['content-type', 'image/jpeg']]), arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer };
+  };
+  const out = await core.fetchMedia(fake, r);
+  assert.deepStrictEqual(out, { data: 'AQID', mime: 'image/jpeg', size: 3 });
+  assert.strictEqual(calls[1][1].headers, undefined);
+});
+
+test('WhatsApp media: expired files give a clear error', async () => {
+  const r = core.birdRequest('whatsapp_media', { message_id: 'wam_1', media_id: 'waf_2' }, { apiKey: 'bk_us1_x' });
+  await assert.rejects(core.fetchMedia(async () => ({ status: 410, ok: false, headers: new Map() }), r), /media_expired/);
+  assert.throws(() => core.birdRequest('whatsapp_media', { message_id: '../x', media_id: 'a' }, { apiKey: 'bk_us1_x' }), /Invalid/);
+});

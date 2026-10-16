@@ -564,3 +564,7 @@ img{max-width:100%}
 .age-table td, .age-table th { white-space:nowrap; }
 .age-table td:first-child { white-space:normal; min-width:200px; }
 .age-table tr.age-inv td { font-size:12.5px; background:var(--surface-2); }
+
+/* whatsapp media (update 19) */
+.wa-media-btns { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+.chat-msg .wa-media-btns .btn { background:var(--surface); }
