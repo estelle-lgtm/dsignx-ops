@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-10-15.17';
+import './platform.js?v=2026-10-16.18';
 
 (function(){
   "use strict";
@@ -75,7 +75,7 @@ import './platform.js?v=2026-10-15.17';
     custExportFrom:'', custExportTo:'', custExportMode:'added',
     customerForm:null,
     products:[], productForm:null, productImport:null, productQuery:'',
-    receipts:[], receiptForm:null, stocktakes:[], stockDraft:{}, stockQuery:'', cashups:{}, cashupDate:'', cashupForm:null, rxFrom:'', rxTo:'', rxMethod:'all',
+    receipts:[], receiptForm:null, creditNotes:[], creditForm:null, cnExFrom:'', cnExTo:'', cnExStatus:'Draft', ageAsAt:'', ageOpen:null, stocktakes:[], stockDraft:{}, stockQuery:'', cashups:{}, cashupDate:'', cashupForm:null, rxFrom:'', rxTo:'', rxMethod:'all',
     user:null, links:{},
     auth:{phase:'checking', uid:null, isOwner:false, memberId:null, role:null, error:'', busy:false, myAuth:null, myLink:null, teamLoaded:false, fails:0, lockUntil:0}
   };
@@ -84,7 +84,7 @@ import './platform.js?v=2026-10-15.17';
   // Who can open what. Owner = the account that completed first-time setup; everyone else must be
   // a team member who redeemed an invite code. The same rules are enforced in firestore.rules.
   var ROLE_TABS = {
-    owner:      ['dashboard','board','whatsapp','customers','team','quotes','products','cashup','reports','settings'],
+    owner:      ['dashboard','board','whatsapp','customers','team','quotes','products','cashup','reports','exports','settings'],
     designer:   ['dashboard','board','whatsapp','customers','team','quotes','products','cashup','reports'],
     technician: ['board']
   };
@@ -1022,7 +1022,9 @@ import './platform.js?v=2026-10-15.17';
       font('bold', 9.5); color(MAROON); doc.text('Invoice Total '+currency, lx, y, {align:'right'}); doc.text(pdfNum(totals.total), vx, y, {align:'right'});
       y += 6.5;
       var paidSoFar = o.id ? round2(orderPaid(o.id)) : 0;
-      font('normal', 8.8); color(GREY); doc.text('Total Net Payments '+currency, lx, y, {align:'right'}); color(INK); doc.text(pdfNum(paidSoFar), vx, y, {align:'right'});
+      var creditSoFar = o.id ? orderCredited(o.id) : 0;
+      if(creditSoFar){ font('normal', 8.8); color(GREY); doc.text('Less Credit Notes '+currency, lx, y, {align:'right'}); color(INK); doc.text(pdfNum(creditSoFar), vx, y, {align:'right'}); y += 6; paidSoFar = round2(paidSoFar + creditSoFar); }
+      font('normal', 8.8); color(GREY); doc.text('Total Net Payments '+currency, lx, y, {align:'right'}); color(INK); doc.text(pdfNum(paidSoFar - creditSoFar), vx, y, {align:'right'});
       y += 3.5;
       doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(band, y, R-band, 11, 'F');
       font('bold', 11); doc.setTextColor(255,255,255);
@@ -1312,6 +1314,10 @@ import './platform.js?v=2026-10-15.17';
     db.collection('stocktakes').onSnapshot(function(qs){
       STATE.stocktakes = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
       renderKeepCountFocus();
+    }, function(){});
+    db.collection('creditNotes').onSnapshot(function(qs){
+      STATE.creditNotes = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+      render();
     }, function(){});
     startCashupFeeds();
     db.collection('customers').orderBy('name').onSnapshot(function(qs){
@@ -1670,7 +1676,8 @@ import './platform.js?v=2026-10-15.17';
       (STATE.customerForm && canAccess('customers') ? renderCustomerForm() : '') +
       (STATE.quoteModalOrderId && canAccess('quotes') ? renderQuoteModal() : '') +
       (STATE.invoiceModalOrderId && canAccess('quotes') ? renderInvoiceModal() : '') +
-      (STATE.receiptForm && !isTechnician() ? renderReceiptModal() : '');
+      (STATE.receiptForm && !isTechnician() ? renderReceiptModal() : '') +
+      (STATE.creditForm && isOwnerRole() ? renderCreditModal() : '');
     bindEvents();
   }
 
@@ -1684,6 +1691,7 @@ import './platform.js?v=2026-10-15.17';
     {key:'products', label:'Products'},
     {key:'cashup', label:'Cash-ups'},
     {key:'reports', label:'Reports'},
+    {key:'exports', label:'Exports'},
     {key:'settings', label:'Settings'}
   ];
 
@@ -1712,7 +1720,7 @@ import './platform.js?v=2026-10-15.17';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-15.17</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-16.18</span></div>' +
       '</div>'
     );
   }
@@ -1728,6 +1736,7 @@ import './platform.js?v=2026-10-15.17';
       case 'cashup': return renderCashupTab();
       case 'settings': return renderSettingsTab();
       case 'reports': return renderReportsTab();
+      case 'exports': return renderExportsTab();
       default: return renderDashboardTab();
     }
   }
@@ -1931,7 +1940,7 @@ import './platform.js?v=2026-10-15.17';
   function saleDate(o){ return o.invoiceGeneratedAt || o.invoicedAt || o.updatedAt || o.createdAt || ''; }
   function saleExVat(o){
     if(o.invoiceLineItems && o.invoiceLineItems.length){
-      return round2(o.invoiceLineItems.reduce(function(s,li){ return s + lineNet(li); }, 0));
+      return round2(o.invoiceLineItems.reduce(function(s,li){ return s + lineNet(li); }, 0) - orderCreditedExVat(o.id));
     }
     return round2(Number(o.quoteAmount)||0); // quote amounts are stored excl. VAT
   }
@@ -2009,6 +2018,8 @@ import './platform.js?v=2026-10-15.17';
   function renderReportsTab(){
     var range = reportRange();
     if(STATE.reportView==='cashup' && canCashup()) return renderCashupReport(range);
+    if(STATE.reportView==='age' && isOwnerRole()) return renderAgeReport();
+    if(STATE.reportView==='quotes' && isOwnerRole()) return renderQuoteStats(range);
     var data = commissionRows(range);
     var isMonth = rangeIsMonth(range);
     var periodWord = isMonth ? 'month' : 'period';
@@ -2383,7 +2394,7 @@ import './platform.js?v=2026-10-15.17';
           '<div class="field"><label for="cfgXeroTaxVat">Tax type (with VAT)</label><input type="text" id="cfgXeroTaxVat" value="'+escapeHtml(STATE.config.xeroTaxVat||'Standard Rate Sales')+'"></div>' +
           '<div class="field"><label for="cfgXeroTaxNoVat">Tax type (no VAT)</label><input type="text" id="cfgXeroTaxNoVat" value="'+escapeHtml(STATE.config.xeroTaxNoVat||'No VAT')+'"></div>' +
         '</div>' +
-        '<div class="field"><label for="cfgXeroTracking">Tracking category name</label><input type="text" id="cfgXeroTracking" style="max-width:220px;" value="'+escapeHtml(STATE.config.xeroTrackingName||'Sales Rep')+'"><div class="hint">Account code ('+escapeHtml(STATE.config.accountCode||'200')+') and currency come from Xero export defaults above.</div></div>' +
+        '<div class="field"><label for="cfgXeroTracking">Tracking category name</label><input type="text" id="cfgXeroTracking" style="max-width:220px;" value="'+escapeHtml(STATE.config.xeroTrackingName||'Sales Rep')+'"><div class="hint">Account code ('+escapeHtml(STATE.config.accountCode||'200')+') and currency come from Xero export defaults on this page.</div></div>' +
         '<div style="background:var(--surface-2); border-radius:var(--radius-s); padding:10px 12px; font-size:12.5px; color:var(--ink-soft); margin-bottom:12px;">' +
           (list.length ? ('<strong style="color:var(--ink);">'+list.length+' invoice'+(list.length===1?'':'s')+'</strong> &middot; '+lineCount+' line'+(lineCount===1?'':'s')+' &middot; '+money(round2(grand))+' incl. VAT &middot; '+shortDate(dates[0])+' – '+shortDate(dates[dates.length-1])) : ((STATE.invExportFrom||STATE.invExportTo) ? ('No invoices dated '+(STATE.invExportFrom?fullDate(STATE.invExportFrom):'the start')+' – '+(STATE.invExportTo?fullDate(STATE.invExportTo):'today')+'.') : 'No invoices issued yet.')) +
         '</div>' +
@@ -2676,17 +2687,7 @@ import './platform.js?v=2026-10-15.17';
               ) +
             '</div>' +
           '</div>' +
-          '<div class="panel">' +
-            '<div class="section-label">Xero export defaults</div>' +
-            '<div class="field-row">' +
-              '<div class="field"><label for="cfgAccount">Account code</label><input type="text" id="cfgAccount" value="'+escapeHtml(STATE.config.accountCode||'')+'"></div>' +
-              '<div class="field"><label for="cfgTax">Tax type</label><input type="text" id="cfgTax" value="'+escapeHtml(STATE.config.taxType||'')+'"></div>' +
-            '</div>' +
-            '<div class="field"><label for="cfgCurrency">Currency</label><input type="text" id="cfgCurrency" style="max-width:110px" value="'+escapeHtml(STATE.config.currency||'ZAR')+'"></div>' +
-            '<button class="btn btn-primary btn-sm" data-action="save-xero-defaults">Save</button>' +
-          '</div>' +
-          renderInvoiceExportPanel() +
-          renderCustomerExportPanel() +
+          '<div class="panel" style="padding:12px 14px;"><span class="hint" style="margin:0;">Invoice, credit note, customer and receipt downloads (and the Xero export defaults) are on the <button type="button" class="btn btn-ghost btn-sm" style="padding:0 4px; vertical-align:baseline;" data-action="tab" data-tab="exports">Exports</button> tab.</span></div>' +
           renderLetterheadPanel() +
           '<div class="panel">' +
             '<div class="section-label">Quotation defaults</div>' +
@@ -3195,6 +3196,22 @@ import './platform.js?v=2026-10-15.17';
         var nb = monthBounds(new Date(base.getFullYear(), base.getMonth()+Number(el.getAttribute('data-by')), 1));
         STATE.reportFrom = nb.from; STATE.reportTo = nb.to; STATE.reportOpenMember = null; render();
       }
+      else if(action==='cn-new'){ openCreditForm(el.getAttribute('data-id')); }
+      else if(action==='cn-close'){ STATE.creditForm = null; render(); }
+      else if(action==='cn-add-line'){ if(STATE.creditForm){ STATE.creditForm.items.push({description:'', qty:1, unitPrice:0, discount:''}); render(); } }
+      else if(action==='cn-remove-line'){ if(STATE.creditForm){ STATE.creditForm.items.splice(Number(el.getAttribute('data-i')), 1); render(); } }
+      else if(action==='cn-full'){ creditFullBalance(); }
+      else if(action==='cn-save'){ saveCreditNote(); }
+      else if(action==='cn-pdf'){ downloadCreditNote(el.getAttribute('data-id')); }
+      else if(action==='cn-wa'){ sendCreditNoteWhatsapp(el.getAttribute('data-id')); }
+      else if(action==='cn-void'){ voidCreditNote(el.getAttribute('data-id')); }
+      else if(action==='cn-ex-preset'){ STATE.cnExFrom = el.getAttribute('data-from'); STATE.cnExTo = el.getAttribute('data-to'); render(); }
+      else if(action==='export-cn-xero'){ exportCreditNotesXero(); }
+      else if(action==='age-toggle'){ var ak = el.getAttribute('data-id'); STATE.ageOpen = STATE.ageOpen===ak ? null : ak; render(); }
+      else if(action==='age-today'){ STATE.ageAsAt = todayIso(); render(); }
+      else if(action==='age-pdf'){ if(isOwnerRole()) ageReportPdf(); }
+      else if(action==='age-xlsx'){ if(isOwnerRole()) ageReportXlsx(); }
+      else if(action==='qs-xlsx'){ if(isOwnerRole()) quoteStatsXlsx(); }
       else if(action==='report-view'){ STATE.reportView = el.getAttribute('data-view'); render(); }
       else if(action==='cashrep-pdf'){ cashupReportPdf(); }
       else if(action==='cashrep-xlsx'){ cashupReportXlsx(); }
@@ -3246,7 +3263,7 @@ import './platform.js?v=2026-10-15.17';
         render();
       }
       else if(action==='close-order'){ STATE.openOrderId = null; render(); }
-      else if(action==='close-modal-bg'){ if(e.target===el && STATE.newQuoteOpen){ STATE.newQuoteOpen = false; render(); } else if(e.target===el && STATE.receiptForm){ STATE.receiptForm = null; render(); } else if(e.target===el){ STATE.openOrderId=null; STATE.newOrderOpen=false; STATE.newOrderPrefill=null; STATE.newTeamOpen=false; STATE.quoteModalOrderId=null; STATE.quoteDraft=null; STATE.invoiceModalOrderId=null; STATE.invoiceDraft=null; render(); } }
+      else if(action==='close-modal-bg'){ if(e.target===el && STATE.newQuoteOpen){ STATE.newQuoteOpen = false; render(); } else if(e.target===el && STATE.receiptForm){ STATE.receiptForm = null; render(); } else if(e.target===el && STATE.creditForm){ STATE.creditForm = null; render(); } else if(e.target===el){ STATE.openOrderId=null; STATE.newOrderOpen=false; STATE.newOrderPrefill=null; STATE.newTeamOpen=false; STATE.quoteModalOrderId=null; STATE.quoteDraft=null; STATE.invoiceModalOrderId=null; STATE.invoiceDraft=null; render(); } }
       else if(action==='open-add-team'){ if(isOwnerRole()){ STATE.newTeamOpen = true; render(); } }
       else if(action==='close-new-team'){ STATE.newTeamOpen = false; render(); }
       else if(action==='submit-new-team'){ submitNewTeamMember(); }
@@ -3416,6 +3433,10 @@ import './platform.js?v=2026-10-15.17';
       if(e.target.id==='custExTo'){ STATE.custExportTo = e.target.value; render(); }
       if(e.target.id==='custExMode'){ STATE.custExportMode = e.target.value; render(); }
       if(e.target.id==='invExFrom'){ STATE.invExportFrom = e.target.value; render(); }
+      if(e.target.id==='cnExFrom'){ STATE.cnExFrom = e.target.value; render(); }
+      if(e.target.id==='cnExTo'){ STATE.cnExTo = e.target.value; render(); }
+      if(e.target.id==='cnExStatus'){ STATE.cnExStatus = e.target.value; render(); }
+      if(e.target.id==='ageAsAt' && e.target.value){ STATE.ageAsAt = e.target.value; render(); }
       if(e.target.id==='invExTo'){ STATE.invExportTo = e.target.value; render(); }
       if(e.target.id==='invExStatus'){ STATE.invExportStatus = e.target.value; render(); }
       if(e.target.id==='reportFrom'){ STATE.reportFrom = e.target.value; STATE.reportOpenMember = null; render(); }
@@ -3432,6 +3453,7 @@ import './platform.js?v=2026-10-15.17';
       if(e.target.id==='inviteMsg'){ STATE.inviteDraftText = e.target.value; }
       var pfk = e.target.getAttribute && e.target.getAttribute('data-pf'); if(pfk && STATE.productForm){ STATE.productForm[pfk] = e.target.value; }
       var rfk = e.target.getAttribute && e.target.getAttribute('data-rf'); if(rfk && STATE.receiptForm){ STATE.receiptForm[rfk] = e.target.value; }
+      if(STATE.creditForm && e.target.getAttribute && (e.target.getAttribute('data-cnf') || e.target.getAttribute('data-cnr'))){ onCreditInput(e.target); }
       var denk = e.target.getAttribute && e.target.getAttribute('data-den'); if(denk){ onDenomInput(denk, e.target.value); }
       var cuk = e.target.getAttribute && e.target.getAttribute('data-cu'); if(cuk && STATE.cashupForm){ STATE.cashupForm[cuk] = e.target.value; refreshCashupTotals(); }
       if(e.target.id==='productSearch'){ STATE.productQuery = e.target.value; render(); focusEl('productSearch'); }
@@ -4177,16 +4199,19 @@ import './platform.js?v=2026-10-15.17';
   function hasInvoiceDoc(o){ return !!(o.invoiceNumber && o.invoiceGeneratedAt && (o.invoiceLineItems||[]).length); }
   // What the customer owes for the job: the invoice total once invoiced, otherwise the quote.
   function orderAmountDue(o){
-    if(hasInvoiceDoc(o)) return invoiceTotals({items:o.invoiceLineItems, vatEnabled:!!o.invoiceVatEnabled && isVatVendor()}).total;
+    if(hasInvoiceDoc(o)) return invoiceTotals({items:o.invoiceLineItems, vatEnabled:!!o.invoiceVatEnabled && isVatVendor()}).total - orderCredited(o.id);
     if((o.lineItems||[]).length) return quoteTotals({items:o.lineItems, vatEnabled:!!o.quoteVatEnabled && isVatVendor()}).total;
     return Number(o.quoteAmount)||0;
   }
   function round2(n){ return Math.round((Number(n)||0)*100)/100; }
   function payStatus(o){
     var due = round2(orderAmountDue(o)), paid = round2(orderPaid(o.id));
-    if(!paid) return {key:'unpaid', label:'Unpaid', due:due, paid:0, balance:due};
-    if(due && paid >= due) return {key:'paid', label: paid>due ? 'Overpaid' : 'Paid', due:due, paid:paid, balance:round2(due-paid)};
-    return {key:'part', label: hasInvoiceDoc(o) ? 'Part-paid' : 'Deposit paid', due:due, paid:paid, balance:round2(due-paid)};
+    var credited = hasInvoiceDoc(o) ? orderCredited(o.id) : 0;
+    if(credited && due <= 0.004 && paid <= 0.004) return {key:'paid', label:'Credited', due:due, paid:0, balance:0, credited:credited};
+    if(!paid) return {key:'unpaid', label:'Unpaid', due:due, paid:0, balance:due, credited:credited};
+    if(due && paid >= due) return {key:'paid', label: paid>due ? 'Overpaid' : 'Paid', due:due, paid:paid, balance:round2(due-paid), credited:credited};
+    if(!due && credited) return {key:'paid', label:'Paid', due:due, paid:paid, balance:round2(due-paid), credited:credited};
+    return {key:'part', label: hasInvoiceDoc(o) ? 'Part-paid' : 'Deposit paid', due:due, paid:paid, balance:round2(due-paid), credited:credited};
   }
 
   function openReceiptForm(orderId){
@@ -4335,10 +4360,13 @@ import './platform.js?v=2026-10-15.17';
       '<div class="field" style="background:var(--surface-2); border-radius:var(--radius-s); padding:10px 12px;">' +
         '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px;">' +
           '<span style="font-size:12.5px; color:var(--ink-soft);"><strong style="color:var(--ink);">Payments</strong> '+chip+'</span>' +
-          '<button class="btn btn-sm" data-action="receipt-new" data-id="'+o.id+'">Receive payment</button>' +
+          '<span style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;">' +
+            (canIssueCredit(o) ? '<button class="btn btn-sm" data-action="cn-new" data-id="'+o.id+'">Issue credit note</button>' : '') +
+            '<button class="btn btn-sm" data-action="receipt-new" data-id="'+o.id+'">Receive payment</button>' +
+          '</span>' +
         '</div>' +
-        '<div style="font-size:12.5px; color:var(--ink-soft); margin-bottom:'+(rows?'8px':'0')+';">'+(hasInvoiceDoc(o)?'Invoice total ':'Quoted ')+money(st.due)+' &middot; Paid '+money(st.paid)+' &middot; <strong style="color:var(--ink);">Balance '+money(Math.max(0,st.balance))+'</strong></div>' +
-        rows +
+        '<div style="font-size:12.5px; color:var(--ink-soft); margin-bottom:'+(rows||st.credited?'8px':'0')+';">'+(hasInvoiceDoc(o)?'Invoice total ':'Quoted ')+money(round2(st.due + (st.credited||0)))+(st.credited?(' &middot; Credited '+money(st.credited)):'')+' &middot; Paid '+money(st.paid)+' &middot; <strong style="color:var(--ink);">Balance '+money(Math.max(0,st.balance))+'</strong></div>' +
+        rows + renderCreditRows(o) +
       '</div>'
     );
   }
@@ -4525,7 +4553,7 @@ import './platform.js?v=2026-10-15.17';
     var total = recs.reduce(function(s,r){ return s + (Number(r.amount)||0); }, 0);
     var opt = function(v,l){ return '<option value="'+v+'"'+(STATE.rxMethod===v?' selected':'')+'>'+l+'</option>'; };
     return '<div class="panel">' +
-      '<div class="section-label">Download receipts</div>' +
+      '<div class="section-label">Download receipts (bank statement import template)</div>' +
       '<div class="field-row" style="align-items:flex-end;">' +
         '<div class="field"><label for="rxFrom">From</label><input type="date" id="rxFrom" value="'+STATE.rxFrom+'"></div>' +
         '<div class="field"><label for="rxTo">To</label><input type="date" id="rxTo" value="'+STATE.rxTo+'"></div>' +
@@ -5006,11 +5034,14 @@ import './platform.js?v=2026-10-15.17';
     return t;
   }
   function reportSwitcher(){
-    if(!canCashup()) return '';
-    var v = STATE.reportView==='cashup' ? 'cashup' : 'commission';
-    return '<div class="filterbar" style="margin:-6px 0 14px;">' +
-      '<button class="chip-toggle '+(v==='commission'?'active':'')+'" data-action="report-view" data-view="commission">Commission</button>' +
-      '<button class="chip-toggle '+(v==='cashup'?'active':'')+'" data-action="report-view" data-view="cashup">Daily cash-up</button></div>';
+    var views = [{k:'commission', l:'Commission'}];
+    if(canCashup()) views.push({k:'cashup', l:'Daily cash-up'});
+    if(isOwnerRole()){ views.push({k:'age', l:'Age analysis'}); views.push({k:'quotes', l:'Quote success'}); }
+    if(views.length < 2) return '';
+    var v = views.some(function(x){ return x.k===STATE.reportView; }) ? STATE.reportView : 'commission';
+    return '<div class="filterbar" style="margin:-6px 0 14px;">' + views.map(function(x){
+      return '<button class="chip-toggle '+(v===x.k?'active':'')+'" data-action="report-view" data-view="'+x.k+'">'+x.l+'</button>';
+    }).join('') + '</div>';
   }
   function renderCashupReport(range){
     var rows = cashupReportRows(range.from, range.to), t = cashupReportTotals(rows);
@@ -5255,6 +5286,675 @@ import './platform.js?v=2026-10-15.17';
     var name = 'DsignX-cash-up-report-'+(range.from||'start')+'-to-'+(range.to||todayIso())+'.xlsx';
     if(STATE.downloads){ STATE.downloads.save({filename:name, data:blob}).catch(function(){ fallbackDownload(blob, name); }); } else fallbackDownload(blob, name);
   }
+  /* ============================ credit notes ============================ */
+  // Only the owner issues credit notes, and only against an invoice that still has a balance owing.
+  // A credit note reduces what the customer owes on that invoice (and the sale value used for commission).
+  function orderCredits(orderId){
+    return (STATE.creditNotes||[]).filter(function(c){ return c.orderId===orderId && !c.voided; })
+      .sort(function(a,b){ return String(a.createdAt).localeCompare(String(b.createdAt)); });
+  }
+  function orderCredited(orderId){ return round2(orderCredits(orderId).reduce(function(s,c){ return s + (Number(c.total)||0); }, 0)); }
+  function orderCreditedExVat(orderId){ return round2(orderCredits(orderId).reduce(function(s,c){ return s + (Number(c.subtotal)||0); }, 0)); }
+  function invoiceGross(o){
+    if(hasInvoiceDoc(o)) return round2(invoiceTotals({items:o.invoiceLineItems, vatEnabled:!!o.invoiceVatEnabled && isVatVendor()}).total);
+    if((o.lineItems||[]).length) return round2(quoteTotals({items:o.lineItems, vatEnabled:!!o.quoteVatEnabled && isVatVendor()}).total);
+    return round2(Number(o.quoteAmount)||0);
+  }
+  function canIssueCredit(o){ return isOwnerRole() && !!o && hasInvoiceDoc(o) && payStatus(o).balance > 0.004; }
+  function cnTotals(f){
+    var items = (f.items||[]).filter(function(li){ return String(li.description||'').trim() || lineNet(li); });
+    var sub = round2(items.reduce(function(s,li){ return s + lineNet(li); }, 0));
+    var vat = f.vatOn ? round2(sub * (Number(STATE.config.vatRate)||0) / 100) : 0;
+    // "Credit the full outstanding balance": VAT absorbs the 1c rounding so the total is exactly the balance.
+    if(f.vatOn && f.fullEx!=null && items.length===1 && round2(items[0].unitPrice)===f.fullEx && Number(items[0].qty)===1 && !lineDiscPct(items[0])) vat = round2(f.balance - sub);
+    return {items:items, subtotal:sub, vat:vat, total:round2(sub+vat), discount:linesDiscount(items)};
+  }
+  function openCreditForm(orderId){
+    var o = STATE.orders.find(function(x){ return x.id===orderId; });
+    if(!isOwnerRole()){ toast('Only the owner can issue credit notes'); return; }
+    if(!o || !hasInvoiceDoc(o)){ toast('Generate the invoice first'); return; }
+    var st = payStatus(o);
+    if(!(st.balance > 0.004)){ toast('This invoice has nothing outstanding to credit'); return; }
+    STATE.creditForm = {
+      orderId:orderId, vatOn:!!o.invoiceVatEnabled && isVatVendor(), balance:st.balance,
+      items:(o.invoiceLineItems||[]).map(function(li){ return {description:li.description||'', qty:Number(li.qty)||0, unitPrice:Number(li.unitPrice)||0, discount:lineDiscPct(li)||''}; }),
+      reason:'', date:todayIso(), error:'', busy:false, saved:null
+    };
+    // Something already paid or credited: start from one line for the outstanding balance instead.
+    if(st.balance < invoiceGross(o) - 0.004){ creditFullBalance(); return; }
+    render();
+  }
+  // Replace the lines with one line that credits the whole outstanding balance.
+  function creditFullBalance(){
+    var f = STATE.creditForm; if(!f) return;
+    var o = STATE.orders.find(function(x){ return x.id===f.orderId; }); if(!o) return;
+    var rate = f.vatOn ? (Number(STATE.config.vatRate)||0)/100 : 0;
+    var ex = round2(f.balance / (1 + rate));
+    f.fullEx = ex;
+    f.items = [{description:'Credit on invoice '+(o.invoiceNumber||''), qty:1, unitPrice:ex, discount:''}];
+    render();
+  }
+  function renderCreditModal(){
+    var f = STATE.creditForm; if(!f) return '';
+    var o = STATE.orders.find(function(x){ return x.id===f.orderId; }); if(!o) return '';
+    if(f.saved){
+      var c = f.saved;
+      return '<div class="overlay" data-action="close-modal-bg"><div class="modal" role="dialog" aria-modal="true" aria-label="Credit note issued" style="max-width:480px;">' +
+        '<div class="modal-head"><div><div class="jobno mono">'+escapeHtml(c.number)+'</div><h2>Credit note issued</h2></div><button class="modal-close" data-action="cn-close" aria-label="Close">&times;</button></div>' +
+        '<p style="margin-top:0;">'+money(c.total)+' credited on invoice '+escapeHtml(c.invoiceNumber)+' for '+escapeHtml(c.customerName)+'.<br><span class="hint">Reason: '+escapeHtml(c.reason)+'</span></p>' +
+        '<div class="modal-foot">' +
+          '<button class="btn btn-ghost" data-action="cn-close">Done</button>' +
+          '<button class="btn" data-action="cn-pdf" data-id="'+c.id+'">Download PDF</button>' +
+          (waPhone(c.phone) && STATE.mcp ? '<button class="btn btn-primary" data-action="cn-wa" data-id="'+c.id+'">Send via WhatsApp</button>' : '') +
+        '</div></div></div>';
+    }
+    var t = cnTotals(f);
+    var rows = f.items.map(function(li, i){
+      return '<tr>' +
+        '<td style="min-width:180px;"><input type="text" data-cnf="description" data-i="'+i+'" value="'+escapeHtml(li.description)+'"></td>' +
+        '<td style="width:64px;"><input type="number" min="0" step="1" data-cnf="qty" data-i="'+i+'" value="'+escapeHtml(String(li.qty))+'"></td>' +
+        '<td style="width:100px;"><input type="number" min="0" step="0.01" data-cnf="unitPrice" data-i="'+i+'" value="'+escapeHtml(String(li.unitPrice))+'"></td>' +
+        '<td style="width:74px;"><input type="number" min="0" max="100" step="0.01" placeholder="0" data-cnf="discount" data-i="'+i+'" value="'+escapeHtml(String(li.discount||''))+'"></td>' +
+        '<td class="num" id="cnLine-'+i+'" style="white-space:nowrap;">'+money(lineNet(li))+'</td>' +
+        '<td><button class="btn btn-ghost btn-sm" data-action="cn-remove-line" data-i="'+i+'" title="Remove line">&times;</button></td>' +
+      '</tr>';
+    }).join('');
+    var over = t.total > f.balance + 0.004;
+    return '<div class="overlay" data-action="close-modal-bg"><div class="modal" role="dialog" aria-modal="true" aria-label="Issue credit note" style="max-width:680px;">' +
+      '<div class="modal-head"><div><div class="jobno mono">Invoice '+escapeHtml(o.invoiceNumber||'')+'</div><h2>Credit note for '+escapeHtml(o.customerName||'')+'</h2></div><button class="modal-close" data-action="cn-close" aria-label="Close">&times;</button></div>' +
+      '<p class="hint" style="margin-top:0;">Invoice total '+money(invoiceGross(o))+' &middot; outstanding <strong>'+money(f.balance)+'</strong>. The credit note can’t be more than what is outstanding. Edit, remove or add lines for what you are crediting.</p>' +
+      (f.error ? '<div class="field-error" style="margin-bottom:8px;">'+escapeHtml(f.error)+'</div>' : '') +
+      '<div class="tbl-wrap"><table><thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Disc %</th><th>Line total</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
+      '<div style="display:flex; gap:8px; flex-wrap:wrap; margin:8px 0 14px;">' +
+        '<button class="btn btn-ghost btn-sm" data-action="cn-add-line">+ Add line</button>' +
+        '<button class="btn btn-ghost btn-sm" data-action="cn-full">Credit the full outstanding balance</button>' +
+      '</div>' +
+      '<div class="kv" style="justify-content:flex-end; margin-left:auto; max-width:280px; margin-bottom:14px;">' +
+        '<dt>Subtotal</dt><dd class="num" id="cnSub">'+money(t.subtotal)+'</dd>' +
+        (f.vatOn ? '<dt>VAT ('+(STATE.config.vatRate||15)+'%)</dt><dd class="num" id="cnVat">'+money(t.vat)+'</dd>' : '') +
+        '<dt style="font-weight:700; color:var(--ink);">Credit note total</dt><dd class="num" id="cnTotal" style="font-weight:700;'+(over?' color:#a12222;':'')+'">'+money(t.total)+'</dd>' +
+      '</div>' +
+      '<div class="field"><label for="cnReason">Reason for the credit note <span style="color:#a12222;">*</span></label><textarea id="cnReason" data-cnr="reason" rows="2" placeholder="e.g. Banner reprinted at our cost — colour mismatch">'+escapeHtml(f.reason)+'</textarea><div class="hint">Printed on the credit note.</div></div>' +
+      '<div class="field"><label for="cnDate">Credit note date</label><input type="date" id="cnDate" data-cnr="date" style="max-width:200px;" value="'+escapeHtml(f.date)+'"></div>' +
+      '<div class="modal-foot"><button class="btn btn-ghost" data-action="cn-close">Cancel</button><button class="btn btn-primary" data-action="cn-save"'+(f.busy?' disabled':'')+'>'+(f.busy?'Saving…':'Issue credit note')+'</button></div>' +
+    '</div></div>';
+  }
+  function onCreditInput(el){
+    var f = STATE.creditForm; if(!f) return;
+    var r = el.getAttribute('data-cnr');
+    if(r){ f[r] = el.value; return; }
+    var k = el.getAttribute('data-cnf'), i = Number(el.getAttribute('data-i'));
+    if(!k || !f.items[i]) return;
+    f.items[i][k] = k==='description' ? el.value : el.value;
+    var cell = document.getElementById('cnLine-'+i); if(cell) cell.innerHTML = money(lineNet(f.items[i]));
+    var t = cnTotals(f);
+    var s = document.getElementById('cnSub'); if(s) s.innerHTML = money(t.subtotal);
+    var v = document.getElementById('cnVat'); if(v) v.innerHTML = money(t.vat);
+    var tt = document.getElementById('cnTotal'); if(tt){ tt.innerHTML = money(t.total); tt.style.color = t.total > f.balance + 0.004 ? '#a12222' : ''; }
+  }
+  function saveCreditNote(){
+    var f = STATE.creditForm; if(!f || f.busy) return;
+    if(!isOwnerRole()){ f.error = 'Only the owner can issue credit notes.'; render(); return; }
+    var o = STATE.orders.find(function(x){ return x.id===f.orderId; }); if(!o) return;
+    var t = cnTotals(f);
+    var reason = String(f.reason||'').trim();
+    var bal = payStatus(o).balance;
+    if(!t.items.length || !(t.total > 0)){ f.error = 'Add at least one line with an amount to credit.'; render(); return; }
+    if(t.items.some(function(li){ return !String(li.description||'').trim(); })){ f.error = 'Every line needs a description.'; render(); return; }
+    if(t.total > bal + 0.004){ f.error = 'The credit note ('+money(t.total)+') is more than the outstanding balance ('+money(bal)+').'; render(); return; }
+    if(!reason){ f.error = 'Enter the reason for the credit note.'; render(); return; }
+    if(!f.date){ f.error = 'Choose the credit note date.'; render(); return; }
+    f.busy = true; f.error = ''; render();
+    var member = currentTeamMember();
+    reserveNumbers('nextCreditNoteNumber', 1).then(function(n){
+      var rec = {
+        number:'DSX-CN'+pad4(n), date:f.date, createdAt:new Date().toISOString(),
+        orderId:o.id, invoiceNumber:o.invoiceNumber||'', jobNumber:o.jobNumber||jobNo(o.id), jobTitle:o.title||'', poNumber:o.poNumber||'',
+        customerId:o.customerId||null, customerName:o.customerName||'', phone:o.phone||'',
+        reason:reason, vatEnabled:!!f.vatOn, vatRate:Number(STATE.config.vatRate)||0,
+        items:t.items.map(function(li){ var x = {description:String(li.description).trim(), qty:Number(li.qty)||0, unitPrice:round2(li.unitPrice)}; if(lineDiscPct(li)) x.discount = lineDiscPct(li); return x; }),
+        subtotal:t.subtotal, vat:t.vat, total:t.total, discountTotal:t.discount,
+        designerName:o.designerName||'', technicianName:o.technicianName||'', technician2Name:o.technician2Name||'',
+        issuedBy: member ? member.name : 'Owner', voided:false
+      };
+      if(STATE.isLive && STATE.db){
+        return STATE.db.collection('creditNotes').add(rec).then(function(ref){ return Object.assign({id:ref.id}, rec); });
+      }
+      var c = Object.assign({id:uid()}, rec); STATE.creditNotes.push(c); return c;
+    }).then(function(c){
+      f.busy = false; f.saved = c;
+      if(!(STATE.creditNotes||[]).some(function(x){ return x.id===c.id; })) STATE.creditNotes.push(c);
+      render();
+      toast('Credit note '+c.number+' issued');
+    }).catch(function(){ f.busy = false; f.error = 'Couldn’t save — check your connection and try again.'; render(); });
+  }
+  function voidCreditNote(id){
+    var c = (STATE.creditNotes||[]).find(function(x){ return x.id===id; }); if(!c || !isOwnerRole()) return;
+    var why = prompt('Void credit note '+c.number+'? The invoice balance goes back up. Type a reason (it stays on record, marked VOID):');
+    if(why===null) return;
+    var patch = {voided:true, voidReason:String(why||'').trim() || 'Voided', voidedAt:new Date().toISOString()};
+    if(STATE.isLive && STATE.db){ STATE.db.doc('creditNotes/'+id).update(patch).catch(function(){ toast('Could not void — try again'); }); }
+    else { Object.assign(c, patch); render(); }
+  }
+  function renderCreditRows(o){
+    var list = (STATE.creditNotes||[]).filter(function(c){ return c.orderId===o.id; }).sort(function(a,b){ return String(a.createdAt).localeCompare(String(b.createdAt)); });
+    return list.map(function(c){
+      return '<div class="pay-row'+(c.voided?' voided':'')+'"><span class="mono">'+escapeHtml(c.number)+'</span><span>'+shortDate(c.date)+'</span><span title="'+escapeHtml(c.reason||'')+'">Credit note</span><span class="num">−'+money(c.total)+'</span>' +
+        '<span class="pay-actions">' + (c.voided ? '<em>VOID</em>' :
+          '<button class="btn btn-ghost btn-sm" data-action="cn-pdf" data-id="'+c.id+'">PDF</button>' +
+          (waPhone(c.phone) && STATE.mcp ? '<button class="btn btn-ghost btn-sm" data-action="cn-wa" data-id="'+c.id+'">WhatsApp</button>' : '') +
+          (isOwnerRole() ? '<button class="btn btn-ghost btn-sm" data-action="cn-void" data-id="'+c.id+'">Void</button>' : '')) +
+        '</span></div>' +
+        (c.reason && !c.voided ? '<div class="hint" style="margin:-2px 0 4px 2px;">Reason: '+escapeHtml(c.reason)+'</div>' : '');
+    }).join('');
+  }
+
+  function creditNotePdf(c){
+    if(!window.jspdf || !window.jspdf.jsPDF){ toast('PDF tools are still loading — try again in a moment'); return null; }
+    var cfg = STATE.config;
+    var o = STATE.orders.find(function(x){ return x.id===c.orderId; }) || {};
+    var cust = STATE.customers.find(function(x){ return x.id===(c.customerId||o.customerId); }) || {};
+    var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
+    var L = 15, R = 195, W = R - L;
+    var MAROON = [78,9,40], INK = [43,43,43], GREY = [95,99,88], SAGE = [121,128,110], PANEL = [244,245,242], RULE = [222,222,216];
+    function color(x){ doc.setTextColor(x[0],x[1],x[2]); }
+    function font(style, size){ doc.setFont('helvetica', style); doc.setFontSize(size); }
+    function spaced(txt, x, y, opts, cs){ doc.setCharSpace(cs==null?0.6:cs); doc.text(txt, x, y, opts||{}); doc.setCharSpace(0); }
+    var vatNo = String(cfg.businessVatNumber||'').trim();
+    var vatOn = !!c.vatEnabled;
+    var rate = Number(c.vatRate)||Number(cfg.vatRate)||15;
+    var currency = cfg.currency || 'ZAR';
+    var items = c.items || [];
+    function footer(){
+      doc.setDrawColor(RULE[0],RULE[1],RULE[2]); doc.setLineWidth(0.25); doc.line(L, 277, R, 277);
+      font('bold', 8.5); color(MAROON); doc.text('Thank you for your business!', 105, 281.5, {align:'center'});
+      font('normal', 6.8); color(GREY);
+      var biz = /\(PTY\)\s*LTD/i.test(lh('docCompanyName')) ? ((cfg.businessName||'DsignX')+' (Pty) Ltd') : lh('docCompanyName');
+      doc.text([biz, 'Reg No '+lh('docRegNo')].concat(vatNo ? ['VAT No '+vatNo] : []).concat([lh('docAddress')]).join('  ·  '), 105, 285, {align:'center'});
+      doc.text(['Tel '+lh('docTel'), 'WhatsApp '+lh('docWhatsapp'), lh('docEmail'), lh('docWebsite')].join('  ·  '), 105, 288.3, {align:'center'});
+    }
+    /* letterhead */
+    var logoW = 56, logoH = logoW * (358/800);
+    doc.addImage(LOGO_PDF_DATA_URL, 'PNG', L, 12, logoW, logoH);
+    font('bold', 11.5); color(MAROON); spaced(lh('docCompanyName'), R, 18.5, {align:'right'}, 0.12);
+    font('normal', 8.3); color(GREY);
+    doc.text(lh('docAddress'), R, 23, {align:'right'});
+    doc.text('Tel '+lh('docTel')+'   |   WhatsApp '+lh('docWhatsapp'), R, 27.2, {align:'right'});
+    doc.text(lh('docEmail')+'   |   '+lh('docWebsite'), R, 31.4, {align:'right'});
+    var parts = [['Reg No ', lh('docRegNo')]].concat(vatNo ? [['   |   ',''],['VAT No ', vatNo]] : []);
+    var widths = parts.map(function(p){ font('bold', 8.3); var a = doc.getTextWidth(p[0]); font('normal', 8.3); return a + doc.getTextWidth(p[1]); });
+    var x = R - widths.reduce(function(a,b){ return a+b; }, 0);
+    parts.forEach(function(p){
+      var isSep = p[0].trim()==='|';
+      font(isSep ? 'normal' : 'bold', 8.3); color(GREY); doc.text(p[0], x, 35.6); x += doc.getTextWidth(p[0]);
+      font('normal', 8.3); doc.text(p[1], x, 35.6); x += doc.getTextWidth(p[1]);
+    });
+    doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, 40.5, W, 0.9, 'F');
+    /* title + customer */
+    font('bold', 25); color(MAROON); spaced(c.voided ? 'CREDIT NOTE — VOID' : 'CREDIT NOTE', L, 55, null, 0.35);
+    font('bold', 7.2); color(SAGE); spaced('CUSTOMER', L, 62, null, 0.6);
+    font('bold', 10.5); color(INK); doc.text(c.customerName || cust.name || 'Customer', L, 67.5);
+    font('normal', 8.8); color(GREY);
+    var cy = 72, lines = [];
+    if(addrHasData(cust.postalAddress)) lines = lines.concat(formatAddress(cust.postalAddress).split('\n'));
+    if(cust.vatNumber) lines.push('VAT No: '+cust.vatNumber);
+    lines.filter(Boolean).forEach(function(line){ doc.splitTextToSize(String(line), 95).forEach(function(t){ doc.text(t, L, cy); cy += 4.2; }); });
+    /* info box */
+    var bx = 115.5, by = 46;
+    var info = [['Credit Note Number', c.number, true], ['Date', fullDate(c.date)], ['Reference', c.invoiceNumber || '']];
+    var acct = cust.accountNumber ? [['Account Number', cust.accountNumber]] : [['Job Number', c.jobNumber || '']];
+    if(String(c.poNumber||'').trim()) acct.push(['Customer PO', String(c.poNumber).trim()]);
+    var boxH = 8 + info.length*4.7 + 2 + acct.length*4.7;
+    doc.setFillColor(PANEL[0],PANEL[1],PANEL[2]); doc.rect(bx, by, R-bx, boxH, 'F');
+    doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(bx, by, R-bx, 0.7, 'F');
+    var iy = by + 6.2;
+    info.forEach(function(r){
+      font('bold', 8.3); color([140,140,132]); doc.text(r[0], bx+3, iy);
+      font(r[2] ? 'bold' : 'normal', 8.6); color(INK); doc.text(doc.splitTextToSize(String(r[1]), 40)[0] || '', R-3, iy, {align:'right'}); iy += 4.7;
+    });
+    doc.setDrawColor(RULE[0],RULE[1],RULE[2]); doc.setLineWidth(0.2); doc.line(bx+3, iy-2.4, R-3, iy-2.4);
+    iy += 2.2;
+    acct.forEach(function(r){
+      font('bold', 8.3); color([140,140,132]); doc.text(r[0], bx+3, iy);
+      font('normal', 8.6); color(INK); doc.text(String(r[1]), R-3, iy, {align:'right'}); iy += 4.7;
+    });
+    var y = Math.max(cy, by + boxH) + 9;
+    /* lines */
+    var C = {desc:L+2, qty:98, price:123, disc:142.5, tax:160, amt:R-1.5};
+    function tableHead(){
+      doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, y, W, 9.5, 'F');
+      font('bold', 7.4); doc.setTextColor(255,255,255);
+      spaced('DESCRIPTION', C.desc, y+5.9, null, 0.35);
+      spaced('QTY', C.qty, y+5.9, {align:'right'}, 0.35);
+      spaced('UNIT PRICE', C.price, y+5.9, {align:'right'}, 0.35);
+      spaced('DISC %', C.disc, y+5.9, {align:'right'}, 0.35);
+      spaced('VAT', C.tax, y+5.9, {align:'right'}, 0.35);
+      spaced('AMOUNT', C.amt, y+4.3, {align:'right'}, 0.35);
+      font('bold', 6.6); spaced(currency, C.amt, y+7.6, {align:'right'}, 0.35);
+      y += 9.5 + 5;
+    }
+    tableHead();
+    items.forEach(function(li){
+      font('normal', 8.8);
+      var dl = doc.splitTextToSize(String(li.description||''), 74);
+      var rowH = Math.max(8, dl.length*4 + 4);
+      if(y + rowH > 262){ footer(); doc.addPage(); y = 18; tableHead(); }
+      color(INK); doc.text(dl, C.desc, y);
+      doc.text(pdfQty(li.qty), C.qty, y, {align:'right'});
+      doc.text(pdfNum(li.unitPrice), C.price, y, {align:'right'});
+      doc.text(lineDiscPct(li) ? pdfNum(lineDiscPct(li)) : '0.00', C.disc, y, {align:'right'});
+      doc.text(vatOn ? (rate+'%') : 'No VAT', C.tax, y, {align:'right'});
+      doc.text(pdfNum(lineNet(li)), C.amt, y, {align:'right'});
+      y += rowH;
+      doc.setDrawColor(RULE[0],RULE[1],RULE[2]); doc.setLineWidth(0.2); doc.line(L, y-4, R, y-4);
+    });
+    /* totals */
+    if(y > 215){ footer(); doc.addPage(); y = 20; }
+    var lx = 158, vx = R-1.5, band = 96;
+    y += 2;
+    font('normal', 8.8); color(GREY);
+    doc.text('Subtotal', lx, y, {align:'right'}); color(INK); doc.text(pdfNum(c.subtotal), vx, y, {align:'right'});
+    if(vatOn){ y += 6; color(GREY); doc.text('Total VAT '+rate+'%', lx, y, {align:'right'}); color(INK); doc.text(pdfNum(c.vat), vx, y, {align:'right'}); }
+    y += 3.5;
+    doc.setDrawColor(MAROON[0],MAROON[1],MAROON[2]); doc.setLineWidth(0.3); doc.line(band, y, R, y);
+    y += 5.5;
+    font('bold', 9.5); color(MAROON); doc.text('Credit Note Total '+currency, lx, y, {align:'right'}); doc.text(pdfNum(c.total), vx, y, {align:'right'});
+    y += 6.5;
+    var applied = c.voided ? 0 : Number(c.total)||0;
+    font('normal', 8.8); color(GREY); doc.text('Less Credit Applied / Refunded', lx, y, {align:'right'}); color(INK); doc.text(pdfNum(applied), vx, y, {align:'right'});
+    y += 3.5;
+    doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(band, y, R-band, 11, 'F');
+    font('bold', 10.5); doc.setTextColor(255,255,255);
+    spaced('REMAINING CREDIT '+currency, lx, y+7, {align:'right'}, 0.1);
+    doc.text(pdfNum(round2((Number(c.total)||0) - applied)), vx, y+7, {align:'right'});
+    y += 11 + 5;
+    font('bold', 8); color([140,140,132]);
+    doc.text('Total Discount Given', lx, y, {align:'right'}); doc.text(pdfNum(linesDiscount(items)), vx, y, {align:'right'});
+    y += 10;
+    /* reason + applied-to note */
+    font('normal', 8.6);
+    var rl = doc.splitTextToSize(String(c.reason||''), W - 12);
+    var applyTxt = 'Credit applied to invoice '+(c.invoiceNumber||'')+(c.jobTitle ? (' ('+c.jobTitle+')') : '')+'.';
+    var boxH2 = 13 + rl.length*3.9 + 5;
+    if(y + boxH2 + 14 > 272){ footer(); doc.addPage(); y = 20; }
+    doc.setFillColor(PANEL[0],PANEL[1],PANEL[2]); doc.rect(L, y, W, boxH2, 'F');
+    doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, y, 1.2, boxH2, 'F');
+    font('bold', 7.6); color(MAROON); spaced('REASON FOR CREDIT', L+5, y+5.5, null, 0.6);
+    font('normal', 8.6); color(INK); doc.text(rl, L+5, y+10.5);
+    font('italic', 8); color(GREY); doc.text(applyTxt, L+5, y+10.5+rl.length*3.9+1.5);
+    y += boxH2 + 8;
+    if(c.voided){ font('bold', 9); doc.setTextColor(150,30,30); doc.text('VOID — '+(c.voidReason||''), L, y); y += 7; }
+    font('normal', 8.6); color(GREY);
+    var q1 = 'For any queries about this credit note, contact us on '+lh('docTel')+' or ';
+    doc.text(q1, L, y);
+    var q1w = doc.getTextWidth(q1);
+    font('bold', 8.6); color(MAROON); doc.text(lh('docEmail')+'.', L + q1w, y);
+    footer();
+    return {blob:doc.output('blob'), filename:c.number+'.pdf'};
+  }
+  function downloadCreditNote(id){
+    var c = (STATE.creditNotes||[]).find(function(x){ return x.id===id; }); if(!c) return;
+    var built = creditNotePdf(c); if(!built) return;
+    if(STATE.downloads){ STATE.downloads.save({filename:built.filename, data:built.blob}).catch(function(err){ if(!err||err.code!=='declined') fallbackDownload(built.blob, built.filename); }); }
+    else fallbackDownload(built.blob, built.filename);
+  }
+  function sendCreditNoteWhatsapp(id){
+    var c = (STATE.creditNotes||[]).find(function(x){ return x.id===id; }); if(!c) return;
+    var phone = waPhone(c.phone); if(!phone){ toast('No phone number on file for this customer'); return; }
+    if(!STATE.mcp){ toast('WhatsApp isn’t set up — download the credit note instead'); return; }
+    var built = creditNotePdf(c); if(!built) return;
+    STATE.creditForm = null;
+    STATE.openOrderId = c.orderId;
+    openOrderChat(phone);
+    attachFileToChat(phone, built.blob, built.filename, 'application/pdf', 'Hi '+(c.customerName||'there')+', here is credit note '+c.number+' for '+money(c.total)+' on invoice '+c.invoiceNumber+'.');
+    render();
+  }
+
+  /* ============================ exports tab ============================ */
+  function cnInRange(){
+    var from = STATE.cnExFrom||'', to = STATE.cnExTo||'';
+    if(from && to && from > to){ var t = from; from = to; to = t; }
+    return (STATE.creditNotes||[]).filter(function(c){ return !c.voided && (!from || c.date >= from) && (!to || c.date <= to); })
+      .sort(function(a,b){ return String(a.date).localeCompare(String(b.date)) || String(a.number).localeCompare(String(b.number)); });
+  }
+  // Same 44 columns as the Xero "SalesInvoices" file; Type = "Sales credit note".
+  function xeroCreditRows(c){
+    var o = STATE.orders.find(function(x){ return x.id===c.orderId; }) || {};
+    var cust = STATE.customers.find(function(x){ return x.id===(c.customerId||o.customerId); }) || {};
+    var vatOn = !!c.vatEnabled, rate = vatOn ? (Number(c.vatRate)||Number(STATE.config.vatRate)||0)/100 : 0;
+    var lines = (c.items||[]).map(function(li){ var amount = round2(lineNet(li)); return {desc:li.description||'', qty:Number(li.qty)||0, unit:Number(li.unitPrice)||0, disc:lineDiscPct(li), amount:amount, tax:round2(amount*rate)}; });
+    var taxTotal = round2(Number(c.vat)||lines.reduce(function(s,l){ return s+l.tax; },0));
+    var total = round2(Number(c.total)||0);
+    var reps = [c.designerName, c.technicianName, c.technician2Name].filter(Boolean).map(firstName).filter(function(n,i,a){ return a.indexOf(n)===i; }).join(' & ');
+    return lines.map(function(l){
+      var r = {};
+      XERO_INVOICE_COLUMNS.forEach(function(k){ r[k] = ''; });
+      r.ContactName = c.customerName || cust.name || '';
+      r.EmailAddress = cust.email || '';
+      var ipa = cust.postalAddress || {}, ida = cust.postalAddress ? customerDeliveryAddress(cust) : {};
+      r.POAddressLine1 = ipa.line1||''; r.POAddressLine2 = ipa.line2||''; r.POCity = ipa.city||''; r.PORegion = ipa.region||''; r.POPostalCode = ipa.postalCode||''; r.POCountry = addrHasData(ipa) ? (ipa.country||'') : '';
+      r.SAAddressLine1 = ida.line1||''; r.SAAddressLine2 = ida.line2||''; r.SACity = ida.city||''; r.SARegion = ida.region||''; r.SAPostalCode = ida.postalCode||''; r.SACountry = addrHasData(ida) ? (ida.country||'') : '';
+      r.InvoiceNumber = c.number;
+      r.Reference = c.invoiceNumber || '';
+      r.InvoiceDate = dmy(c.date);
+      r.DueDate = dmy(c.date);
+      r.Total = f4(total);
+      r.TaxTotal = f4(taxTotal);
+      r.InvoiceAmountPaid = f4(0);
+      r.InvoiceAmountDue = f4(total);
+      r.Description = l.desc;
+      r.Quantity = f4(l.qty);
+      r.UnitAmount = f4(l.unit);
+      r.Discount = l.disc ? f4(l.disc) : '';
+      r.LineAmount = f4(l.amount);
+      r.AccountCode = STATE.config.accountCode || '200';
+      r.TaxType = vatOn ? (STATE.config.xeroTaxVat || 'Standard Rate Sales') : (STATE.config.xeroTaxNoVat || 'No VAT');
+      r.TaxAmount = f4(l.tax);
+      r.TrackingName1 = STATE.config.xeroTrackingName || 'Sales Rep';
+      r.TrackingOption1 = reps;
+      r.Currency = STATE.config.currency || 'ZAR';
+      r.Type = 'Sales credit note';
+      r.Sent = 'Unsent';
+      r.Status = STATE.cnExStatus || 'Draft';
+      return r;
+    });
+  }
+  function exportCreditNotesXero(){
+    if(!isOwnerRole()) return;
+    var list = cnInRange();
+    if(!list.length){ toast('No credit notes in that date range'); return; }
+    var out = [XERO_INVOICE_COLUMNS.join(',')];
+    list.forEach(function(c){ xeroCreditRows(c).forEach(function(r){ out.push(XERO_INVOICE_COLUMNS.map(function(k){ return csvCell(r[k]); }).join(',')); }); });
+    var csv = out.join('\r\n') + '\r\n';
+    var tag = (STATE.cnExFrom||STATE.cnExTo) ? ((STATE.cnExFrom||'start')+'_to_'+(STATE.cnExTo||todayIso())+'_') : '';
+    var filename = 'SalesCreditNotes_DsignX_'+tag+todayIso()+'.csv';
+    var done = function(){ toast('Exported '+list.length+' credit note'+(list.length===1?'':'s')); };
+    if(STATE.downloads){
+      STATE.downloads.save({filename:filename, data:csv}).then(done).catch(function(e){
+        if(e && e.code==='declined'){ toast('Export cancelled'); } else { fallbackDownload(new Blob([csv],{type:'text/csv'}), filename); done(); }
+      });
+    } else { fallbackDownload(new Blob([csv],{type:'text/csv'}), filename); done(); }
+  }
+  function renderCreditExportPanel(){
+    var list = cnInRange();
+    var lineCount = 0, grand = 0;
+    list.forEach(function(c){ lineCount += (c.items||[]).length; grand += Number(c.total)||0; });
+    var statusOpts = ['Draft','Awaiting Approval','Awaiting Payment'].map(function(v){ return '<option'+((STATE.cnExStatus||'Draft')===v?' selected':'')+'>'+v+'</option>'; }).join('');
+    return '<div class="panel">' +
+      '<div class="section-label">Export credit notes (Xero sales invoice template)</div>' +
+      '<div class="hint" style="margin:-4px 0 12px;">Same 44 columns as the invoice export, one row per line, with Type “Sales credit note”. The credit note number goes in InvoiceNumber and the invoice it credits in Reference. Voided credit notes are left out.</div>' +
+      '<div class="section-label" style="margin-bottom:6px;">Credit note dates to export</div>' +
+      '<div class="filterbar" style="margin-bottom:10px;">' + invExportPresets().map(function(p){
+        var on = (STATE.cnExFrom||'')===p.from && (STATE.cnExTo||'')===p.to;
+        return '<button type="button" class="chip-toggle'+(on?' active':'')+'" data-action="cn-ex-preset" data-from="'+p.from+'" data-to="'+p.to+'">'+p.label+'</button>';
+      }).join('') + '</div>' +
+      '<div class="field-row">' +
+        '<div class="field"><label for="cnExFrom">From</label><input type="date" id="cnExFrom" value="'+escapeHtml(STATE.cnExFrom||'')+'"></div>' +
+        '<div class="field"><label for="cnExTo">To</label><input type="date" id="cnExTo" value="'+escapeHtml(STATE.cnExTo||'')+'"></div>' +
+      '</div>' +
+      '<div class="field"><label for="cnExStatus">Import into Xero as</label><select id="cnExStatus" style="max-width:220px;">'+statusOpts+'</select><div class="hint">Tax types and tracking name are the same as for invoices.</div></div>' +
+      '<div style="background:var(--surface-2); border-radius:var(--radius-s); padding:10px 12px; font-size:12.5px; color:var(--ink-soft); margin-bottom:12px;">' +
+        (list.length ? ('<strong style="color:var(--ink);">'+list.length+' credit note'+(list.length===1?'':'s')+'</strong> &middot; '+lineCount+' line'+(lineCount===1?'':'s')+' &middot; '+money(round2(grand))+' incl. VAT') : 'No credit notes in these dates.') +
+      '</div>' +
+      '<button class="btn btn-primary btn-sm" data-action="export-cn-xero"'+(list.length?'':' disabled')+'>Download CSV</button>' +
+    '</div>';
+  }
+  function renderXeroDefaultsPanel(){
+    return '<div class="panel">' +
+      '<div class="section-label">Xero export defaults</div>' +
+      '<div class="field-row">' +
+        '<div class="field"><label for="cfgAccount">Account code</label><input type="text" id="cfgAccount" value="'+escapeHtml(STATE.config.accountCode||'')+'"></div>' +
+        '<div class="field"><label for="cfgTax">Tax type</label><input type="text" id="cfgTax" value="'+escapeHtml(STATE.config.taxType||'')+'"></div>' +
+      '</div>' +
+      '<div class="field"><label for="cfgCurrency">Currency</label><input type="text" id="cfgCurrency" style="max-width:110px" value="'+escapeHtml(STATE.config.currency||'ZAR')+'"></div>' +
+      '<button class="btn btn-primary btn-sm" data-action="save-xero-defaults">Save</button>' +
+    '</div>';
+  }
+  function renderExportsTab(){
+    return '<div class="topline"><div><h1>Exports</h1><div class="sub">Download invoices, credit notes, customers and receipts for Xero and your bank statement import</div></div></div>' +
+      '<div class="two-col">' +
+        '<div>' + renderInvoiceExportPanel() + renderCreditExportPanel() + '</div>' +
+        '<div>' + renderReceiptExportPanel() + renderCustomerExportPanel() + renderXeroDefaultsPanel() + '</div>' +
+      '</div>';
+  }
+
+  /* ============================ age analysis ============================ */
+  var AGE_BUCKETS = [{key:'b0', label:'Current', note:'0–30 days'}, {key:'b30', label:'31–60 days'}, {key:'b60', label:'61–90 days'}, {key:'b90', label:'91–120 days'}, {key:'b120', label:'120+ days'}];
+  function daysBetween(a, b){ return Math.round((new Date(b+'T00:00:00') - new Date(a+'T00:00:00')) / 86400000); }
+  function ageBucket(days){ return days <= 30 ? 'b0' : days <= 60 ? 'b30' : days <= 90 ? 'b60' : days <= 120 ? 'b90' : 'b120'; }
+  function ageAsAt(){ if(!STATE.ageAsAt) STATE.ageAsAt = todayIso(); return STATE.ageAsAt; }
+  function ageInvoices(asAt){
+    return STATE.orders.filter(function(o){ return !o.quoteOnly && (hasInvoiceDoc(o) || isSale(o)); }).map(function(o){
+      var date = invoiceDateOf(o);
+      if(date > asAt) return null;
+      var gross = invoiceGross(o);
+      var paid = round2(STATE.receipts.filter(function(r){ return r.orderId===o.id && !r.voided && String(r.date) <= asAt; }).reduce(function(s,r){ return s + (Number(r.amount)||0); }, 0));
+      var credit = round2((STATE.creditNotes||[]).filter(function(c){ return c.orderId===o.id && !c.voided && String(c.date) <= asAt; }).reduce(function(s,c){ return s + (Number(c.total)||0); }, 0));
+      var bal = round2(gross - paid - credit);
+      if(!(bal > 0.004)) return null;
+      var due = addDays(date, o.invoiceDueDays!=null ? Number(o.invoiceDueDays) : (Number(STATE.config.invoiceDueDays)||7));
+      var days = Math.max(0, daysBetween(date, asAt));
+      return {o:o, number:o.invoiceNumber || jobNo(o.id), date:date, due:due, days:days, overdue:Math.max(0, daysBetween(due, asAt)), gross:gross, paid:paid, credit:credit, balance:bal, bucket:ageBucket(days)};
+    }).filter(Boolean);
+  }
+  function ageAnalysis(asAt){
+    var inv = ageInvoices(asAt), map = {};
+    inv.forEach(function(x){
+      var o = x.o, k = o.customerId || ('n:'+String(o.customerName||'').trim().toLowerCase());
+      var cust = STATE.customers.find(function(c){ return c.id===o.customerId; }) || {};
+      if(!map[k]) map[k] = {key:k, name:o.customerName || cust.name || 'Customer', phone:o.phone || cust.phone || '', invoices:[], b0:0, b30:0, b60:0, b90:0, b120:0, total:0, oldest:0};
+      var g = map[k];
+      g.invoices.push(x); g[x.bucket] = round2(g[x.bucket] + x.balance); g.total = round2(g.total + x.balance); g.oldest = Math.max(g.oldest, x.days);
+    });
+    var rows = Object.keys(map).map(function(k){ var g = map[k]; g.invoices.sort(function(a,b){ return a.date.localeCompare(b.date); }); return g; })
+      .sort(function(a,b){ return b.total - a.total || a.name.localeCompare(b.name); });
+    var t = {b0:0, b30:0, b60:0, b90:0, b120:0, total:0, count:inv.length};
+    rows.forEach(function(g){ AGE_BUCKETS.forEach(function(b){ t[b.key] = round2(t[b.key] + g[b.key]); }); t.total = round2(t.total + g.total); });
+    return {rows:rows, totals:t};
+  }
+  function pctOf(part, whole){ return whole ? Math.round(part / whole * 1000) / 10 : 0; }
+  function renderAgeReport(){
+    var asAt = ageAsAt(), a = ageAnalysis(asAt), t = a.totals;
+    var cell = function(v){ return '<td class="num">'+(v ? money(v) : '<span style="color:var(--ink-faint);">—</span>')+'</td>'; };
+    var body = a.rows.length ? a.rows.map(function(g){
+      var open = STATE.ageOpen===g.key;
+      var head = '<tr class="row-btn" data-action="age-toggle" data-id="'+escapeHtml(g.key)+'"><td><strong>'+(open?'▾ ':'▸ ')+escapeHtml(g.name)+'</strong><div class="hint" style="margin:0;">'+g.invoices.length+' invoice'+(g.invoices.length===1?'':'s')+(g.phone?' &middot; '+escapeHtml(g.phone):'')+'</div></td>' +
+        AGE_BUCKETS.map(function(b){ return cell(g[b.key]); }).join('') + '<td class="num"><strong>'+money(g.total)+'</strong></td></tr>';
+      if(!open) return head;
+      return head + g.invoices.map(function(x){
+        return '<tr class="age-inv row-btn" data-action="open-order" data-id="'+x.o.id+'"><td style="padding-left:26px;"><span class="mono">'+escapeHtml(x.number)+'</span> &middot; '+shortDate(x.date)+' &middot; '+x.days+' day'+(x.days===1?'':'s')+(x.overdue?(' &middot; <span style="color:#a12222;">'+x.overdue+' overdue</span>'):'')+
+          '<div class="hint" style="margin:0;">Invoice '+money(x.gross)+(x.paid?' &middot; paid '+money(x.paid):'')+(x.credit?' &middot; credited '+money(x.credit):'')+'</div></td>' +
+          AGE_BUCKETS.map(function(b){ return cell(b.key===x.bucket ? x.balance : 0); }).join('') + '<td class="num">'+money(x.balance)+'</td></tr>';
+      }).join('');
+    }).join('') + '<tr class="total-row"><td>Total &middot; '+a.rows.length+' customer'+(a.rows.length===1?'':'s')+'</td>'+AGE_BUCKETS.map(function(b){ return '<td class="num">'+money(t[b.key])+'</td>'; }).join('')+'<td class="num">'+money(t.total)+'</td></tr>' +
+      '<tr><td style="color:var(--ink-soft);">% of total</td>'+AGE_BUCKETS.map(function(b){ return '<td class="num" style="color:var(--ink-soft);">'+pctOf(t[b.key], t.total)+'%</td>'; }).join('')+'<td class="num" style="color:var(--ink-soft);">100%</td></tr>'
+      : '<tr><td colspan="7" class="empty-note">No unpaid invoices as at '+fullDate(asAt)+'.</td></tr>';
+    var over60 = round2(t.b60 + t.b90 + t.b120);
+    return '<div class="topline"><div><h1>Reports</h1><div class="sub">Customer age analysis &middot; unpaid invoices as at '+fullDate(asAt)+'</div></div>' +
+        '<div style="display:flex; gap:8px;"><button class="btn btn-sm" data-action="age-xlsx"'+(a.rows.length?'':' disabled')+'>Download Excel</button><button class="btn btn-primary btn-sm" data-action="age-pdf"'+(a.rows.length?'':' disabled')+'>Download PDF</button></div></div>' +
+      reportSwitcher() +
+      '<div class="panel" style="padding:12px 14px; margin-bottom:16px;"><div class="period-bar">' +
+        '<label for="ageAsAt" style="margin:0;">As at</label><input type="date" id="ageAsAt" value="'+escapeHtml(asAt)+'" style="width:auto;">' +
+        '<button type="button" class="chip-toggle'+(asAt===todayIso()?' active':'')+'" data-action="age-today">Today</button>' +
+        '<span class="hint" style="margin:0 0 0 8px;">Invoices are aged from the invoice date. Payments and credit notes dated after the “as at” date are not counted.</span>' +
+      '</div></div>' +
+      '<div class="tiles">' +
+        tile('Total outstanding', money(t.total), t.count+' unpaid invoice'+(t.count===1?'':'s')) +
+        tile('Current (0–30 days)', money(t.b0), pctOf(t.b0, t.total)+'% of the total') +
+        tile('Older than 60 days', money(over60), pctOf(over60, t.total)+'% of the total') +
+        tile('Customers owing', String(a.rows.length), a.rows[0] ? ('Largest: '+escapeHtml(a.rows[0].name)) : 'Nobody owes anything') +
+      '</div>' +
+      '<div class="panel"><div class="tbl-wrap"><table class="age-table"><thead><tr><th>Customer</th>'+AGE_BUCKETS.map(function(b){ return '<th class="num">'+b.label+(b.note?'<div style="font-weight:400; font-size:10.5px;">'+b.note+'</div>':'')+'</th>'; }).join('')+'<th class="num">Total due</th></tr></thead><tbody>'+body+'</tbody></table></div>' +
+      '<div class="hint">Click a customer to see their invoices; click an invoice to open the job.</div></div>';
+  }
+  function ageReportXlsx(){
+    var asAt = ageAsAt(), a = ageAnalysis(asAt), t = a.totals;
+    var H = function(x){ return {v:x, s:4}; }, B = function(v){ return {v:v, s:3}; };
+    var sum = [[H('Customer'),H('Phone'),H('Invoices')].concat(AGE_BUCKETS.map(function(b){ return H(b.label); })).concat([H('Total due'),H('Oldest (days)')])];
+    a.rows.forEach(function(g){ sum.push([g.name, g.phone, {v:g.invoices.length, s:5}].concat(AGE_BUCKETS.map(function(b){ return g[b.key]; })).concat([B(g.total), {v:g.oldest, s:5}])); });
+    sum.push([]);
+    sum.push([{v:'Total', s:1}, '', {v:t.count, s:5}].concat(AGE_BUCKETS.map(function(b){ return B(t[b.key]); })).concat([B(t.total)]));
+    sum.push([{v:'% of total', s:1}, '', ''].concat(AGE_BUCKETS.map(function(b){ return pctOf(t[b.key], t.total)+'%'; })).concat(['100%']));
+    var det = [[H('Customer'),H('Invoice'),H('Job'),H('Invoice date'),H('Due date'),H('Age (days)'),H('Days overdue'),H('Age bucket'),H('Invoice total'),H('Paid'),H('Credited'),H('Balance due')]];
+    a.rows.forEach(function(g){ g.invoices.forEach(function(x){
+      var b = AGE_BUCKETS.find(function(z){ return z.key===x.bucket; });
+      det.push([g.name, x.number, x.o.jobNumber||jobNo(x.o.id), x.date, x.due, {v:x.days, s:5}, {v:x.overdue, s:5}, b.label, x.gross, x.paid, x.credit, B(x.balance)]);
+    }); });
+    var blob = buildXlsx([
+      {name:'Age analysis', widths:[30,16,10,14,14,14,14,14,14,13], rows:[[{v:'Customer age analysis as at '+fullDate(asAt), s:1}], []].concat(sum)},
+      {name:'Invoices', widths:[30,14,12,12,12,10,12,13,14,12,12,14], rows:det}
+    ]);
+    var name = 'DsignX-age-analysis-'+asAt+'.xlsx';
+    if(STATE.downloads){ STATE.downloads.save({filename:name, data:blob}).catch(function(){ fallbackDownload(blob, name); }); } else fallbackDownload(blob, name);
+  }
+  function ageReportPdf(){
+    if(!window.jspdf || !window.jspdf.jsPDF){ toast('PDF tools are still loading — try again in a moment'); return; }
+    var asAt = ageAsAt(), a = ageAnalysis(asAt), t = a.totals;
+    var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4', orientation:'landscape'});
+    var L = 12, R = 285, MAROON = [78,9,40];
+    var cols = [['CUSTOMER / INVOICE',L+1,'l'],['CURRENT',L+118,'r'],['31–60 DAYS',L+143,'r'],['61–90 DAYS',L+168,'r'],['91–120 DAYS',L+193,'r'],['120+ DAYS',L+218,'r'],['TOTAL DUE',L+246,'r'],['OLDEST',L+272,'r']];
+    var header = function(){
+      try { doc.addImage(LOGO_PDF_DATA_URL, 'PNG', L, 8, 36, 36*(358/800)); } catch(e){}
+      doc.setFont('helvetica','bold'); doc.setFontSize(10.5); doc.setTextColor(MAROON[0],MAROON[1],MAROON[2]); doc.text(lh('docCompanyName'), R, 13, {align:'right'});
+      doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(95,99,88); doc.text(lh('docAddress'), R, 17.5, {align:'right'});
+      doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, 26, R-L, 0.7, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.setTextColor(MAROON[0],MAROON[1],MAROON[2]); doc.text('CUSTOMER AGE ANALYSIS', L, 35);
+      doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(60,60,60); doc.text('Unpaid invoices as at '+fullDate(asAt)+'   ·   Aged from invoice date   ·   Generated '+fullDate(todayIso()), L, 40.5);
+      var y = 45;
+      doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, y, R-L, 7.5, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(255,255,255);
+      cols.forEach(function(c){ doc.text(c[0], c[1], y+5, c[2]==='r'?{align:'right'}:{}); });
+      return y + 7.5;
+    };
+    var n = function(v){ return v ? pdfNum(v) : '—'; };
+    var y = header();
+    a.rows.forEach(function(g, i){
+      var need = 7 + g.invoices.length*5.2;
+      if(y + Math.min(need, 20) > 190){ doc.addPage(); y = header(); }
+      doc.setFillColor(246,245,241); doc.rect(L, y, R-L, 7, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(8.4); doc.setTextColor(43,43,43);
+      doc.text(doc.splitTextToSize(g.name+(g.phone?('  ·  '+g.phone):''), 100)[0], cols[0][1], y+4.8);
+      [g.b0, g.b30, g.b60, g.b90, g.b120, g.total].forEach(function(v, k){ doc.text(n(v), cols[k+1][1], y+4.8, {align:'right'}); });
+      doc.text(g.oldest+'d', cols[7][1], y+4.8, {align:'right'});
+      y += 7;
+      g.invoices.forEach(function(x){
+        if(y + 5.2 > 192){ doc.addPage(); y = header(); }
+        doc.setFont('helvetica','normal'); doc.setFontSize(7.6); doc.setTextColor(80,80,80);
+        doc.text(x.number+'   '+fullDate(x.date)+'   due '+fullDate(x.due)+(x.credit?('   credited '+pdfNum(x.credit)):'')+(x.paid?('   paid '+pdfNum(x.paid)):''), cols[0][1]+4, y+3.8);
+        AGE_BUCKETS.forEach(function(b, k){ if(b.key===x.bucket) doc.text(pdfNum(x.balance), cols[k+1][1], y+3.8, {align:'right'}); });
+        doc.text(pdfNum(x.balance), cols[6][1], y+3.8, {align:'right'});
+        doc.text(x.days+'d', cols[7][1], y+3.8, {align:'right'});
+        y += 5.2;
+      });
+      y += 1.5;
+    });
+    if(y + 16 > 192){ doc.addPage(); y = header(); }
+    doc.setDrawColor(MAROON[0],MAROON[1],MAROON[2]); doc.setLineWidth(0.4); doc.line(L, y+0.5, R, y+0.5);
+    doc.setFont('helvetica','bold'); doc.setFontSize(8.4); doc.setTextColor(43,43,43);
+    doc.text('TOTAL  ·  '+a.rows.length+' customers  ·  '+t.count+' invoices', cols[0][1], y+5.5);
+    [t.b0, t.b30, t.b60, t.b90, t.b120, t.total].forEach(function(v, k){ doc.text(pdfNum(v), cols[k+1][1], y+5.5, {align:'right'}); });
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.8); doc.setTextColor(95,99,88);
+    doc.text('% of total', cols[0][1], y+10.5);
+    [t.b0, t.b30, t.b60, t.b90, t.b120].forEach(function(v, k){ doc.text(pctOf(v, t.total)+'%', cols[k+1][1], y+10.5, {align:'right'}); });
+    doc.text('100%', cols[6][1], y+10.5, {align:'right'});
+    doc.text('Amounts in '+(STATE.config.currency||'ZAR')+' incl. VAT, after payments and credit notes.', L, Math.min(y+17, 196));
+    var blob = doc.output('blob'), name = 'DsignX-age-analysis-'+asAt+'.pdf';
+    if(STATE.downloads){ STATE.downloads.save({filename:name, data:blob}).catch(function(){ fallbackDownload(blob, name); }); } else fallbackDownload(blob, name);
+  }
+
+  /* ============================ quote success statistics ============================ */
+  var WON_STATUSES = ['in_progress','ready','delivered','invoiced'];
+  function quoteValidUntil(o){ return addDays(String(o.quoteGeneratedAt).slice(0,10), Number(o.quoteValidDays)||Number(STATE.config.quoteValidityDays)||14); }
+  function quoteOutcome(o){
+    if(hasInvoiceDoc(o) || isSale(o) || WON_STATUSES.indexOf(o.status)>=0 || orderPaid(o.id) > 0) return 'won';
+    return quoteValidUntil(o) < todayIso() ? 'lost' : 'open';
+  }
+  function quoteValueEx(o){ return round2((o.lineItems||[]).length ? (o.lineItems||[]).reduce(function(s,li){ return s + lineNet(li); }, 0) : (Number(o.quoteAmount)||0)); }
+  function quotesIssued(r){
+    return STATE.orders.filter(function(o){
+      if(!o.quoteNumber || !o.quoteGeneratedAt) return false;
+      var d = String(o.quoteGeneratedAt).slice(0,10);
+      return (!r.from || d >= r.from) && (!r.to || d <= r.to);
+    }).map(function(o){ return {o:o, date:String(o.quoteGeneratedAt).slice(0,10), outcome:quoteOutcome(o), value:quoteValueEx(o), designer:o.designerName || 'Unassigned'}; })
+      .sort(function(a,b){ return a.date.localeCompare(b.date) || String(a.o.quoteNumber).localeCompare(String(b.o.quoteNumber)); });
+  }
+  function qsSummarise(list){
+    var s = {count:list.length, won:0, lost:0, open:0, value:0, wonValue:0, lostValue:0, openValue:0};
+    list.forEach(function(q){ s[q.outcome]++; s.value += q.value; s[q.outcome+'Value'] += q.value; });
+    ['value','wonValue','lostValue','openValue'].forEach(function(k){ s[k] = round2(s[k]); });
+    s.rate = pctOf(s.won, s.won + s.lost);           // of quotes that have been decided
+    s.valueRate = pctOf(s.wonValue, s.wonValue + s.lostValue);
+    s.conversion = pctOf(s.won, s.count);             // of every quote issued
+    return s;
+  }
+  function qsGroups(list, keyFn){
+    var m = {}, order = [];
+    list.forEach(function(q){ var k = keyFn(q); if(!m[k]){ m[k] = []; order.push(k); } m[k].push(q); });
+    return order.map(function(k){ return {key:k, s:qsSummarise(m[k])}; });
+  }
+  var OUTCOME_LABEL = {won:'Accepted', lost:'Expired / not accepted', open:'Open — still valid'};
+  function renderQuoteStats(range){
+    var list = quotesIssued(range), s = qsSummarise(list);
+    var byDesigner = qsGroups(list, function(q){ return q.designer; }).sort(function(a,b){ return b.s.count - a.s.count; });
+    var byMonth = qsGroups(list, function(q){ return q.date.slice(0,7); });
+    var gRows = function(groups, labelFn){
+      return groups.length ? groups.map(function(g){ return '<tr><td>'+escapeHtml(labelFn(g.key))+'</td><td class="num">'+g.s.count+'</td><td class="num">'+g.s.won+'</td><td class="num">'+g.s.lost+'</td><td class="num">'+g.s.open+'</td><td class="num"><strong>'+(g.s.won+g.s.lost ? g.s.rate+'%' : '—')+'</strong></td><td class="num">'+money(g.s.value)+'</td><td class="num">'+money(g.s.wonValue)+'</td></tr>'; }).join('')
+        : '<tr><td colspan="8" class="empty-note">No quotations issued in this period.</td></tr>';
+    };
+    var head = '<thead><tr><th></th><th class="num">Issued</th><th class="num">Accepted</th><th class="num">Expired</th><th class="num">Open</th><th class="num">Success rate</th><th class="num">Quoted value</th><th class="num">Accepted value</th></tr></thead>';
+    var chip = {won:'pay-paid', lost:'pay-unpaid', open:'pay-part'};
+    var qRows = list.length ? list.slice().reverse().map(function(q){
+      return '<tr class="row-btn" data-action="open-order" data-id="'+q.o.id+'"><td class="mono">'+escapeHtml(q.o.quoteNumber)+'</td><td>'+shortDate(q.date)+'</td><td>'+escapeHtml(q.o.customerName||'')+'</td><td>'+escapeHtml(q.o.title||'')+'</td><td>'+escapeHtml(q.designer)+'</td><td class="num">'+money(q.value)+'</td><td><span class="pay-chip '+chip[q.outcome]+'">'+OUTCOME_LABEL[q.outcome]+'</span></td></tr>';
+    }).join('') : '<tr><td colspan="7" class="empty-note">No quotations issued in this period.</td></tr>';
+    var bar = '<div class="panel" style="padding:12px 14px; margin-bottom:16px;"><div class="period-bar">' +
+      reportPresets().map(function(p){ var on = range.from===p.from && range.to===p.to; return '<button type="button" class="chip-toggle'+(on?' active':'')+'" data-action="report-preset" data-from="'+p.from+'" data-to="'+p.to+'">'+p.label+'</button>'; }).join('') +
+      '<span style="flex:1"></span>' +
+      '<label for="reportFrom" style="margin:0;">From</label><input type="date" id="reportFrom" value="'+escapeHtml(range.from||'')+'" style="width:auto;">' +
+      '<label for="reportTo" style="margin:0;">To</label><input type="date" id="reportTo" value="'+escapeHtml(range.to||'')+'" style="width:auto;">' +
+      '</div></div>';
+    var meter = '<div class="qs-meter" title="Accepted / expired / open"><span class="qs-won" style="width:'+pctOf(s.won, s.count)+'%"></span><span class="qs-open" style="width:'+pctOf(s.open, s.count)+'%"></span><span class="qs-lost" style="width:'+pctOf(s.lost, s.count)+'%"></span></div>';
+    return '<div class="topline"><div><h1>Reports</h1><div class="sub">Quotation success rate &middot; quotes issued '+rangeLabel(range)+'</div></div>' +
+        '<div style="display:flex; gap:8px;"><button class="btn btn-primary btn-sm" data-action="qs-xlsx"'+(list.length?'':' disabled')+'>Download Excel</button></div></div>' +
+      reportSwitcher() + bar +
+      '<div class="tiles">' +
+        tile('Success rate', (s.won+s.lost ? s.rate+'%' : '—'), s.won+' accepted of '+(s.won+s.lost)+' decided') +
+        tile('Quotes issued', String(s.count), money(s.value)+' excl. VAT') +
+        tile('Accepted value', money(s.wonValue), (s.wonValue+s.lostValue ? s.valueRate+'% of decided value' : 'Nothing decided yet')) +
+        tile('Still open', String(s.open), money(s.openValue)+' awaiting a decision') +
+      '</div>' +
+      '<div class="panel">' + meter +
+        '<div class="hint" style="margin-top:8px;"><span class="qs-key qs-won"></span>Accepted '+s.won+' &nbsp; <span class="qs-key qs-open"></span>Open '+s.open+' &nbsp; <span class="qs-key qs-lost"></span>Expired '+s.lost+' &nbsp;&middot;&nbsp; Overall conversion '+s.conversion+'% of all quotes issued.</div>' +
+        '<div class="hint">A quote counts as <strong>accepted</strong> once the job is in progress, a deposit or payment is received, or it is invoiced. It counts as <strong>expired</strong> when its validity date has passed without that. The success rate leaves out quotes that are still open.</div>' +
+      '</div>' +
+      '<div class="panel"><div class="section-label">By designer</div><div class="tbl-wrap"><table>'+head+'<tbody>'+gRows(byDesigner, function(k){ return k; })+'</tbody></table></div></div>' +
+      '<div class="panel"><div class="section-label">By month</div><div class="tbl-wrap"><table>'+head+'<tbody>'+gRows(byMonth, monthLabel)+'</tbody></table></div></div>' +
+      '<div class="panel"><div class="section-label">Quotations issued</div><div class="tbl-wrap"><table><thead><tr><th>Quote</th><th>Date</th><th>Customer</th><th>Job</th><th>Designer</th><th class="num">Value excl. VAT</th><th>Outcome</th></tr></thead><tbody>'+qRows+'</tbody></table></div></div>';
+  }
+  function quoteStatsXlsx(){
+    var range = reportRange(), list = quotesIssued(range), s = qsSummarise(list);
+    var H = function(x){ return {v:x, s:4}; }, I = function(v){ return {v:v, s:5}; };
+    var sum = [[{v:'Quotation success rate — quotes issued '+rangeLabel(range), s:1}], [],
+      [H('Measure'), H('Count'), H('Value excl. VAT')],
+      ['Quotes issued', I(s.count), s.value], ['Accepted', I(s.won), s.wonValue], ['Expired / not accepted', I(s.lost), s.lostValue], ['Open — still valid', I(s.open), s.openValue], [],
+      [{v:'Success rate (accepted ÷ decided)', s:1}, (s.won+s.lost ? s.rate+'%' : '—'), (s.wonValue+s.lostValue ? s.valueRate+'%' : '—')],
+      [{v:'Overall conversion (accepted ÷ issued)', s:1}, s.conversion+'%', pctOf(s.wonValue, s.value)+'%']];
+    var grp = function(groups, labelFn){
+      var rows = [[H(''), H('Issued'), H('Accepted'), H('Expired'), H('Open'), H('Success rate'), H('Quoted value'), H('Accepted value')]];
+      groups.forEach(function(g){ rows.push([labelFn(g.key), I(g.s.count), I(g.s.won), I(g.s.lost), I(g.s.open), (g.s.won+g.s.lost ? g.s.rate+'%' : '—'), g.s.value, g.s.wonValue]); });
+      return rows;
+    };
+    var quotes = [[H('Quote'), H('Date'), H('Valid until'), H('Customer'), H('Job'), H('Designer'), H('Value excl. VAT'), H('Outcome'), H('Invoice')]];
+    list.forEach(function(q){ quotes.push([q.o.quoteNumber, q.date, quoteValidUntil(q.o), q.o.customerName||'', q.o.title||'', q.designer, q.value, OUTCOME_LABEL[q.outcome], q.o.invoiceNumber && q.o.invoiceGeneratedAt ? q.o.invoiceNumber : '']); });
+    var blob = buildXlsx([
+      {name:'Summary', widths:[40,12,16], rows:sum},
+      {name:'By designer', widths:[22,9,10,9,8,13,15,15], rows:grp(qsGroups(list, function(q){ return q.designer; }), function(k){ return k; })},
+      {name:'By month', widths:[18,9,10,9,8,13,15,15], rows:grp(qsGroups(list, function(q){ return q.date.slice(0,7); }), monthLabel)},
+      {name:'Quotes', widths:[14,12,12,28,30,16,15,22,14], rows:quotes}
+    ]);
+    var name = 'DsignX-quote-success-'+(range.from||'start')+'-to-'+(range.to||todayIso())+'.xlsx';
+    if(STATE.downloads){ STATE.downloads.save({filename:name, data:blob}).catch(function(){ fallbackDownload(blob, name); }); } else fallbackDownload(blob, name);
+  }
+
   /* ============================ boot ============================ */
   if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', init); } else { init(); }
 })();

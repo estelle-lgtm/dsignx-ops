@@ -555,3 +555,12 @@ img{max-width:100%}
     background:var(--surface-2); border:1px solid var(--line); border-radius:99px; font-size:12px;
     padding:5px 10px; color:var(--ink); font-family:inherit;
   }
+
+/* credit notes & reports (update 18) */
+.qs-meter { display:flex; height:14px; border-radius:7px; overflow:hidden; background:var(--surface-2); }
+.qs-meter span { display:block; height:100%; }
+.qs-won { background:#2f7d4f; } .qs-open { background:#d9a441; } .qs-lost { background:#b0473f; }
+.qs-key { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
+.age-table td, .age-table th { white-space:nowrap; }
+.age-table td:first-child { white-space:normal; min-width:200px; }
+.age-table tr.age-inv td { font-size:12.5px; background:var(--surface-2); }

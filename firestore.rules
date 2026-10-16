@@ -108,6 +108,16 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Credit notes: staff can see them (they reduce what is owed on an invoice); only the owner issues one.
+    // Never deleted: the owner can mark one void instead.
+    match /creditNotes/{id} {
+      allow read: if isStaff();
+      allow create: if isOwner();
+      allow update: if isOwner()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['voided', 'voidReason', 'voidedAt']);
+      allow delete: if false;
+    }
+
     // Daily cash-ups. Designers can see them (a cashed-up day can't take new receipts);
     // only the owner and people allowed to cash up can save one; only the owner can reopen (delete) one.
     match /cashups/{date} {
