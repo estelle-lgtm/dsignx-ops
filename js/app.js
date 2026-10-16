@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-10-16.19';
+import './platform.js?v=2026-10-16.21';
 
 (function(){
   "use strict";
@@ -17,11 +17,19 @@ import './platform.js?v=2026-10-16.19';
   var STATUSES = [
     {key:'new', label:'New'},
     {key:'quoted', label:'Quoted'},
-    {key:'in_progress', label:'In Progress'},
+    {key:'designing', label:'Designing'},
+    {key:'printing', label:'Printing'},
+    {key:'production', label:'Production'},
+    {key:'invoiced', label:'Invoiced'},
     {key:'ready', label:'Ready'},
-    {key:'delivered', label:'Delivered'},
-    {key:'invoiced', label:'Invoiced'}
+    {key:'collected', label:'Collected'}
   ];
+  // Jobs saved under the old flow: "In Progress" starts at Designing, "Delivered" becomes Collected.
+  var LEGACY_STATUS = {in_progress:'designing', delivered:'collected'};
+  function normStatus(st){ return LEGACY_STATUS[st] || st; }
+  var DONE_STATUSES = ['ready','collected'];        // work finished — not overdue
+  var AFTER_INVOICE = ['invoiced','ready','collected'];
+  var COLLECTED_SHOW_DAYS = 14;
   var SOURCES = ['WhatsApp','Phone call','Instagram DM','Walk-in','Email','Other'];
   var TEAM_ROLES = [
     {key:'designer', label:'Designer', plural:'Designers'},
@@ -435,11 +443,11 @@ import './platform.js?v=2026-10-16.19';
       {id:'c3', name:'Lindiwe Mokoena', phone:'+27835558899', email:'', notes:'', createdAt:iso(-5)}
     ];
     STATE.orders = [
-      {id:'o1', customerId:'c1', customerName:'Riaan Pretorius', phone:'+27821234567', category:'signage', title:'Shopfront fascia sign', description:'3m x 0.6m light box fascia, existing logo file', qty:1, status:'in_progress', quoteAmount:4200, invoiced:false, invoiceNumber:'', dueDate:iso(3), notes:'Confirm bracket colour with Riaan.', source:'WhatsApp', attachmentIds:[], designerId:'t1', designerName:'Thabo Nkosi', technicianId:'t2', technicianName:'Sipho Mahlangu', createdAt:iso(-6), updatedAt:iso(-1)},
+      {id:'o1', customerId:'c1', customerName:'Riaan Pretorius', phone:'+27821234567', category:'signage', title:'Shopfront fascia sign', description:'3m x 0.6m light box fascia, existing logo file', qty:1, status:'designing', quoteAmount:4200, invoiced:false, invoiceNumber:'', dueDate:iso(3), notes:'Confirm bracket colour with Riaan.', source:'WhatsApp', attachmentIds:[], designerId:'t1', designerName:'Thabo Nkosi', technicianId:'t2', technicianName:'Sipho Mahlangu', createdAt:iso(-6), updatedAt:iso(-1)},
       {id:'o2', customerId:'c2', customerName:'Kroonstad Primary School', phone:'+27827654321', category:'printing', title:'Sports day banners x6', description:'A1 PVC banners, house colours, eyelets', qty:6, status:'quoted', quoteAmount:2350, invoiced:false, invoiceNumber:'', dueDate:iso(8), notes:'', source:'Email', attachmentIds:[], designerId:'t3', designerName:'Naledi Dlamini', technicianId:null, technicianName:'', createdAt:iso(-3), updatedAt:iso(-2)},
       {id:'o3', customerId:'c3', customerName:'Lindiwe Mokoena', phone:'+27835558899', category:'sublimation', title:'Mug set — 12x sublimated mugs', description:'Family reunion design, proof already approved', qty:12, status:'ready', quoteAmount:960, invoiced:false, invoiceNumber:'', dueDate:iso(1), notes:'Collecting Friday afternoon.', source:'WhatsApp', attachmentIds:[], designerId:null, designerName:'', technicianId:'t4', technicianName:'Johan van Wyk', createdAt:iso(-4), updatedAt:iso(0)},
       {id:'o4', customerId:'c1', customerName:'Riaan Pretorius', phone:'+27821234567', category:'design', title:'New logo refresh', description:'Vector cleanup of old logo for signage + socials', qty:1, status:'new', quoteAmount:null, invoiced:false, invoiceNumber:'', dueDate:'', notes:'', source:'WhatsApp', attachmentIds:[], designerId:null, designerName:'', technicianId:null, technicianName:'', createdAt:iso(-1), updatedAt:iso(-1)},
-      {id:'o5', customerId:'c2', customerName:'Kroonstad Primary School', phone:'+27827654321', category:'printing', title:'Prize-giving certificates x40', description:'A4 certificates, printed on card', qty:40, status:'delivered', quoteAmount:680, invoiced:false, invoiceNumber:'', dueDate:iso(-2), notes:'', source:'Phone call', attachmentIds:[], designerId:'t1', designerName:'Thabo Nkosi', technicianId:'t2', technicianName:'Sipho Mahlangu', createdAt:iso(-14), updatedAt:iso(-2)},
+      {id:'o5', customerId:'c2', customerName:'Kroonstad Primary School', phone:'+27827654321', category:'printing', title:'Prize-giving certificates x40', description:'A4 certificates, printed on card', qty:40, status:'collected', quoteAmount:680, invoiced:false, invoiceNumber:'', dueDate:iso(-2), notes:'', source:'Phone call', attachmentIds:[], designerId:'t1', designerName:'Thabo Nkosi', technicianId:'t2', technicianName:'Sipho Mahlangu', createdAt:iso(-14), updatedAt:iso(-2)},
       {id:'o6', customerId:'c3', customerName:'Lindiwe Mokoena', phone:'+27835558899', category:'sublimation', title:'Anniversary photo canvas', description:'40x60cm stretched canvas print', qty:1, status:'invoiced', quoteAmount:550, invoiced:true, invoiceNumber:'DSX-1042', dueDate:iso(-10), notes:'', source:'Instagram DM', attachmentIds:[], designerId:null, designerName:'', technicianId:'t4', technicianName:'Johan van Wyk', createdAt:iso(-20), updatedAt:iso(-9)}
     ];
     STATE.team = [
@@ -495,7 +503,7 @@ import './platform.js?v=2026-10-16.19';
   }
 
   /* ============================ data access layer ============================ */
-  function ordersActive(){ return STATE.orders.filter(function(o){ return o.status!=='invoiced' && !o.quoteOnly; }); }
+  function ordersActive(){ return STATE.orders.filter(function(o){ return o.status!=='collected' && !o.quoteOnly; }); }
 
   function findCustomerByName(name){
     var n = name.trim().toLowerCase();
@@ -547,6 +555,7 @@ import './platform.js?v=2026-10-16.19';
     patch = Object.assign({}, patch, {updatedAt:todayIso()});
     var before = STATE.orders.find(function(x){ return x.id===id; });
     if(before && !before.invoicedAt && !before.invoiced && (patch.invoiced===true || patch.status==='invoiced')){ patch.invoicedAt = todayIso(); }
+    if(before && patch.status==='collected' && before.status!=='collected'){ patch.collectedAt = todayIso(); }
     if(STATE.isLive && STATE.db){
       return STATE.db.collection('orders').doc(id).update(patch).then(function(){
         var o = STATE.orders.find(function(x){return x.id===id;});
@@ -1175,6 +1184,7 @@ import './platform.js?v=2026-10-16.19';
       invoiced: true,
       status: 'invoiced'
     };
+    if(AFTER_INVOICE.indexOf(o.status)>=0) delete patch.status;
     ensureInvoiceNumber(o).then(function(num){
       return updateOrder(o.id, patch).then(function(){ STATE.stockNote = ''; return syncInvoiceStock(o.id, patch.invoiceLineItems); }).then(function(){ return num; });
     }).then(function(num){
@@ -1260,7 +1270,7 @@ import './platform.js?v=2026-10-16.19';
   }
 
   // Business data only loads after sign-in, and only what the person's role may read.
-  var _feedsStarted = false, _cashFeedsStarted = false;
+  var _feedsStarted = false, _cashFeedsStarted = false, _statusBackfillDone = false;
   function startCashupFeeds(){
     if(_cashFeedsStarted || !STATE.db) return;
     _cashFeedsStarted = true;
@@ -1301,10 +1311,16 @@ import './platform.js?v=2026-10-16.19';
       }
     }, function(){});
     db.collection('orders').onSnapshot(function(qs){
-      STATE.orders = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+      var legacy = [];
+      STATE.orders = qs.docs.map(function(d){
+        var o = Object.assign({id:d.id}, d.data());
+        if(LEGACY_STATUS[o.status]){ o.status = normStatus(o.status); legacy.push({path:'orders/'+o.id, data:{status:o.status}}); }
+        return o;
+      });
       STATE.orders.sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
       render();
       backfillJobNumbers();
+      if(legacy.length && isOwnerRole() && !_statusBackfillDone){ _statusBackfillDone = true; updateDocs(legacy).catch(function(){ _statusBackfillDone = false; }); }
     }, function(){ toast('Could not load jobs — check your connection'); });
     if(isTechnician()) return; // technicians only see the job board — no customers, WhatsApp, files or downloads
     db.collection('products').onSnapshot(function(qs){
@@ -1745,7 +1761,7 @@ import './platform.js?v=2026-10-16.19';
     app.onsubmit = function(e){ if(e.target.getAttribute('data-auth')) e.preventDefault(); };
     if(!canAccess(STATE.tab)){ STATE.tab = firstAllowedTab(); }
     app.innerHTML =
-      '<div class="shell">' +
+      '<div class="shell'+(navCollapsed()?' nav-min':'')+'">' +
         renderSidebar() +
         '<div class="main">' + renderTab() + '</div>' +
       '</div>' +
@@ -1782,13 +1798,36 @@ import './platform.js?v=2026-10-16.19';
     }).length;
   }
 
+  function navCollapsed(){
+    if(STATE.navMin==null){ try { STATE.navMin = localStorage.getItem('dsx-nav-min')==='1'; } catch(e){ STATE.navMin = false; } }
+    return !!STATE.navMin;
+  }
+  function toggleNav(){
+    STATE.navMin = !navCollapsed();
+    try { localStorage.setItem('dsx-nav-min', STATE.navMin ? '1' : '0'); } catch(e){}
+    render();
+  }
+  var NAV_ICONS = {
+    dashboard:'<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
+    board:'<rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="11" rx="1"/><rect x="17" y="4" width="4" height="7" rx="1"/>',
+    whatsapp:'<path d="M21 12a8.5 8.5 0 0 1-12.6 7.4L3 21l1.6-5.2A8.5 8.5 0 1 1 21 12z"/>',
+    customers:'<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.8c1.6.8 2.6 2.5 3 5.2"/>',
+    team:'<circle cx="12" cy="7.5" r="3.5"/><path d="M5 21c.9-4 3.7-6 7-6s6.1 2 7 6"/>',
+    quotes:'<path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
+    products:'<path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8M12 13v8"/>',
+    cashup:'<rect x="2.5" y="6" width="19" height="12" rx="1.5"/><circle cx="12" cy="12" r="2.5"/><path d="M6 9.5v5M18 9.5v5"/>',
+    reports:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+    exports:'<path d="M12 3v12M7 10l5 5 5-5M4 21h16"/>',
+    settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>'
+  };
+  function navIcon(k){ return '<svg class="nav-ico" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+(NAV_ICONS[k]||'<circle cx="12" cy="12" r="3"/>')+'</svg>'; }
   function renderSidebar(){
     var member = currentTeamMember();
     var pending = waPendingCount();
     var navList = NAV.filter(function(n){ return canAccess(n.key); });
     var items = navList.map(function(n){
       var badge = (n.key==='whatsapp' && pending) ? '<span class="badge">'+pending+'</span>' : '';
-      return '<li><button data-action="tab" data-tab="'+n.key+'" class="'+(STATE.tab===n.key?'active':'')+'"><span class="dot"></span>'+n.label+badge+'</button></li>';
+      return '<li><button data-action="tab" data-tab="'+n.key+'" class="'+(STATE.tab===n.key?'active':'')+'" title="'+n.label+'">'+navIcon(n.key)+'<span class="nav-label">'+n.label+'</span>'+badge+'</button></li>';
     }).join('');
     var viewerPill = STATE.auth.phase==='demo' ? '<div class="who-box"><div><strong>Demo mode</strong><span style="font-size:11px;">Sample data only. Changes are not saved and nothing is sent. '+escapeHtml(STATE.demoReason||'')+'</span></div></div>' : (
       '<div class="who-box"><div><span style="font-size:11px;">Signed in</span><strong>'+(member?escapeHtml(member.name):'Owner')+'</strong>' +
@@ -1797,10 +1836,11 @@ import './platform.js?v=2026-10-16.19';
     );
     return (
       '<div class="sidebar">' +
+        '<button type="button" class="nav-toggle" data-action="toggle-nav" title="'+(navCollapsed()?'Show the menu':'Hide the menu')+'" aria-label="'+(navCollapsed()?'Show the menu':'Hide the menu')+'">'+(navCollapsed()?'&raquo;':'&laquo;')+'</button>' +
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-16.19</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-16.21</span></div>' +
       '</div>'
     );
   }
@@ -1839,7 +1879,7 @@ import './platform.js?v=2026-10-16.19';
     var tiles = member ?
       (tile('Your open jobs', open.length, 'Assigned to you') +
        tile('Due this week', thisWeek, overdue ? (overdue+' overdue') : 'On schedule')) :
-      (tile('Open jobs', open.length, 'Not yet delivered or invoiced') +
+      (tile('Open jobs', open.length, 'Not yet collected') +
        tile('Due this week', thisWeek, overdue ? (overdue+' overdue') : 'On schedule') +
        tile('Awaiting invoice', money(quotedValue), 'Quoted, not yet invoiced') +
        tile('Customers', STATE.customers.length, 'In your books'));
@@ -1879,6 +1919,12 @@ import './platform.js?v=2026-10-16.19';
     var af = STATE.boardAssigneeFilter;
     var cols = STATUSES.map(function(s){
       var items = STATE.orders.filter(function(o){ return o.status===s.key; });
+      var hiddenOld = 0;
+      if(s.key==='collected' && !STATE.showAllCollected && !q){
+        var cutoff = addDays(todayIso(), -COLLECTED_SHOW_DAYS);
+        var recent = items.filter(function(o){ return String(o.collectedAt || o.updatedAt || o.createdAt || '').slice(0,10) >= cutoff; });
+        hiddenOld = items.length - recent.length; items = recent;
+      }
       if(q){ items = items.filter(function(o){ return (o.title+' '+o.customerName+' '+(o.designerName||'')+' '+techNames(o)+' '+(o.jobNumber||'')+' '+(o.poNumber||'')).toLowerCase().indexOf(q)>=0; }); }
       if(af==='unassigned'){ items = items.filter(isUnassigned); }
       else if(af && af!=='all'){ items = items.filter(function(o){ return onJob(o, af); }); }
@@ -1887,6 +1933,7 @@ import './platform.js?v=2026-10-16.19';
         '<div class="col" data-status="'+s.key+'">' +
           '<div class="col-head"><span class="t">'+s.label+'</span><span class="n">'+items.length+'</span></div>' +
           '<div class="col-cards">'+cards+'</div>' +
+          (s.key==='collected' && (hiddenOld || STATE.showAllCollected) ? '<button type="button" class="btn btn-ghost btn-sm col-more" data-action="toggle-collected">'+(STATE.showAllCollected ? 'Show the last '+COLLECTED_SHOW_DAYS+' days only' : '+ '+hiddenOld+' collected earlier')+'</button>' : '') +
         '</div>'
       );
     }).join('');
@@ -1911,7 +1958,7 @@ import './platform.js?v=2026-10-16.19';
   }
   function cardHtml(o){
     var d = daysUntil(o.dueDate);
-    var overdue = d!==null && d<0 && o.status!=='invoiced' && o.status!=='delivered';
+    var overdue = d!==null && d<0 && DONE_STATUSES.indexOf(o.status)<0;
     var avatars = '';
     if(o.designerName) avatars += '<div class="avatar designer" title="Designer: '+escapeHtml(o.designerName)+'">'+initials(o.designerName)+'</div>';
     if(o.technicianName) avatars += '<div class="avatar technician" title="Technician: '+escapeHtml(o.technicianName)+'">'+initials(o.technicianName)+'</div>';
@@ -2098,8 +2145,8 @@ import './platform.js?v=2026-10-16.19';
   function renderReportsTab(){
     var range = reportRange();
     if(STATE.reportView==='cashup' && canCashup()) return renderCashupReport(range);
-    if(STATE.reportView==='age' && isOwnerRole()) return renderAgeReport();
-    if(STATE.reportView==='quotes' && isOwnerRole()) return renderQuoteStats(range);
+    if(STATE.reportView==='age' && canSeeSalesReports()) return renderAgeReport();
+    if(STATE.reportView==='quotes' && canSeeSalesReports()) return renderQuoteStats(range);
     var data = commissionRows(range);
     var isMonth = rangeIsMonth(range);
     var periodWord = isMonth ? 'month' : 'period';
@@ -2502,7 +2549,7 @@ import './platform.js?v=2026-10-16.19';
   function techNames(o){ return [o.technicianName, o.technician2Name].filter(Boolean).join(' & '); }
   function jobCountFor(memberId){
     return STATE.orders.filter(function(o){
-      return onJob(o, memberId) && o.status!=='delivered' && o.status!=='invoiced';
+      return onJob(o, memberId) && o.status!=='collected';
     }).length;
   }
 
@@ -3204,7 +3251,7 @@ import './platform.js?v=2026-10-16.19';
 
     function markInvoicedAndReset(){
       rows.forEach(function(o){
-        if(!o.invoiced){ updateOrder(o.id, {invoiced:true, invoiceNumber:o.invoiceNumber||jobNo(o.id), status:'invoiced'}); }
+        if(!o.invoiced){ var ip = {invoiced:true, invoiceNumber:o.invoiceNumber||jobNo(o.id)}; if(AFTER_INVOICE.indexOf(o.status)<0) ip.status = 'invoiced'; updateOrder(o.id, ip); }
       });
       STATE.selectedForExport = {};
     }
@@ -3279,6 +3326,8 @@ import './platform.js?v=2026-10-16.19';
       else if(action==='wa-media'){ openWaMedia(el); }
       else if(action==='wa-media-dl'){ downloadWaMedia(el); }
       else if(action==='wa-media-save'){ saveWaMediaToJob(el); }
+      else if(action==='toggle-nav'){ toggleNav(); }
+      else if(action==='toggle-collected'){ STATE.showAllCollected = !STATE.showAllCollected; render(); }
       else if(action==='cn-new'){ openCreditForm(el.getAttribute('data-id')); }
       else if(action==='cn-close'){ STATE.creditForm = null; render(); }
       else if(action==='cn-add-line'){ if(STATE.creditForm){ STATE.creditForm.items.push({description:'', qty:1, unitPrice:0, discount:''}); render(); } }
@@ -3292,9 +3341,9 @@ import './platform.js?v=2026-10-16.19';
       else if(action==='export-cn-xero'){ exportCreditNotesXero(); }
       else if(action==='age-toggle'){ var ak = el.getAttribute('data-id'); STATE.ageOpen = STATE.ageOpen===ak ? null : ak; render(); }
       else if(action==='age-today'){ STATE.ageAsAt = todayIso(); render(); }
-      else if(action==='age-pdf'){ if(isOwnerRole()) ageReportPdf(); }
-      else if(action==='age-xlsx'){ if(isOwnerRole()) ageReportXlsx(); }
-      else if(action==='qs-xlsx'){ if(isOwnerRole()) quoteStatsXlsx(); }
+      else if(action==='age-pdf'){ if(canSeeSalesReports()) ageReportPdf(); }
+      else if(action==='age-xlsx'){ if(canSeeSalesReports()) ageReportXlsx(); }
+      else if(action==='qs-xlsx'){ if(canSeeSalesReports()) quoteStatsXlsx(); }
       else if(action==='report-view'){ STATE.reportView = el.getAttribute('data-view'); render(); }
       else if(action==='cashrep-pdf'){ cashupReportPdf(); }
       else if(action==='cashrep-xlsx'){ cashupReportXlsx(); }
@@ -3602,6 +3651,7 @@ import './platform.js?v=2026-10-16.19';
         e.preventDefault(); col.classList.remove('dragover');
         var id = e.dataTransfer.getData('text/plain');
         var status = col.getAttribute('data-status');
+        if(id && status==='invoiced' && isTechnician()){ toast('Only the office can move a job to Invoiced'); return; }
         if(id && status){ updateOrder(id, {status:status}); }
       });
     });
@@ -3637,7 +3687,7 @@ import './platform.js?v=2026-10-16.19';
       patch.invoiced = document.getElementById('ofInvoiced').checked;
       var qv = document.getElementById('ofQuote').value;
       patch.quoteAmount = qv===''? null : Number(qv);
-      if(patch.invoiced && patch.status!=='invoiced'){ patch.status='invoiced'; }
+      if(patch.invoiced && AFTER_INVOICE.indexOf(patch.status)<0){ patch.status='invoiced'; }
     }
     var desId = document.getElementById('ofAsgDesigner').value;
     var techId = document.getElementById('ofAsgTechnician').value;
@@ -5116,10 +5166,11 @@ import './platform.js?v=2026-10-16.19';
     Object.keys(t).forEach(function(k){ if(typeof t[k]==='number' && k!=='days' && k!=='done' && k!=='open') t[k] = round2(t[k]); });
     return t;
   }
+  function canSeeSalesReports(){ return isOwnerRole() || currentRole()==='designer'; }
   function reportSwitcher(){
     var views = [{k:'commission', l:'Commission'}];
     if(canCashup()) views.push({k:'cashup', l:'Daily cash-up'});
-    if(isOwnerRole()){ views.push({k:'age', l:'Age analysis'}); views.push({k:'quotes', l:'Quote success'}); }
+    if(canSeeSalesReports()){ views.push({k:'age', l:'Age analysis'}); views.push({k:'quotes', l:'Quote success'}); }
     if(views.length < 2) return '';
     var v = views.some(function(x){ return x.k===STATE.reportView; }) ? STATE.reportView : 'commission';
     return '<div class="filterbar" style="margin:-6px 0 14px;">' + views.map(function(x){
@@ -5946,7 +5997,7 @@ import './platform.js?v=2026-10-16.19';
   }
 
   /* ============================ quote success statistics ============================ */
-  var WON_STATUSES = ['in_progress','ready','delivered','invoiced'];
+  var WON_STATUSES = ['designing','printing','production','invoiced','ready','collected','in_progress','delivered'];
   function quoteValidUntil(o){ return addDays(String(o.quoteGeneratedAt).slice(0,10), Number(o.quoteValidDays)||Number(STATE.config.quoteValidityDays)||14); }
   function quoteOutcome(o){
     if(hasInvoiceDoc(o) || isSale(o) || WON_STATUSES.indexOf(o.status)>=0 || orderPaid(o.id) > 0) return 'won';
@@ -6007,7 +6058,7 @@ import './platform.js?v=2026-10-16.19';
       '</div>' +
       '<div class="panel">' + meter +
         '<div class="hint" style="margin-top:8px;"><span class="qs-key qs-won"></span>Accepted '+s.won+' &nbsp; <span class="qs-key qs-open"></span>Open '+s.open+' &nbsp; <span class="qs-key qs-lost"></span>Expired '+s.lost+' &nbsp;&middot;&nbsp; Overall conversion '+s.conversion+'% of all quotes issued.</div>' +
-        '<div class="hint">A quote counts as <strong>accepted</strong> once the job is in progress, a deposit or payment is received, or it is invoiced. It counts as <strong>expired</strong> when its validity date has passed without that. The success rate leaves out quotes that are still open.</div>' +
+        '<div class="hint">A quote counts as <strong>accepted</strong> once the job moves to Designing or further, a deposit or payment is received, or it is invoiced. It counts as <strong>expired</strong> when its validity date has passed without that. The success rate leaves out quotes that are still open.</div>' +
       '</div>' +
       '<div class="panel"><div class="section-label">By designer</div><div class="tbl-wrap"><table>'+head+'<tbody>'+gRows(byDesigner, function(k){ return k; })+'</tbody></table></div></div>' +
       '<div class="panel"><div class="section-label">By month</div><div class="tbl-wrap"><table>'+head+'<tbody>'+gRows(byMonth, monthLabel)+'</tbody></table></div></div>' +

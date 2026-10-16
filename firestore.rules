@@ -77,10 +77,12 @@ service cloud.firestore {
               'title', 'status', 'category', 'description', 'qty', 'dueDate', 'notes',
               'designerId', 'designerName', 'technicianId', 'technicianName',
               'technician2Id', 'technician2Name',
-              'updatedAt', 'invoicedAt'
+              'updatedAt', 'invoicedAt', 'collectedAt'
             ])
+            // Technicians never mark a job Invoiced; an invoiced job may only move on to Ready or Collected.
             && (!('status' in request.resource.data.diff(resource.data).affectedKeys())
-                || (request.resource.data.status != 'invoiced' && resource.data.status != 'invoiced')));
+                || (request.resource.data.status != 'invoiced'
+                    && (resource.data.status != 'invoiced' || request.resource.data.status in ['ready', 'collected']))));
     }
 
     match /wa_handled/{id} {
