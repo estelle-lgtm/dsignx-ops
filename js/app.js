@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-10-16.21';
+import './platform.js?v=2026-10-16.22';
 
 (function(){
   "use strict";
@@ -83,7 +83,7 @@ import './platform.js?v=2026-10-16.21';
     custExportFrom:'', custExportTo:'', custExportMode:'added',
     customerForm:null,
     products:[], productForm:null, productImport:null, productQuery:'',
-    receipts:[], receiptForm:null, creditNotes:[], creditForm:null, cnExFrom:'', cnExTo:'', cnExStatus:'Draft', ageAsAt:'', ageOpen:null, stocktakes:[], stockDraft:{}, stockQuery:'', cashups:{}, cashupDate:'', cashupForm:null, rxFrom:'', rxTo:'', rxMethod:'all',
+    receipts:[], receiptForm:null, messages:[], msgForm:null, msgOpenId:null, msgBox:'inbox', msgShow:'open', msgDraft:'', creditNotes:[], creditForm:null, cnExFrom:'', cnExTo:'', cnExStatus:'Draft', ageAsAt:'', ageOpen:null, stocktakes:[], stockDraft:{}, stockQuery:'', cashups:{}, cashupDate:'', cashupForm:null, rxFrom:'', rxTo:'', rxMethod:'all',
     user:null, links:{},
     auth:{phase:'checking', uid:null, isOwner:false, memberId:null, role:null, error:'', busy:false, myAuth:null, myLink:null, teamLoaded:false, fails:0, lockUntil:0}
   };
@@ -92,9 +92,9 @@ import './platform.js?v=2026-10-16.21';
   // Who can open what. Owner = the account that completed first-time setup; everyone else must be
   // a team member who redeemed an invite code. The same rules are enforced in firestore.rules.
   var ROLE_TABS = {
-    owner:      ['dashboard','board','whatsapp','customers','team','quotes','products','cashup','reports','exports','settings'],
-    designer:   ['dashboard','board','whatsapp','customers','team','quotes','products','cashup','reports'],
-    technician: ['board']
+    owner:      ['dashboard','board','messages','whatsapp','customers','team','quotes','products','cashup','reports','exports','settings'],
+    designer:   ['dashboard','board','messages','whatsapp','customers','team','quotes','products','cashup','reports'],
+    technician: ['board','messages']
   };
   var PASSWORD_ITER = 210000, CODE_ITER = 100000, CODE_TTL_DAYS = 7;
   var IDLE_LOCK_MS = 30*60*1000, SESSION_MS = 12*60*60*1000;
@@ -1322,6 +1322,7 @@ import './platform.js?v=2026-10-16.21';
       backfillJobNumbers();
       if(legacy.length && isOwnerRole() && !_statusBackfillDone){ _statusBackfillDone = true; updateDocs(legacy).catch(function(){ _statusBackfillDone = false; }); }
     }, function(){ toast('Could not load jobs — check your connection'); });
+    startMessageFeed();
     if(isTechnician()) return; // technicians only see the job board — no customers, WhatsApp, files or downloads
     db.collection('products').onSnapshot(function(qs){
       STATE.products = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
@@ -1773,13 +1774,15 @@ import './platform.js?v=2026-10-16.21';
       (STATE.quoteModalOrderId && canAccess('quotes') ? renderQuoteModal() : '') +
       (STATE.invoiceModalOrderId && canAccess('quotes') ? renderInvoiceModal() : '') +
       (STATE.receiptForm && !isTechnician() ? renderReceiptModal() : '') +
-      (STATE.creditForm && isOwnerRole() ? renderCreditModal() : '');
+      (STATE.creditForm && isOwnerRole() ? renderCreditModal() : '') +
+      (STATE.msgForm ? renderMsgForm() : '');
     bindEvents();
   }
 
   var NAV = [
     {key:'dashboard', label:'Dashboard'},
     {key:'board', label:'Job board'},
+    {key:'messages', label:'Messages'},
     {key:'whatsapp', label:'WhatsApp inbox'},
     {key:'customers', label:'Customers'},
     {key:'team', label:'Team'},
@@ -1818,6 +1821,7 @@ import './platform.js?v=2026-10-16.21';
     cashup:'<rect x="2.5" y="6" width="19" height="12" rx="1.5"/><circle cx="12" cy="12" r="2.5"/><path d="M6 9.5v5M18 9.5v5"/>',
     reports:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
     exports:'<path d="M12 3v12M7 10l5 5 5-5M4 21h16"/>',
+    messages:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3.5 6.5l8.5 6.5 8.5-6.5"/>',
     settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>'
   };
   function navIcon(k){ return '<svg class="nav-ico" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+(NAV_ICONS[k]||'<circle cx="12" cy="12" r="3"/>')+'</svg>'; }
@@ -1827,6 +1831,7 @@ import './platform.js?v=2026-10-16.21';
     var navList = NAV.filter(function(n){ return canAccess(n.key); });
     var items = navList.map(function(n){
       var badge = (n.key==='whatsapp' && pending) ? '<span class="badge">'+pending+'</span>' : '';
+      if(n.key==='messages'){ var mc = msgAttnCount(); if(mc) badge = '<span class="badge">'+mc+'</span>'; }
       return '<li><button data-action="tab" data-tab="'+n.key+'" class="'+(STATE.tab===n.key?'active':'')+'" title="'+n.label+'">'+navIcon(n.key)+'<span class="nav-label">'+n.label+'</span>'+badge+'</button></li>';
     }).join('');
     var viewerPill = STATE.auth.phase==='demo' ? '<div class="who-box"><div><strong>Demo mode</strong><span style="font-size:11px;">Sample data only. Changes are not saved and nothing is sent. '+escapeHtml(STATE.demoReason||'')+'</span></div></div>' : (
@@ -1840,7 +1845,7 @@ import './platform.js?v=2026-10-16.21';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-16.21</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-16.22</span></div>' +
       '</div>'
     );
   }
@@ -1848,6 +1853,7 @@ import './platform.js?v=2026-10-16.21';
   function renderTab(){
     switch(STATE.tab){
       case 'board': return renderBoardTab();
+      case 'messages': return renderMessagesTab();
       case 'whatsapp': return renderWhatsAppTab();
       case 'customers': return renderCustomersTab();
       case 'team': return renderTeamTab();
@@ -1895,6 +1901,8 @@ import './platform.js?v=2026-10-16.21';
       '</div>';
     }).join('') : '<div class="empty-note">'+(member ? 'Nothing due — nothing with a date is assigned to you right now.' : 'Nothing with a due date yet — add one from the job board.')+'</div>';
 
+    var msgN = msgAttnCount();
+    var msgBanner = msgN ? ('<div class="wa-banner">'+msgN+' message'+(msgN===1?'':'s')+' (enquiries or tasks) need your attention<button class="btn btn-sm" data-action="tab" data-tab="messages">Open messages</button></div>') : '';
     var waPending = (STATE.mcp && !member) ? waPendingCount() : 0;
     var waBanner = waPending ? ('<div class="wa-banner">'+waPending+' new WhatsApp message'+(waPending===1?'':'s')+' waiting to be logged<button class="btn btn-sm" data-action="tab" data-tab="whatsapp">Review inbox</button></div>') : '';
 
@@ -1904,7 +1912,7 @@ import './platform.js?v=2026-10-16.21';
       '<div class="topline"><div><h1>Dashboard</h1><div class="sub">'+subLine+'</div></div>' + exampleBadge() +
         '<button class="btn btn-primary" data-action="open-new-order">+ New order</button>' +
       '</div>' +
-      waBanner +
+      msgBanner + waBanner +
       '<div class="tiles">'+tiles+'</div>' +
       '<div class="panel"><div class="panel-head"><h2>Coming up</h2></div>' + dueRows + '</div>'
     );
@@ -3095,7 +3103,8 @@ import './platform.js?v=2026-10-16.21';
           '</div>'
           )) +
           (isTechnician() ? '' : renderPaymentsSection(o)) +
-          '<div class="field"><label for="ofNotes">Internal notes</label><textarea id="ofNotes">'+escapeHtml(o.notes||'')+'</textarea></div>' +
+          '<div class="field"><label for="ofNotes">Internal notes</label><textarea id="ofNotes">'+escapeHtml(o.notes||'')+'</textarea>' +
+            '<button type="button" class="btn btn-ghost btn-sm" style="margin-top:6px;" data-action="msg-new-job" data-id="'+o.id+'">Send a task or enquiry about this job</button></div>' +
           (STATE.assets ?
             '<div class="field"><label>Artwork / proof attachments</label><div class="attach-grid">'+attach+'<label class="attach-file" style="cursor:pointer;">+ Add<input type="file" id="ofAttach" accept="image/*,application/pdf" style="display:none"></label></div></div>'
             : (attach ? '<div class="field"><label>Artwork / proof attachments</label><div class="attach-grid">'+attach+'</div></div>' : '')
@@ -3326,6 +3335,15 @@ import './platform.js?v=2026-10-16.21';
       else if(action==='wa-media'){ openWaMedia(el); }
       else if(action==='wa-media-dl'){ downloadWaMedia(el); }
       else if(action==='wa-media-save'){ saveWaMediaToJob(el); }
+      else if(action==='msg-new'){ openMsgForm(''); }
+      else if(action==='msg-new-job'){ var jid = el.getAttribute('data-id'); STATE.openOrderId = null; openMsgForm(jid); }
+      else if(action==='msg-form-close'){ STATE.msgForm = null; render(); }
+      else if(action==='msg-send'){ sendNewMsg(); }
+      else if(action==='msg-box'){ STATE.msgBox = el.getAttribute('data-box'); render(); }
+      else if(action==='msg-show'){ STATE.msgShow = el.getAttribute('data-show'); render(); }
+      else if(action==='msg-open'){ var mid = el.getAttribute('data-id'); if(STATE.msgOpenId!==mid) STATE.msgDraft = ''; STATE.msgOpenId = mid; var mm = (STATE.messages||[]).find(function(x){ return x.id===mid; }); if(mm) clearMsgAttn(mm); render(); var ml = document.querySelector('.msg-detail'); if(ml && window.innerWidth < 900) ml.scrollIntoView({behavior:'smooth'}); }
+      else if(action==='msg-close'){ STATE.msgOpenId = null; STATE.msgDraft = ''; render(); }
+      else if(action==='msg-act'){ msgAction(el.getAttribute('data-type')); }
       else if(action==='toggle-nav'){ toggleNav(); }
       else if(action==='toggle-collected'){ STATE.showAllCollected = !STATE.showAllCollected; render(); }
       else if(action==='cn-new'){ openCreditForm(el.getAttribute('data-id')); }
@@ -3395,7 +3413,7 @@ import './platform.js?v=2026-10-16.21';
         render();
       }
       else if(action==='close-order'){ STATE.openOrderId = null; render(); }
-      else if(action==='close-modal-bg'){ if(e.target===el && STATE.newQuoteOpen){ STATE.newQuoteOpen = false; render(); } else if(e.target===el && STATE.receiptForm){ STATE.receiptForm = null; render(); } else if(e.target===el && STATE.creditForm){ STATE.creditForm = null; render(); } else if(e.target===el){ STATE.openOrderId=null; STATE.newOrderOpen=false; STATE.newOrderPrefill=null; STATE.newTeamOpen=false; STATE.quoteModalOrderId=null; STATE.quoteDraft=null; STATE.invoiceModalOrderId=null; STATE.invoiceDraft=null; render(); } }
+      else if(action==='close-modal-bg'){ if(e.target===el && STATE.newQuoteOpen){ STATE.newQuoteOpen = false; render(); } else if(e.target===el && STATE.receiptForm){ STATE.receiptForm = null; render(); } else if(e.target===el && STATE.creditForm){ STATE.creditForm = null; render(); } else if(e.target===el && STATE.msgForm){ STATE.msgForm = null; render(); } else if(e.target===el){ STATE.openOrderId=null; STATE.newOrderOpen=false; STATE.newOrderPrefill=null; STATE.newTeamOpen=false; STATE.quoteModalOrderId=null; STATE.quoteDraft=null; STATE.invoiceModalOrderId=null; STATE.invoiceDraft=null; render(); } }
       else if(action==='open-add-team'){ if(isOwnerRole()){ STATE.newTeamOpen = true; render(); } }
       else if(action==='close-new-team'){ STATE.newTeamOpen = false; render(); }
       else if(action==='submit-new-team'){ submitNewTeamMember(); }
@@ -3568,6 +3586,7 @@ import './platform.js?v=2026-10-16.21';
       if(e.target.id==='cnExFrom'){ STATE.cnExFrom = e.target.value; render(); }
       if(e.target.id==='cnExTo'){ STATE.cnExTo = e.target.value; render(); }
       if(e.target.id==='cnExStatus'){ STATE.cnExStatus = e.target.value; render(); }
+      if(e.target.id==='msgKind'){ var dw = document.getElementById('msgDueWrap'); if(dw) dw.style.display = e.target.value==='task' ? '' : 'none'; if(STATE.msgForm) STATE.msgForm.kind = e.target.value; }
       if(e.target.id==='ageAsAt' && e.target.value){ STATE.ageAsAt = e.target.value; render(); }
       if(e.target.id==='invExTo'){ STATE.invExportTo = e.target.value; render(); }
       if(e.target.id==='invExStatus'){ STATE.invExportStatus = e.target.value; render(); }
@@ -3581,6 +3600,7 @@ import './platform.js?v=2026-10-16.21';
       if(cfp && STATE.customerForm){ setDraftPath(cfp, e.target.value); if(cfp==='name' && STATE.customerForm.errors && STATE.customerForm.errors.name){ STATE.customerForm.errors.name = null; e.target.classList.remove('invalid'); } return; }
       if(e.target.id==='boardSearch' && STATE.boardQuery!==e.target.value){ STATE.boardQuery = e.target.value; render(); focusEl('boardSearch'); }
       if(e.target.id==='customerSearch'){ STATE.customerQuery = e.target.value; render(); focusEl('customerSearch'); }
+      if(e.target.id==='msgText'){ STATE.msgDraft = e.target.value; }
       if(e.target.id==='chatCompose'){ var p = currentChatPhone(); if(p){ STATE.chatDraft[p] = e.target.value; } }
       if(e.target.id==='inviteMsg'){ STATE.inviteDraftText = e.target.value; }
       var pfk = e.target.getAttribute && e.target.getAttribute('data-pf'); if(pfk && STATE.productForm){ STATE.productForm[pfk] = e.target.value; }
@@ -6087,6 +6107,236 @@ import './platform.js?v=2026-10-16.21';
     ]);
     var name = 'DsignX-quote-success-'+(range.from||'start')+'-to-'+(range.to||todayIso())+'.xlsx';
     if(STATE.downloads){ STATE.downloads.save({filename:name, data:blob}).catch(function(){ fallbackDownload(blob, name); }); } else fallbackDownload(blob, name);
+  }
+
+  /* ============================ internal messages: enquiries & ad hoc tasks ============================ */
+  // One document per enquiry/task in messages/. Only the sender and the receiver (and the owner) can read it.
+  // attn[memberId] = true means that person has something new to look at (drives the menu badge).
+  var MSG_STATUS = {pending:'Waiting to be accepted', accepted:'Accepted', finished:'Finished'};
+  function myMsgId(){ return isOwnerRole() ? 'owner' : (STATE.currentUserId || ''); }
+  function myMsgName(){ var m = currentTeamMember(); return m ? m.name : 'Owner'; }
+  function msgPeople(){
+    var me = myMsgId();
+    var list = STATE.team.filter(function(m){ return m.active!==false && m.id!==me; }).map(function(m){ return {id:m.id, name:m.name, role:roleLabel(m.role)}; });
+    if(me!=='owner') list.unshift({id:'owner', name:'Owner', role:'Owner'});
+    return list;
+  }
+  var _msgUnsubs = [], _msgSeenAttn = null;
+  function startMessageFeed(){
+    if(!STATE.db || _msgUnsubs.length) return;
+    var me = myMsgId(); if(!me) return;
+    var buckets = {};
+    var merge = function(){
+      var map = {};
+      Object.keys(buckets).forEach(function(k){ buckets[k].forEach(function(m){ map[m.id] = m; }); });
+      var all = Object.keys(map).map(function(k){ return map[k]; });
+      if(!isOwnerRole()) all = all.filter(function(m){ return m.fromId===me || m.toId===me; });
+      all.sort(function(a,b){ return String(b.updatedAt||b.createdAt).localeCompare(String(a.updatedAt||a.createdAt)); });
+      // a toast when something new lands for me
+      var attnNow = all.filter(function(m){ return m.attn && m.attn[me]; });
+      if(_msgSeenAttn){
+        var fresh = attnNow.filter(function(m){ return _msgSeenAttn[m.id]!==(m.updatedAt||''); });
+        if(fresh.length && STATE.msgOpenId!==fresh[0].id) toast(msgToastText(fresh[0]));
+      }
+      _msgSeenAttn = {}; attnNow.forEach(function(m){ _msgSeenAttn[m.id] = m.updatedAt||''; });
+      STATE.messages = all;
+      if(STATE.tab==='messages' && STATE.msgOpenId){ var open = all.find(function(m){ return m.id===STATE.msgOpenId; }); if(open && open.attn && open.attn[me]) clearMsgAttn(open); }
+      renderKeepMsgDraft();
+    };
+    var listen = function(key, q){
+      _msgUnsubs.push(q.onSnapshot(function(qs){ buckets[key] = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); }); merge(); }, function(){}));
+    };
+    if(isOwnerRole()) listen('all', STATE.db.collection('messages'));
+    else { listen('from', STATE.db.collection('messages').where('fromId','==',me)); listen('to', STATE.db.collection('messages').where('toId','==',me)); }
+  }
+  function msgToastText(m){
+    var last = (m.log||[])[m.log ? m.log.length-1 : 0];
+    if(!last) return 'New '+(m.kind==='task'?'task':'enquiry')+' from '+m.fromName+': '+m.subject;
+    var verb = {accept:'accepted', reply:'replied to', finish:'finished', note:'added a note to'}[last.type] || 'updated';
+    return last.byName+' '+verb+' “'+m.subject+'”';
+  }
+  function msgAttnCount(){ var me = myMsgId(); return (STATE.messages||[]).filter(function(m){ return m.attn && m.attn[me]; }).length; }
+  // Re-render without losing what someone is typing in the reply box.
+  function renderKeepMsgDraft(){
+    var el = document.getElementById('msgText');
+    var had = el && document.activeElement===el;
+    if(el) STATE.msgDraft = el.value;
+    render();
+    if(had){ var n = document.getElementById('msgText'); if(n){ n.focus(); n.selectionStart = n.selectionEnd = n.value.length; } }
+  }
+  function msgSave(m, patch){
+    patch.updatedAt = new Date().toISOString();
+    Object.assign(m, patch);
+    if(STATE.isLive && STATE.db) return STATE.db.doc('messages/'+m.id).update(patch).catch(function(){ toast('Could not save — check your connection'); });
+    render(); return Promise.resolve();
+  }
+  function clearMsgAttn(m){
+    var me = myMsgId(); if(!m.attn || !m.attn[me]) return;
+    var attn = Object.assign({}, m.attn); attn[me] = false;
+    m.attn = attn;
+    if(STATE.isLive && STATE.db) STATE.db.doc('messages/'+m.id).update({attn:attn}).catch(function(){});
+  }
+  function msgTime(iso){ var d = new Date(iso); if(isNaN(d)) return ''; return fullDate(localIso(d))+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+  function otherSide(m){ return m.fromId===myMsgId() ? m.toId : m.fromId; }
+
+  function openMsgForm(prefillOrderId){
+    var o = prefillOrderId ? STATE.orders.find(function(x){ return x.id===prefillOrderId; }) : null;
+    STATE.msgForm = {kind:'task', toId:'', subject: o ? ((o.jobNumber||jobNo(o.id))+' — '+(o.title||'')) : '', body:'', dueDate:'', orderId: o ? o.id : '', error:'', busy:false};
+    render();
+  }
+  function sendNewMsg(){
+    var f = STATE.msgForm; if(!f || f.busy) return;
+    ['msgKind','msgTo','msgSubject','msgBody','msgDue','msgJob'].forEach(function(id){ var el = document.getElementById(id); if(!el) return; var k = {msgKind:'kind', msgTo:'toId', msgSubject:'subject', msgBody:'body', msgDue:'dueDate', msgJob:'orderId'}[id]; f[k] = el.value; });
+    var to = msgPeople().find(function(p){ return p.id===f.toId; });
+    if(!to){ f.error = 'Choose who it is for.'; render(); return; }
+    if(!String(f.subject).trim()){ f.error = 'Add a short subject.'; render(); return; }
+    if(!String(f.body).trim()){ f.error = 'Write the '+(f.kind==='task'?'task':'enquiry')+'.'; render(); return; }
+    var now = new Date().toISOString(), me = myMsgId();
+    var o = f.orderId ? STATE.orders.find(function(x){ return x.id===f.orderId; }) : null;
+    var attn = {}; attn[to.id] = true;
+    var rec = {kind:f.kind==='enquiry'?'enquiry':'task', subject:String(f.subject).trim(), body:String(f.body).trim(),
+      fromId:me, fromName:myMsgName(), toId:to.id, toName:to.name, createdAt:now, updatedAt:now,
+      dueDate: f.kind==='task' ? (f.dueDate||'') : '', orderId: o ? o.id : '', jobNumber: o ? (o.jobNumber||jobNo(o.id)) : '',
+      status:'pending', needsAnswer:false, log:[], attn:attn};
+    f.busy = true; render();
+    var p = (STATE.isLive && STATE.db) ? STATE.db.collection('messages').add(rec).then(function(r){ return r.id; })
+      : Promise.resolve(uid()).then(function(id){ STATE.messages = [Object.assign({id:id}, rec)].concat(STATE.messages||[]); return id; });
+    p.then(function(id){ STATE.msgForm = null; STATE.msgOpenId = id; STATE.msgBox = 'sent'; STATE.tab = 'messages'; render(); toast((rec.kind==='task'?'Task':'Enquiry')+' sent to '+to.name); })
+     .catch(function(){ f.busy = false; f.error = 'Couldn’t send — check your connection and try again.'; render(); });
+  }
+  // type: accept | note | reply | finish
+  function msgAction(type){
+    var m = (STATE.messages||[]).find(function(x){ return x.id===STATE.msgOpenId; }); if(!m) return;
+    var me = myMsgId(), isTo = m.toId===me, isFrom = m.fromId===me;
+    if(!isTo && !isFrom) return;
+    var el = document.getElementById('msgText'), text = String(el ? el.value : (STATE.msgDraft||'')).trim();
+    if((type==='note' || type==='reply') && !text){ toast(type==='note' ? 'Type the note first' : 'Type your reply first'); if(el) el.focus(); return; }
+    if(type==='accept' && !(isTo && m.status==='pending')) return;
+    if(type==='finish' && !(isTo && m.status==='accepted')){ toast('Accept it first'); return; }
+    var entry = {at:new Date().toISOString(), byId:me, byName:myMsgName(), type:type, text:text};
+    var patch = {log:(m.log||[]).concat([entry])};
+    var attn = Object.assign({}, m.attn||{});
+    var other = otherSide(m);
+    if(type==='accept'){ patch.status = 'accepted'; patch.acceptedAt = entry.at; attn[other] = true; }
+    if(type==='reply'){ attn[other] = true; patch.needsAnswer = isTo; }
+    if(type==='finish'){ patch.status = 'finished'; patch.finishedAt = entry.at; patch.needsAnswer = false; attn[other] = true; }
+    attn[me] = false;
+    patch.attn = attn;
+    STATE.msgDraft = '';
+    msgSave(m, patch).then(function(){
+      toast({accept:'Accepted — '+m.fromName+' has been told', note:'Note saved', reply:'Reply sent to '+(isTo?m.fromName:m.toName), finish:'Marked finished — '+m.fromName+' has been told'}[type]);
+    });
+    render();
+  }
+
+  function msgStatusChip(m){
+    var me = myMsgId();
+    if(m.status==='finished') return '<span class="pay-chip pay-paid">Finished</span>';
+    if(m.needsAnswer) return '<span class="pay-chip pay-unpaid">'+(m.fromId===me ? 'Needs your answer' : 'Waiting for answer')+'</span>';
+    if(m.status==='accepted') return '<span class="pay-chip pay-part">Accepted</span>';
+    return '<span class="pay-chip pay-unpaid">'+(m.toId===me ? 'Accept please' : 'Not accepted yet')+'</span>';
+  }
+  function msgKindChip(m){ return '<span class="msg-kind msg-'+m.kind+'">'+(m.kind==='task'?'Task':'Enquiry')+'</span>'; }
+  function msgList(){
+    var me = myMsgId(), box = STATE.msgBox || 'inbox', open = STATE.msgShow || 'open';
+    return (STATE.messages||[]).filter(function(m){
+      if(box==='inbox' && m.toId!==me) return false;
+      if(box==='sent' && m.fromId!==me) return false;
+      if(box==='mine' && m.toId!==me && m.fromId!==me) return false;
+      if(open==='open' && m.status==='finished' && !(m.attn && m.attn[me])) return false;
+      if(open==='finished' && m.status!=='finished') return false;
+      return true;
+    });
+  }
+  function renderMessagesTab(){
+    var me = myMsgId(), list = msgList(), box = STATE.msgBox || 'inbox', show = STATE.msgShow || 'open';
+    var cnt = function(fn){ return (STATE.messages||[]).filter(fn).length; };
+    var inboxN = cnt(function(m){ return m.toId===me && m.attn && m.attn[me]; }), sentN = cnt(function(m){ return m.fromId===me && m.attn && m.attn[me]; });
+    var chip = function(k, label, n){ return '<button type="button" class="chip-toggle'+(box===k?' active':'')+'" data-action="msg-box" data-box="'+k+'">'+label+(n?' <span class="msg-dot">'+n+'</span>':'')+'</button>'; };
+    var items = list.length ? list.map(function(m){
+      var unread = m.attn && m.attn[me];
+      var who = m.fromId===me ? ('To '+escapeHtml(m.toName)) : ('From '+escapeHtml(m.fromName));
+      var last = (m.log||[]).length ? m.log[m.log.length-1] : null;
+      return '<button type="button" class="msg-item'+(STATE.msgOpenId===m.id?' active':'')+(unread?' unread':'')+'" data-action="msg-open" data-id="'+m.id+'">' +
+        '<div class="msg-item-top">'+msgKindChip(m)+'<span class="msg-who">'+who+'</span><span class="msg-when">'+relTime(m.updatedAt||m.createdAt)+'</span></div>' +
+        '<div class="msg-subj">'+(unread?'<span class="msg-unread-dot"></span>':'')+escapeHtml(m.subject)+'</div>' +
+        '<div class="msg-item-foot">'+msgStatusChip(m)+(m.dueDate && m.status!=='finished' ? '<span class="msg-due'+(m.dueDate<todayIso()?' late':'')+'">Due '+shortDate(m.dueDate)+'</span>' : '')+(last ? '<span class="msg-last">'+escapeHtml(last.byName)+': '+escapeHtml(last.type==='accept'?'accepted':last.type==='finish'?'finished':(last.text||'').slice(0,60))+'</span>' : '')+'</div>' +
+      '</button>';
+    }).join('') : '<div class="empty-note">'+(show==='finished' ? 'Nothing finished here yet.' : (box==='sent' ? 'Nothing you sent is still open.' : 'Nothing waiting for you.'))+'</div>';
+    var openMsg = (STATE.messages||[]).find(function(m){ return m.id===STATE.msgOpenId; });
+    return '<div class="topline"><div><h1>Messages</h1><div class="sub">Enquiries and ad hoc tasks between team members</div></div>' +
+        '<button class="btn btn-primary" data-action="msg-new">+ New enquiry or task</button></div>' +
+      '<div class="filterbar" style="margin-bottom:12px;">' + chip('inbox','Received', inboxN) + chip('sent','Sent', sentN) + (isOwnerRole() ? chip('all','Everyone’s', 0) : '') +
+        '<span style="width:12px;"></span>' +
+        '<button type="button" class="chip-toggle'+(show==='open'?' active':'')+'" data-action="msg-show" data-show="open">Open</button>' +
+        '<button type="button" class="chip-toggle'+(show==='finished'?' active':'')+'" data-action="msg-show" data-show="finished">Finished</button>' +
+        '<button type="button" class="chip-toggle'+(show==='any'?' active':'')+'" data-action="msg-show" data-show="any">All</button>' +
+      '</div>' +
+      '<div class="msg-layout'+(openMsg?' has-open':'')+'">' +
+        '<div class="msg-list panel">'+items+'</div>' +
+        '<div class="msg-detail">'+(openMsg ? renderMsgDetail(openMsg) : '<div class="panel"><div class="empty-note">Choose a message on the left, or send a new enquiry or task.</div></div>')+'</div>' +
+      '</div>';
+  }
+  function renderMsgDetail(m){
+    var me = myMsgId(), isTo = m.toId===me, isFrom = m.fromId===me, part = isTo || isFrom;
+    var o = m.orderId ? STATE.orders.find(function(x){ return x.id===m.orderId; }) : null;
+    var LOG_LABEL = {accept:'accepted', note:'note', reply:'reply', finish:'finished'};
+    var log = (m.log||[]).map(function(e){
+      var mine = e.byId===me;
+      return '<div class="msg-entry msg-'+e.type+(mine?' mine':'')+'">' +
+        '<div class="msg-entry-head"><strong>'+escapeHtml(e.byName)+'</strong> <span class="msg-tag">'+LOG_LABEL[e.type]+'</span><span class="msg-when">'+msgTime(e.at)+'</span></div>' +
+        (e.text ? '<div class="msg-entry-text">'+escapeHtml(e.text).replace(/\n/g,'<br>')+'</div>' : '') +
+      '</div>';
+    }).join('');
+    var draft = escapeHtml(STATE.msgDraft||'');
+    var actions = '';
+    if(part && m.status!=='finished'){
+      var ph = isTo ? (m.status==='pending' ? 'Need more information before you accept? Type your question and press “Reply to '+escapeHtml(m.fromName)+'”.' : 'Notes on your progress, or a question for '+escapeHtml(m.fromName)+'…')
+                    : 'Answer '+escapeHtml(m.toName)+'’s question, add more detail, or keep a note…';
+      actions = '<div class="msg-compose">' +
+        '<textarea id="msgText" rows="3" placeholder="'+ph+'">'+draft+'</textarea>' +
+        '<div class="msg-buttons">' +
+          (isTo && m.status==='pending' ? '<button class="btn btn-primary btn-sm" data-action="msg-act" data-type="accept">Accept</button>' : '') +
+          '<button class="btn btn-sm" data-action="msg-act" data-type="note" title="Saved on this '+(m.kind==='task'?'task':'enquiry')+' — no notification">Save note</button>' +
+          '<button class="btn btn-sm" data-action="msg-act" data-type="reply">'+(isTo ? 'Reply to '+escapeHtml(m.fromName) : 'Send reply to '+escapeHtml(m.toName))+'</button>' +
+          (isTo && m.status==='accepted' ? '<button class="btn btn-primary btn-sm" data-action="msg-act" data-type="finish">Finish</button>' : '') +
+        '</div>' +
+        '<div class="hint">'+(isTo ? (m.status==='pending' ? 'You need to accept this before you can finish it.' : '“Finish” closes it and lets '+escapeHtml(m.fromName)+' know. Anything typed in the box is sent with it.') : 'Replies notify '+escapeHtml(m.toName)+'. Notes are saved without a notification.')+'</div>' +
+      '</div>';
+    } else if(m.status==='finished'){
+      actions = '<div class="hint" style="margin-top:10px;">Finished by '+escapeHtml(m.toName)+(m.finishedAt?(' on '+msgTime(m.finishedAt)):'')+'.</div>';
+    } else {
+      actions = '<div class="hint" style="margin-top:10px;">You can see this because you are the owner. Only '+escapeHtml(m.fromName)+' and '+escapeHtml(m.toName)+' can act on it.</div>';
+    }
+    return '<div class="panel msg-thread">' +
+      '<div class="msg-thread-head"><div>'+msgKindChip(m)+' '+msgStatusChip(m)+'<h2>'+escapeHtml(m.subject)+'</h2>' +
+        '<div class="hint" style="margin:2px 0 0;">From <strong>'+escapeHtml(m.fromName)+'</strong> to <strong>'+escapeHtml(m.toName)+'</strong> &middot; '+msgTime(m.createdAt) +
+        (m.dueDate ? ' &middot; <span class="msg-due'+(m.dueDate<todayIso() && m.status!=='finished'?' late':'')+'">Due '+fullDate(m.dueDate)+'</span>' : '') + '</div>' +
+        (m.orderId ? '<div style="margin-top:6px;"><button type="button" class="btn btn-ghost btn-sm" data-action="open-order" data-id="'+escapeHtml(m.orderId)+'"'+(o?'':' disabled')+'>Job '+escapeHtml(m.jobNumber||'')+(o?' — '+escapeHtml(o.title||''):' (not found)')+'</button></div>' : '') +
+      '</div><button class="modal-close" data-action="msg-close" aria-label="Close">&times;</button></div>' +
+      '<div class="msg-entry msg-original"><div class="msg-entry-text">'+escapeHtml(m.body).replace(/\n/g,'<br>')+'</div></div>' +
+      log + actions +
+    '</div>';
+  }
+  function renderMsgForm(){
+    var f = STATE.msgForm; if(!f) return '';
+    var people = msgPeople();
+    var jobs = STATE.orders.filter(function(o){ return !o.quoteOnly && o.status!=='collected'; }).slice(0, 200);
+    return '<div class="overlay" data-action="close-modal-bg"><div class="modal" role="dialog" aria-modal="true" aria-label="New enquiry or task" style="max-width:560px;">' +
+      '<div class="modal-head"><div><h2>New enquiry or task</h2></div><button class="modal-close" data-action="msg-form-close" aria-label="Close">&times;</button></div>' +
+      (f.error ? '<div class="field-error" style="margin-bottom:8px;">'+escapeHtml(f.error)+'</div>' : '') +
+      '<div class="field-row">' +
+        '<div class="field"><label for="msgKind">Type</label><select id="msgKind"><option value="task"'+(f.kind==='task'?' selected':'')+'>Task — something to do</option><option value="enquiry"'+(f.kind==='enquiry'?' selected':'')+'>General enquiry — a question</option></select></div>' +
+        '<div class="field"><label for="msgTo">For</label><select id="msgTo"><option value="">Choose a team member</option>' + people.map(function(p){ return '<option value="'+p.id+'"'+(f.toId===p.id?' selected':'')+'>'+escapeHtml(p.name)+' ('+escapeHtml(p.role)+')</option>'; }).join('') + '</select></div>' +
+      '</div>' +
+      '<div class="field"><label for="msgSubject">Subject</label><input type="text" id="msgSubject" maxlength="120" value="'+escapeHtml(f.subject)+'" placeholder="e.g. Collect vinyl from supplier"></div>' +
+      '<div class="field"><label for="msgBody">Details</label><textarea id="msgBody" rows="5" placeholder="What needs to be done, or what you want to know">'+escapeHtml(f.body)+'</textarea></div>' +
+      '<div class="field-row">' +
+        '<div class="field" id="msgDueWrap"'+(f.kind==='task'?'':' style="display:none;"')+'><label for="msgDue">Due date (optional)</label><input type="date" id="msgDue" value="'+escapeHtml(f.dueDate)+'"></div>' +
+        '<div class="field"><label for="msgJob">About a job (optional)</label><select id="msgJob"><option value="">Not about a job</option>' + jobs.map(function(o){ return '<option value="'+o.id+'"'+(f.orderId===o.id?' selected':'')+'>'+escapeHtml((o.jobNumber||jobNo(o.id))+' — '+(o.title||'')+' ('+(o.customerName||'')+')')+'</option>'; }).join('') + '</select></div>' +
+      '</div>' +
+      '<div class="modal-foot"><button class="btn btn-ghost" data-action="msg-form-close">Cancel</button><button class="btn btn-primary" data-action="msg-send"'+(f.busy?' disabled':'')+'>'+(f.busy?'Sending…':'Send')+'</button></div>' +
+    '</div></div>';
   }
 
   /* ============================ boot ============================ */

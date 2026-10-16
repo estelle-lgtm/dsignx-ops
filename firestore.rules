@@ -110,6 +110,23 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Internal messages (enquiries and ad hoc tasks). Only the sender and the receiver can read and
+    // act on one; the owner can also read all of them. Nobody can delete or re-address a message.
+    function myMsgId() { return isOwner() ? 'owner' : lnk().get('memberId', ''); }
+    match /messages/{id} {
+      allow read: if isTeam() && (isOwner() || resource.data.fromId == myMsgId() || resource.data.toId == myMsgId());
+      allow create: if isTeam()
+        && request.resource.data.fromId == myMsgId()
+        && request.resource.data.toId is string && request.resource.data.toId != myMsgId()
+        && request.resource.data.status == 'pending';
+      allow update: if isTeam()
+        && (resource.data.fromId == myMsgId() || resource.data.toId == myMsgId())
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['log', 'attn', 'status', 'needsAnswer', 'acceptedAt', 'finishedAt', 'updatedAt'])
+        // only the receiver accepts or finishes
+        && (!('status' in request.resource.data.diff(resource.data).affectedKeys()) || resource.data.toId == myMsgId());
+      allow delete: if false;
+    }
+
     // Credit notes: staff can see them (they reduce what is owed on an invoice); only the owner issues one.
     // Never deleted: the owner can mark one void instead.
     match /creditNotes/{id} {
