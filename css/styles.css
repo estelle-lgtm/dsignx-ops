@@ -636,3 +636,7 @@ img{max-width:100%}
 .msg-compose{margin-top:14px; border-top:1px solid var(--line); padding-top:12px;}
 .msg-compose textarea{width:100%;}
 .msg-buttons{display:flex; flex-wrap:wrap; gap:8px; margin:8px 0 4px;}
+
+/* awaiting approval (update 23) */
+.status-approval{background:#FBF0D9; color:#7A5300;}
+.board{grid-auto-columns:minmax(178px, 1fr);}

@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-10-16.22';
+import './platform.js?v=2026-10-20.23';
 
 (function(){
   "use strict";
@@ -18,6 +18,7 @@ import './platform.js?v=2026-10-16.22';
     {key:'new', label:'New'},
     {key:'quoted', label:'Quoted'},
     {key:'designing', label:'Designing'},
+    {key:'approval', label:'Awaiting Approval'},
     {key:'printing', label:'Printing'},
     {key:'production', label:'Production'},
     {key:'invoiced', label:'Invoiced'},
@@ -1845,7 +1846,7 @@ import './platform.js?v=2026-10-16.22';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-16.22</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-20.23</span></div>' +
       '</div>'
     );
   }
@@ -6017,7 +6018,7 @@ import './platform.js?v=2026-10-16.22';
   }
 
   /* ============================ quote success statistics ============================ */
-  var WON_STATUSES = ['designing','printing','production','invoiced','ready','collected','in_progress','delivered'];
+  var WON_STATUSES = ['designing','approval','printing','production','invoiced','ready','collected','in_progress','delivered'];
   function quoteValidUntil(o){ return addDays(String(o.quoteGeneratedAt).slice(0,10), Number(o.quoteValidDays)||Number(STATE.config.quoteValidityDays)||14); }
   function quoteOutcome(o){
     if(hasInvoiceDoc(o) || isSale(o) || WON_STATUSES.indexOf(o.status)>=0 || orderPaid(o.id) > 0) return 'won';
