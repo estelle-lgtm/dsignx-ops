@@ -109,10 +109,12 @@ exports.connector = onCall(
   async (req) => {
     if (!req.auth) throw new HttpsError('unauthenticated', 'Sign in first.');
     const role = await roleOf(req.auth.uid);
-    if (role !== 'owner' && role !== 'designer') {
+    const { server, tool, input } = req.data || {};
+    // Technicians may only upload photos/PDFs (attachments on internal messages); everything else is staff-only.
+    const techUpload = role === 'technician' && server === 'Cloudinary' && tool === 'upload-asset';
+    if (role !== 'owner' && role !== 'designer' && !techUpload) {
       throw new HttpsError('permission-denied', 'Only the owner and designers can use WhatsApp and file sending.');
     }
-    const { server, tool, input } = req.data || {};
     const birdKey = core.cleanBirdKey(BIRD_API_KEY.value());
     const cloud = core.parseCloudinaryUrl(CLOUDINARY_URL.value());
     if (!cloud && CLOUDINARY_URL.value()) logger.warn('CLOUDINARY_URL is set but not in the form cloudinary://KEY:SECRET@CLOUD_NAME');

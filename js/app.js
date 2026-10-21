@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-10-20.23';
+import './platform.js?v=2026-10-21.24';
 
 (function(){
   "use strict";
@@ -1846,7 +1846,7 @@ import './platform.js?v=2026-10-20.23';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-20.23</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-21.24</span></div>' +
       '</div>'
     );
   }
@@ -3342,9 +3342,11 @@ import './platform.js?v=2026-10-20.23';
       else if(action==='msg-send'){ sendNewMsg(); }
       else if(action==='msg-box'){ STATE.msgBox = el.getAttribute('data-box'); render(); }
       else if(action==='msg-show'){ STATE.msgShow = el.getAttribute('data-show'); render(); }
-      else if(action==='msg-open'){ var mid = el.getAttribute('data-id'); if(STATE.msgOpenId!==mid) STATE.msgDraft = ''; STATE.msgOpenId = mid; var mm = (STATE.messages||[]).find(function(x){ return x.id===mid; }); if(mm) clearMsgAttn(mm); render(); var ml = document.querySelector('.msg-detail'); if(ml && window.innerWidth < 900) ml.scrollIntoView({behavior:'smooth'}); }
+      else if(action==='msg-open'){ var mid = el.getAttribute('data-id'); if(STATE.msgOpenId!==mid){ STATE.msgDraft = ''; STATE.msgFiles = []; } STATE.msgOpenId = mid; var mm = (STATE.messages||[]).find(function(x){ return x.id===mid; }); if(mm) clearMsgAttn(mm); render(); var ml = document.querySelector('.msg-detail'); if(ml && window.innerWidth < 900) ml.scrollIntoView({behavior:'smooth'}); }
       else if(action==='msg-close'){ STATE.msgOpenId = null; STATE.msgDraft = ''; render(); }
       else if(action==='msg-act'){ msgAction(el.getAttribute('data-type')); }
+      else if(action==='msg-file-remove'){ removeMsgFile(el.getAttribute('data-which'), Number(el.getAttribute('data-i'))); }
+      else if(action==='msg-file-save'){ saveMsgFileToJob(el.getAttribute('data-url'), el.getAttribute('data-order')); }
       else if(action==='toggle-nav'){ toggleNav(); }
       else if(action==='toggle-collected'){ STATE.showAllCollected = !STATE.showAllCollected; render(); }
       else if(action==='cn-new'){ openCreditForm(el.getAttribute('data-id')); }
@@ -3587,6 +3589,7 @@ import './platform.js?v=2026-10-20.23';
       if(e.target.id==='cnExFrom'){ STATE.cnExFrom = e.target.value; render(); }
       if(e.target.id==='cnExTo'){ STATE.cnExTo = e.target.value; render(); }
       if(e.target.id==='cnExStatus'){ STATE.cnExStatus = e.target.value; render(); }
+      if(e.target.id==='msgNewFiles' || e.target.id==='msgReplyFiles'){ onMsgFilesChosen(e.target); return; }
       if(e.target.id==='msgKind'){ var dw = document.getElementById('msgDueWrap'); if(dw) dw.style.display = e.target.value==='task' ? '' : 'none'; if(STATE.msgForm) STATE.msgForm.kind = e.target.value; }
       if(e.target.id==='ageAsAt' && e.target.value){ STATE.ageAsAt = e.target.value; render(); }
       if(e.target.id==='invExTo'){ STATE.invExportTo = e.target.value; render(); }
@@ -6126,6 +6129,8 @@ import './platform.js?v=2026-10-20.23';
   function startMessageFeed(){
     if(!STATE.db || _msgUnsubs.length) return;
     var me = myMsgId(); if(!me) return;
+    if(!STATE.assets && window.DSX && window.DSX.assets) STATE.assets = window.DSX.assets; // technicians attach files too
+    if(!STATE.downloads && window.DSX) STATE.downloads = window.DSX.downloads;
     var buckets = {};
     var merge = function(){
       var map = {};
@@ -6185,6 +6190,71 @@ import './platform.js?v=2026-10-20.23';
     STATE.msgForm = {kind:'task', toId:'', subject: o ? ((o.jobNumber||jobNo(o.id))+' — '+(o.title||'')) : '', body:'', dueDate:'', orderId: o ? o.id : '', error:'', busy:false};
     render();
   }
+  /* ---- attachments (photos and PDFs, up to 5 per message, 9 MB each) ---- */
+  var MSG_MAX_FILES = 5, MSG_MAX_BYTES = 9*1024*1024;
+  function msgFileOk(f){ return f && (/^image\/(jpe?g|png|webp|gif)$/i.test(f.type) || f.type==='application/pdf' || /\.(jpe?g|png|pdf)$/i.test(f.name||'')); }
+  function addMsgFiles(list, files){
+    var bad = 0, big = 0;
+    Array.prototype.forEach.call(files||[], function(f){
+      if(!msgFileOk(f)){ bad++; return; }
+      if(f.size > MSG_MAX_BYTES){ big++; return; }
+      if(list.length < MSG_MAX_FILES) list.push(f);
+    });
+    if(bad) toast('Only photos (JPEG, PNG) and PDFs can be attached');
+    else if(big) toast('Files must be under 9 MB');
+    else if((files||[]).length && list.length >= MSG_MAX_FILES) toast('Up to '+MSG_MAX_FILES+' files per message');
+  }
+  function pendingFilesHtml(list, which){
+    if(!list || !list.length) return '';
+    return '<div class="msg-files pending">' + list.map(function(f, i){
+      return '<span class="msg-file"><span class="msg-file-ic">'+(/pdf/i.test(f.type||f.name)?'PDF':'IMG')+'</span>'+escapeHtml(f.name||'file')+' <span class="msg-file-size">'+Math.max(1, Math.round((f.size||0)/1024))+' KB</span><button type="button" class="msg-file-x" data-action="msg-file-remove" data-which="'+which+'" data-i="'+i+'" aria-label="Remove">&times;</button></span>';
+    }).join('') + '</div>';
+  }
+  function attachButton(id, which){
+    return '<label class="btn btn-ghost btn-sm msg-attach" title="Attach photos or PDFs"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.6-8.6a3.4 3.4 0 0 1 4.8 4.8l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/></svg> Attach<input type="file" id="'+id+'" data-which="'+which+'" accept="image/jpeg,image/png,image/webp,application/pdf" multiple style="display:none"></label>';
+  }
+  // Uploads to the same file store as job artwork; resolves to [{url,name,type,size}].
+  function uploadMsgFiles(files){
+    if(!files || !files.length) return Promise.resolve([]);
+    if(!STATE.assets) return Promise.reject({code:'no_assets'});
+    var out = [];
+    return files.reduce(function(chain, f){
+      return chain.then(function(){ return STATE.assets.upload(f).then(function(r){ out.push({url:r.url||r.id, name:f.name||'file', type:f.type||'', size:f.size||0}); }); });
+    }, Promise.resolve()).then(function(){ return out; });
+  }
+  function msgFilesHtml(files, m){
+    if(!files || !files.length) return '';
+    var canSave = !!(m && m.orderId && !isTechnician() && STATE.orders.some(function(o){ return o.id===m.orderId; }));
+    return '<div class="msg-files">' + files.map(function(f){
+      var isImg = /^image\//.test(f.type) || /\.(jpe?g|png|webp|gif)(\?|$)/i.test(f.url);
+      var save = canSave ? '<button type="button" class="btn btn-ghost btn-sm" data-action="msg-file-save" data-url="'+escapeHtml(f.url)+'" data-order="'+escapeHtml(m.orderId)+'">Save to job</button>' : '';
+      if(isImg) return '<span class="msg-file img"><a href="'+escapeHtml(f.url)+'" target="_blank" rel="noopener" title="Open '+escapeHtml(f.name)+'"><img src="'+escapeHtml(f.url)+'" alt="'+escapeHtml(f.name)+'" loading="lazy"></a><span class="msg-file-name">'+escapeHtml(f.name)+'</span>'+save+'</span>';
+      return '<span class="msg-file"><span class="msg-file-ic">PDF</span><a href="'+escapeHtml(f.url)+'" target="_blank" rel="noopener">'+escapeHtml(f.name)+'</a>'+save+'</span>';
+    }).join('') + '</div>';
+  }
+  function saveMsgFileToJob(url, orderId){
+    var o = STATE.orders.find(function(x){ return x.id===orderId; }); if(!o || isTechnician()) return;
+    if((o.attachmentIds||[]).indexOf(url)>=0){ toast('Already on the job'); return; }
+    updateOrder(o.id, {attachmentIds:(o.attachmentIds||[]).concat([url])}); toast('Saved to job '+(o.jobNumber||jobNo(o.id)));
+  }
+  function msgUploadError(err){ return (err && err.code==='no_assets') ? 'File uploads aren’t set up on this device.' : (err && err.code==='too_large') ? 'Files must be under 9 MB.' : 'Couldn’t upload the files — check your connection and try again.'; }
+
+  function captureMsgForm(){
+    var f = STATE.msgForm; if(!f) return;
+    ['msgKind','msgTo','msgSubject','msgBody','msgDue','msgJob'].forEach(function(id){ var el = document.getElementById(id); if(!el) return; var k = {msgKind:'kind', msgTo:'toId', msgSubject:'subject', msgBody:'body', msgDue:'dueDate', msgJob:'orderId'}[id]; f[k] = el.value; });
+  }
+  function onMsgFilesChosen(input){
+    var which = input.getAttribute('data-which');
+    if(which==='new'){ if(!STATE.msgForm) return; captureMsgForm(); STATE.msgForm.files = STATE.msgForm.files || []; addMsgFiles(STATE.msgForm.files, input.files); }
+    else { var t = document.getElementById('msgText'); if(t) STATE.msgDraft = t.value; STATE.msgFiles = STATE.msgFiles || []; addMsgFiles(STATE.msgFiles, input.files); }
+    input.value = '';
+    render();
+  }
+  function removeMsgFile(which, i){
+    if(which==='new'){ if(STATE.msgForm && STATE.msgForm.files){ captureMsgForm(); STATE.msgForm.files.splice(i,1); } }
+    else { var t = document.getElementById('msgText'); if(t) STATE.msgDraft = t.value; (STATE.msgFiles||[]).splice(i,1); }
+    render();
+  }
   function sendNewMsg(){
     var f = STATE.msgForm; if(!f || f.busy) return;
     ['msgKind','msgTo','msgSubject','msgBody','msgDue','msgJob'].forEach(function(id){ var el = document.getElementById(id); if(!el) return; var k = {msgKind:'kind', msgTo:'toId', msgSubject:'subject', msgBody:'body', msgDue:'dueDate', msgJob:'orderId'}[id]; f[k] = el.value; });
@@ -6199,11 +6269,14 @@ import './platform.js?v=2026-10-20.23';
       fromId:me, fromName:myMsgName(), toId:to.id, toName:to.name, createdAt:now, updatedAt:now,
       dueDate: f.kind==='task' ? (f.dueDate||'') : '', orderId: o ? o.id : '', jobNumber: o ? (o.jobNumber||jobNo(o.id)) : '',
       status:'pending', needsAnswer:false, log:[], attn:attn};
-    f.busy = true; render();
-    var p = (STATE.isLive && STATE.db) ? STATE.db.collection('messages').add(rec).then(function(r){ return r.id; })
-      : Promise.resolve(uid()).then(function(id){ STATE.messages = [Object.assign({id:id}, rec)].concat(STATE.messages||[]); return id; });
+    f.busy = true; f.uploading = (f.files||[]).length; render();
+    var p = uploadMsgFiles(f.files||[]).then(function(att){
+      rec.attachments = att; f.uploading = 0;
+      return (STATE.isLive && STATE.db) ? STATE.db.collection('messages').add(rec).then(function(r){ return r.id; })
+        : Promise.resolve(uid()).then(function(id){ STATE.messages = [Object.assign({id:id}, rec)].concat(STATE.messages||[]); return id; });
+    });
     p.then(function(id){ STATE.msgForm = null; STATE.msgOpenId = id; STATE.msgBox = 'sent'; STATE.tab = 'messages'; render(); toast((rec.kind==='task'?'Task':'Enquiry')+' sent to '+to.name); })
-     .catch(function(){ f.busy = false; f.error = 'Couldn’t send — check your connection and try again.'; render(); });
+     .catch(function(err){ f.busy = false; f.uploading = 0; f.error = (err && err.code) ? msgUploadError(err) : 'Couldn’t send — check your connection and try again.'; render(); });
   }
   // type: accept | note | reply | finish
   function msgAction(type){
@@ -6211,10 +6284,23 @@ import './platform.js?v=2026-10-20.23';
     var me = myMsgId(), isTo = m.toId===me, isFrom = m.fromId===me;
     if(!isTo && !isFrom) return;
     var el = document.getElementById('msgText'), text = String(el ? el.value : (STATE.msgDraft||'')).trim();
-    if((type==='note' || type==='reply') && !text){ toast(type==='note' ? 'Type the note first' : 'Type your reply first'); if(el) el.focus(); return; }
+    var files = (STATE.msgFiles||[]).slice();
+    if(STATE.msgBusy) return;
+    if((type==='note' || type==='reply') && !text && !files.length){ toast(type==='note' ? 'Type the note first' : 'Type your reply first'); if(el) el.focus(); return; }
     if(type==='accept' && !(isTo && m.status==='pending')) return;
     if(type==='finish' && !(isTo && m.status==='accepted')){ toast('Accept it first'); return; }
+    if(files.length){
+      STATE.msgDraft = text; STATE.msgBusy = files.length; render();
+      uploadMsgFiles(files).then(function(att){ STATE.msgBusy = 0; STATE.msgFiles = []; msgCommit(m, type, text, att); })
+        .catch(function(err){ STATE.msgBusy = 0; render(); toast(msgUploadError(err)); });
+      return;
+    }
+    msgCommit(m, type, text, []);
+  }
+  function msgCommit(m, type, text, att){
+    var me = myMsgId(), isTo = m.toId===me;
     var entry = {at:new Date().toISOString(), byId:me, byName:myMsgName(), type:type, text:text};
+    if(att && att.length) entry.files = att;
     var patch = {log:(m.log||[]).concat([entry])};
     var attn = Object.assign({}, m.attn||{});
     var other = otherSide(m);
@@ -6287,6 +6373,7 @@ import './platform.js?v=2026-10-20.23';
       return '<div class="msg-entry msg-'+e.type+(mine?' mine':'')+'">' +
         '<div class="msg-entry-head"><strong>'+escapeHtml(e.byName)+'</strong> <span class="msg-tag">'+LOG_LABEL[e.type]+'</span><span class="msg-when">'+msgTime(e.at)+'</span></div>' +
         (e.text ? '<div class="msg-entry-text">'+escapeHtml(e.text).replace(/\n/g,'<br>')+'</div>' : '') +
+        msgFilesHtml(e.files, m) +
       '</div>';
     }).join('');
     var draft = escapeHtml(STATE.msgDraft||'');
@@ -6296,7 +6383,9 @@ import './platform.js?v=2026-10-20.23';
                     : 'Answer '+escapeHtml(m.toName)+'’s question, add more detail, or keep a note…';
       actions = '<div class="msg-compose">' +
         '<textarea id="msgText" rows="3" placeholder="'+ph+'">'+draft+'</textarea>' +
-        '<div class="msg-buttons">' +
+        pendingFilesHtml(STATE.msgFiles, 'reply') +
+        (STATE.msgBusy ? '<div class="hint">Uploading '+STATE.msgBusy+' file'+(STATE.msgBusy===1?'':'s')+'…</div>' : '') +
+        '<div class="msg-buttons">' + attachButton('msgReplyFiles', 'reply') +
           (isTo && m.status==='pending' ? '<button class="btn btn-primary btn-sm" data-action="msg-act" data-type="accept">Accept</button>' : '') +
           '<button class="btn btn-sm" data-action="msg-act" data-type="note" title="Saved on this '+(m.kind==='task'?'task':'enquiry')+' — no notification">Save note</button>' +
           '<button class="btn btn-sm" data-action="msg-act" data-type="reply">'+(isTo ? 'Reply to '+escapeHtml(m.fromName) : 'Send reply to '+escapeHtml(m.toName))+'</button>' +
@@ -6315,7 +6404,7 @@ import './platform.js?v=2026-10-20.23';
         (m.dueDate ? ' &middot; <span class="msg-due'+(m.dueDate<todayIso() && m.status!=='finished'?' late':'')+'">Due '+fullDate(m.dueDate)+'</span>' : '') + '</div>' +
         (m.orderId ? '<div style="margin-top:6px;"><button type="button" class="btn btn-ghost btn-sm" data-action="open-order" data-id="'+escapeHtml(m.orderId)+'"'+(o?'':' disabled')+'>Job '+escapeHtml(m.jobNumber||'')+(o?' — '+escapeHtml(o.title||''):' (not found)')+'</button></div>' : '') +
       '</div><button class="modal-close" data-action="msg-close" aria-label="Close">&times;</button></div>' +
-      '<div class="msg-entry msg-original"><div class="msg-entry-text">'+escapeHtml(m.body).replace(/\n/g,'<br>')+'</div></div>' +
+      '<div class="msg-entry msg-original"><div class="msg-entry-text">'+escapeHtml(m.body).replace(/\n/g,'<br>')+'</div>'+msgFilesHtml(m.attachments, m)+'</div>' +
       log + actions +
     '</div>';
   }
@@ -6336,7 +6425,8 @@ import './platform.js?v=2026-10-20.23';
         '<div class="field" id="msgDueWrap"'+(f.kind==='task'?'':' style="display:none;"')+'><label for="msgDue">Due date (optional)</label><input type="date" id="msgDue" value="'+escapeHtml(f.dueDate)+'"></div>' +
         '<div class="field"><label for="msgJob">About a job (optional)</label><select id="msgJob"><option value="">Not about a job</option>' + jobs.map(function(o){ return '<option value="'+o.id+'"'+(f.orderId===o.id?' selected':'')+'>'+escapeHtml((o.jobNumber||jobNo(o.id))+' — '+(o.title||'')+' ('+(o.customerName||'')+')')+'</option>'; }).join('') + '</select></div>' +
       '</div>' +
-      '<div class="modal-foot"><button class="btn btn-ghost" data-action="msg-form-close">Cancel</button><button class="btn btn-primary" data-action="msg-send"'+(f.busy?' disabled':'')+'>'+(f.busy?'Sending…':'Send')+'</button></div>' +
+      '<div class="field" style="margin-top:-4px;">' + attachButton('msgNewFiles', 'new') + '<span class="hint" style="margin-left:8px;">Photos or PDFs, up to 5 files of 9 MB each</span>' + pendingFilesHtml(f.files, 'new') + '</div>' +
+      '<div class="modal-foot"><button class="btn btn-ghost" data-action="msg-form-close">Cancel</button><button class="btn btn-primary" data-action="msg-send"'+(f.busy?' disabled':'')+'>'+(f.busy?(f.uploading?'Uploading '+f.uploading+' file'+(f.uploading===1?'':'s')+'…':'Sending…'):'Send')+'</button></div>' +
     '</div></div>';
   }
 

@@ -640,3 +640,15 @@ img{max-width:100%}
 /* awaiting approval (update 23) */
 .status-approval{background:#FBF0D9; color:#7A5300;}
 .board{grid-auto-columns:minmax(178px, 1fr);}
+
+/* message attachments (update 24) */
+.msg-files{display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;}
+.msg-file{display:inline-flex; align-items:center; gap:8px; background:var(--surface-2); border:1px solid var(--line); border-radius:var(--radius-s); padding:6px 8px; font-size:12.5px; max-width:100%;}
+.msg-file a{color:var(--ink); font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:220px;}
+.msg-file.img{flex-direction:column; align-items:flex-start; padding:6px;}
+.msg-file.img img{display:block; width:150px; height:110px; object-fit:cover; border-radius:6px; background:#fff;}
+.msg-file-name{font-size:11.5px; color:var(--ink-soft); max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.msg-file-ic{font-size:10px; font-weight:800; color:#fff; background:#B3261E; border-radius:4px; padding:2px 5px;}
+.msg-file-size{color:var(--ink-faint); font-size:11px;}
+.msg-file-x{border:none; background:none; cursor:pointer; font-size:16px; line-height:1; color:var(--ink-soft); padding:0 2px;}
+.msg-attach{cursor:pointer; gap:5px;}
