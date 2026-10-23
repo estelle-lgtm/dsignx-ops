@@ -71,7 +71,9 @@ service cloud.firestore {
     match /orders/{id} {
       allow read: if isTeam();
       allow create, delete: if isStaff();
-      allow update: if isStaff()
+      // Only the owner changes a job's order date once it is set (a quote converted to a job gets it once).
+      allow update: if (isStaff()
+          && (isOwner() || !('orderDate' in request.resource.data.diff(resource.data).affectedKeys()) || !('orderDate' in resource.data)))
         || (role() == 'technician'
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
               'title', 'status', 'category', 'description', 'qty', 'dueDate', 'notes',

@@ -153,3 +153,56 @@ exports.connector = onCall(
     throw new HttpsError('invalid-argument', `Unknown service ${server}`, { code: 'tool_error', server });
   }
 );
+
+/* ---------------- payment reminders ---------------- */
+// Every weekday at 07:30 (South African time) each overdue, unpaid invoice gets a reminder in the
+// internal Messages tab for the job's designer (or the owner when there is no designer). While the
+// invoice stays unpaid, it is repeated every N days (Settings → Payment reminders; default 7).
+// An open reminder gets a new line; once the designer has finished it, the next one starts afresh.
+const { onSchedule } = require('firebase-functions/v2/scheduler');
+const rem = require('./lib/reminders');
+
+async function runPaymentReminders(trigger) {
+  const cfgSnap = await db.doc('config/business').get();
+  const cfg = cfgSnap.exists ? cfgSnap.data() : {};
+  if (trigger === 'schedule' && cfg.paymentReminders === false) return { sent: 0, updated: 0, skipped: 'off' };
+  const all = async (name) => (await db.collection(name).get()).docs.map((d) => Object.assign({ id: d.id }, d.data()));
+  const [orders, receipts, credits, team, sentList] = await Promise.all([all('orders'), all('receipts'), all('creditNotes'), all('team'), all('reminders')]);
+  const sent = {}; sentList.forEach((r) => { sent[r.id] = r; });
+  const today = core.todayInJoburg();
+  const plan = rem.planReminders({ orders, receipts, credits, team, cfg, sent, today, everyDays: cfg.reminderEveryDays || 7 });
+  let created = 0, updated = 0;
+  for (const p of plan) {
+    const t = rem.reminderText(p), now = new Date().toISOString();
+    let msgId = p.prev && p.prev.messageId, msg = null;
+    if (msgId) { const s = await db.doc(`messages/${msgId}`).get(); msg = s.exists ? s.data() : null; }
+    const attnKey = `attn.${p.toId}`;
+    if (msg && msg.status !== 'finished' && msg.toId === p.toId) {
+      await db.doc(`messages/${msgId}`).update({
+        log: admin.firestore.FieldValue.arrayUnion({ at: now, byId: 'system', byName: 'DsignX Ops', type: 'system', text: t.again }),
+        [attnKey]: true, updatedAt: now,
+      });
+      updated++;
+    } else {
+      const ref = await db.collection('messages').add({
+        kind: 'reminder', subject: t.subject, body: t.body,
+        fromId: 'system', fromName: 'DsignX Ops', toId: p.toId, toName: p.toName,
+        createdAt: now, updatedAt: now, dueDate: '', orderId: p.order.id, jobNumber: p.order.jobNumber || '',
+        status: 'pending', needsAnswer: false, log: [], attn: { [p.toId]: true }, attachments: [],
+      });
+      msgId = ref.id; created++;
+    }
+    await db.doc(`reminders/${p.order.id}`).set({ lastSentAt: today, messageId: msgId, count: ((p.prev && p.prev.count) || 0) + 1, invoiceNumber: p.order.invoiceNumber || '' }, { merge: true });
+  }
+  logger.info('payment reminders', { trigger, created, updated, today });
+  return { sent: created, updated };
+}
+
+exports.paymentReminders = onSchedule({ schedule: '30 7 * * 1-5', timeZone: 'Africa/Johannesburg' }, async () => { await runPaymentReminders('schedule'); });
+
+// The owner can run it straight away from Settings (still only one reminder per invoice per interval).
+exports.sendPaymentReminders = onCall(async (req) => {
+  if (!req.auth) throw new HttpsError('unauthenticated', 'Sign in first.');
+  if ((await roleOf(req.auth.uid)) !== 'owner') throw new HttpsError('permission-denied', 'Only the owner can send reminders.');
+  return runPaymentReminders('manual');
+});

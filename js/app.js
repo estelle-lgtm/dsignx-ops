@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-10-21.24';
+import './platform.js?v=2026-10-23.26';
 
 (function(){
   "use strict";
@@ -1846,7 +1846,7 @@ import './platform.js?v=2026-10-21.24';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-21.24</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-23.26</span></div>' +
       '</div>'
     );
   }
@@ -1974,7 +1974,7 @@ import './platform.js?v=2026-10-21.24';
     if(o.technician2Name) avatars += '<div class="avatar technician" title="Technician: '+escapeHtml(o.technician2Name)+'">'+initials(o.technician2Name)+'</div>';
     return (
       '<div class="card" draggable="true" data-id="'+o.id+'" data-action="open-order">' +
-        '<div class="jobno">'+jobNo(o.id)+'</div>' +
+        '<div class="jobno">'+jobNo(o.id)+(orderDateOf(o)?'<span class="ordered" title="Order date">Ordered '+shortDate(orderDateOf(o))+'</span>':'')+'</div>' +
         '<h4>'+escapeHtml(o.title)+'</h4>' +
         '<div class="who">'+escapeHtml(o.customerName)+(o.poNumber ? ' <span class="po-tag">PO '+escapeHtml(o.poNumber)+'</span>' : '')+'</div>' +
         '<span class="cat"><span class="dot" style="background:'+catMeta(o.category).dot+'"></span>'+catMeta(o.category).label+'</span>' +
@@ -2213,7 +2213,7 @@ import './platform.js?v=2026-10-21.24';
 
     return (
       '<div class="topline"><div><h1>Reports</h1><div class="sub">Commission report &middot; '+rangeLabel(range)+(ownerView?'':' &middot; your figures only')+'</div></div>' + exampleBadge() +
-        (ownerView ? '<button class="btn btn-sm" data-action="report-export">Download CSV</button>' : '') +
+        '<div style="display:flex; gap:8px;">' + (ownerView ? '<button class="btn btn-sm" data-action="report-export">Download CSV</button>' : '') + '<button class="btn btn-primary btn-sm" data-action="report-pdf">Download PDF</button></div>' +
       '</div>' +
       reportSwitcher() +
       '<div class="panel" style="padding:12px 14px; margin-bottom:16px;">' +
@@ -2824,6 +2824,7 @@ import './platform.js?v=2026-10-21.24';
             '</div>' +
           '</div>' +
           '<div class="panel" style="padding:12px 14px;"><span class="hint" style="margin:0;">Invoice, credit note, customer and receipt downloads (and the Xero export defaults) are on the <button type="button" class="btn btn-ghost btn-sm" style="padding:0 4px; vertical-align:baseline;" data-action="tab" data-tab="exports">Exports</button> tab.</span></div>' +
+          (isOwnerRole() ? renderReminderPanel() : '') +
           renderLetterheadPanel() +
           '<div class="panel">' +
             '<div class="section-label">Quotation defaults</div>' +
@@ -3085,6 +3086,7 @@ import './platform.js?v=2026-10-21.24';
           '<div class="field"><label for="ofCustomer">Customer</label><input type="text" value="'+escapeHtml(o.customerName)+' &middot; '+escapeHtml(o.phone||'no number')+'" disabled></div>' +
           '<div class="field"><label for="ofDesc">Details</label><textarea id="ofDesc">'+escapeHtml(o.description||'')+'</textarea></div>' +
           '<div class="field-row">' +
+            '<div class="field"><label for="ofOrderDate">Order date</label><input type="date" id="ofOrderDate" value="'+orderDateOf(o)+'"'+(isOwnerRole()?'':' disabled title="Only the owner can change the order date"')+'></div>' +
             '<div class="field"><label for="ofQty">Quantity</label><input type="number" id="ofQty" min="1" value="'+(o.qty||1)+'"></div>' +
             '<div class="field"><label for="ofDue">Due date</label><input type="date" id="ofDue" value="'+(o.dueDate||'')+'"></div>' +
           '</div>' +
@@ -3183,7 +3185,7 @@ import './platform.js?v=2026-10-21.24';
     if(!confirm('Convert this quotation for '+(o.customerName||'the customer')+' into a job? It gets a job number and goes on the job board as “Quoted”.')) return;
     reserveNumbers('nextJobNumber', 1).then(function(n){
       var jn = 'DSX-J'+pad4(n);
-      return updateOrder(id, {quoteOnly:false, status:'quoted', jobNumber:jn, convertedAt:todayIso(), createdAt:todayIso()}).then(function(){ return jn; });
+      return updateOrder(id, {quoteOnly:false, status:'quoted', jobNumber:jn, convertedAt:todayIso(), createdAt:todayIso(), orderDate:todayIso()}).then(function(){ return jn; });
     }).then(function(jn){
       STATE.quoteModalOrderId = null; STATE.quoteDraft = null;
       STATE.openOrderId = id;
@@ -3214,6 +3216,7 @@ import './platform.js?v=2026-10-21.24';
           '</div>' +
           '<div class="field"><label for="noDesc">Details</label><textarea id="noDesc" placeholder="Size, material, files supplied...">'+escapeHtml(pf.description||'')+'</textarea></div>' +
           '<div class="field-row">' +
+            '<div class="field"><label for="noOrderDate">Order date</label><input type="date" id="noOrderDate" value="'+todayIso()+'"'+(isOwnerRole()?'':' disabled title="Only the owner can change the order date"')+'></div>' +
             '<div class="field"><label for="noQty">Quantity</label><input type="number" id="noQty" min="1" value="1"></div>' +
             '<div class="field"><label for="noDue">Due date</label><input type="date" id="noDue"></div>' +
           '</div>' +
@@ -3347,6 +3350,9 @@ import './platform.js?v=2026-10-21.24';
       else if(action==='msg-act'){ msgAction(el.getAttribute('data-type')); }
       else if(action==='msg-file-remove'){ removeMsgFile(el.getAttribute('data-which'), Number(el.getAttribute('data-i'))); }
       else if(action==='msg-file-save'){ saveMsgFileToJob(el.getAttribute('data-url'), el.getAttribute('data-order')); }
+      else if(action==='save-reminders'){ saveReminderSettings(); }
+      else if(action==='send-reminders-now'){ sendRemindersNow(); }
+      else if(action==='report-pdf'){ commissionReportPdf(); }
       else if(action==='toggle-nav'){ toggleNav(); }
       else if(action==='toggle-collected'){ STATE.showAllCollected = !STATE.showAllCollected; render(); }
       else if(action==='cn-new'){ openCreditForm(el.getAttribute('data-id')); }
@@ -3704,6 +3710,8 @@ import './platform.js?v=2026-10-21.24';
       dueDate: document.getElementById('ofDue').value,
       notes: document.getElementById('ofNotes').value
     };
+    var odEl = document.getElementById('ofOrderDate');
+    if(odEl && isOwnerRole() && odEl.value){ var curO = STATE.orders.find(function(x){ return x.id===id; }); if(!curO || odEl.value!==orderDateOf(curO) || !curO.orderDate) patch.orderDate = odEl.value; }
     var poEl = document.getElementById('ofPo');
     if(poEl && !isTechnician()) patch.poNumber = poEl.value.trim();
     if(!isTechnician() && document.getElementById('ofQuote')){
@@ -3774,6 +3782,7 @@ import './platform.js?v=2026-10-21.24';
         invoiced:false,
         invoiceNumber:'',
         dueDate: document.getElementById('noDue').value,
+        orderDate: (isOwnerRole() && (document.getElementById('noOrderDate')||{}).value) || todayIso(),
         notes:'',
         source: document.getElementById('noSource').value,
         attachmentIds:[],
@@ -6158,6 +6167,7 @@ import './platform.js?v=2026-10-21.24';
   function msgToastText(m){
     var last = (m.log||[])[m.log ? m.log.length-1 : 0];
     if(!last) return 'New '+(m.kind==='task'?'task':'enquiry')+' from '+m.fromName+': '+m.subject;
+    if(last.type==='system') return 'Payment reminder: '+m.subject.replace(/^Payment overdue:\s*/,'');
     var verb = {accept:'accepted', reply:'replied to', finish:'finished', note:'added a note to'}[last.type] || 'updated';
     return last.byName+' '+verb+' “'+m.subject+'”';
   }
@@ -6307,10 +6317,12 @@ import './platform.js?v=2026-10-21.24';
     if(type==='accept'){ patch.status = 'accepted'; patch.acceptedAt = entry.at; attn[other] = true; }
     if(type==='reply'){ attn[other] = true; patch.needsAnswer = isTo; }
     if(type==='finish'){ patch.status = 'finished'; patch.finishedAt = entry.at; patch.needsAnswer = false; attn[other] = true; }
+    if(m.fromId==='system'){ delete attn.system; if(type!=='note' && me!=='owner') attn.owner = true; } // the owner hears how reminders are followed up
     attn[me] = false;
     patch.attn = attn;
     STATE.msgDraft = '';
     msgSave(m, patch).then(function(){
+      if(m.fromId==='system'){ toast({accept:'Accepted', note:'Note saved', finish:'Marked finished'}[type] || 'Saved'); return; }
       toast({accept:'Accepted — '+m.fromName+' has been told', note:'Note saved', reply:'Reply sent to '+(isTo?m.fromName:m.toName), finish:'Marked finished — '+m.fromName+' has been told'}[type]);
     });
     render();
@@ -6323,7 +6335,7 @@ import './platform.js?v=2026-10-21.24';
     if(m.status==='accepted') return '<span class="pay-chip pay-part">Accepted</span>';
     return '<span class="pay-chip pay-unpaid">'+(m.toId===me ? 'Accept please' : 'Not accepted yet')+'</span>';
   }
-  function msgKindChip(m){ return '<span class="msg-kind msg-'+m.kind+'">'+(m.kind==='task'?'Task':'Enquiry')+'</span>'; }
+  function msgKindChip(m){ return '<span class="msg-kind msg-'+m.kind+'">'+(m.kind==='task'?'Task':m.kind==='reminder'?'Payment reminder':'Enquiry')+'</span>'; }
   function msgList(){
     var me = myMsgId(), box = STATE.msgBox || 'inbox', open = STATE.msgShow || 'open';
     return (STATE.messages||[]).filter(function(m){
@@ -6367,7 +6379,7 @@ import './platform.js?v=2026-10-21.24';
   function renderMsgDetail(m){
     var me = myMsgId(), isTo = m.toId===me, isFrom = m.fromId===me, part = isTo || isFrom;
     var o = m.orderId ? STATE.orders.find(function(x){ return x.id===m.orderId; }) : null;
-    var LOG_LABEL = {accept:'accepted', note:'note', reply:'reply', finish:'finished'};
+    var LOG_LABEL = {accept:'accepted', note:'note', reply:'reply', finish:'finished', system:'reminder'};
     var log = (m.log||[]).map(function(e){
       var mine = e.byId===me;
       return '<div class="msg-entry msg-'+e.type+(mine?' mine':'')+'">' +
@@ -6379,7 +6391,7 @@ import './platform.js?v=2026-10-21.24';
     var draft = escapeHtml(STATE.msgDraft||'');
     var actions = '';
     if(part && m.status!=='finished'){
-      var ph = isTo ? (m.status==='pending' ? 'Need more information before you accept? Type your question and press “Reply to '+escapeHtml(m.fromName)+'”.' : 'Notes on your progress, or a question for '+escapeHtml(m.fromName)+'…')
+      var ph = m.fromId==='system' ? 'What did the customer say? Keep notes on your follow-up here…' : isTo ? (m.status==='pending' ? 'Need more information before you accept? Type your question and press “Reply to '+escapeHtml(m.fromName)+'”.' : 'Notes on your progress, or a question for '+escapeHtml(m.fromName)+'…')
                     : 'Answer '+escapeHtml(m.toName)+'’s question, add more detail, or keep a note…';
       actions = '<div class="msg-compose">' +
         '<textarea id="msgText" rows="3" placeholder="'+ph+'">'+draft+'</textarea>' +
@@ -6388,10 +6400,10 @@ import './platform.js?v=2026-10-21.24';
         '<div class="msg-buttons">' + attachButton('msgReplyFiles', 'reply') +
           (isTo && m.status==='pending' ? '<button class="btn btn-primary btn-sm" data-action="msg-act" data-type="accept">Accept</button>' : '') +
           '<button class="btn btn-sm" data-action="msg-act" data-type="note" title="Saved on this '+(m.kind==='task'?'task':'enquiry')+' — no notification">Save note</button>' +
-          '<button class="btn btn-sm" data-action="msg-act" data-type="reply">'+(isTo ? 'Reply to '+escapeHtml(m.fromName) : 'Send reply to '+escapeHtml(m.toName))+'</button>' +
+          (m.fromId==='system' ? '' : '<button class="btn btn-sm" data-action="msg-act" data-type="reply">'+(isTo ? 'Reply to '+escapeHtml(m.fromName) : 'Send reply to '+escapeHtml(m.toName))+'</button>') +
           (isTo && m.status==='accepted' ? '<button class="btn btn-primary btn-sm" data-action="msg-act" data-type="finish">Finish</button>' : '') +
         '</div>' +
-        '<div class="hint">'+(isTo ? (m.status==='pending' ? 'You need to accept this before you can finish it.' : '“Finish” closes it and lets '+escapeHtml(m.fromName)+' know. Anything typed in the box is sent with it.') : 'Replies notify '+escapeHtml(m.toName)+'. Notes are saved without a notification.')+'</div>' +
+        '<div class="hint">'+(m.fromId==='system' ? 'Accept it, keep notes on your follow-up, and press Finish once the customer has paid or it is sorted. The owner sees when you accept and finish.' : isTo ? (m.status==='pending' ? 'You need to accept this before you can finish it.' : '“Finish” closes it and lets '+escapeHtml(m.fromName)+' know. Anything typed in the box is sent with it.') : 'Replies notify '+escapeHtml(m.toName)+'. Notes are saved without a notification.')+'</div>' +
       '</div>';
     } else if(m.status==='finished'){
       actions = '<div class="hint" style="margin-top:10px;">Finished by '+escapeHtml(m.toName)+(m.finishedAt?(' on '+msgTime(m.finishedAt)):'')+'.</div>';
@@ -6428,6 +6440,128 @@ import './platform.js?v=2026-10-21.24';
       '<div class="field" style="margin-top:-4px;">' + attachButton('msgNewFiles', 'new') + '<span class="hint" style="margin-left:8px;">Photos or PDFs, up to 5 files of 9 MB each</span>' + pendingFilesHtml(f.files, 'new') + '</div>' +
       '<div class="modal-foot"><button class="btn btn-ghost" data-action="msg-form-close">Cancel</button><button class="btn btn-primary" data-action="msg-send"'+(f.busy?' disabled':'')+'>'+(f.busy?(f.uploading?'Uploading '+f.uploading+' file'+(f.uploading===1?'':'s')+'…':'Sending…'):'Send')+'</button></div>' +
     '</div></div>';
+  }
+
+  /* ============================ order date, reminders settings, commission PDF (update 25) ============================ */
+  function orderDateOf(o){ return String(o.orderDate || o.createdAt || '').slice(0,10); }
+
+  function renderReminderPanel(){
+    var on = STATE.config.paymentReminders !== false, every = Number(STATE.config.reminderEveryDays)||7;
+    return '<div class="panel">' +
+      '<div class="section-label">Payment reminders</div>' +
+      '<div class="hint" style="margin:-4px 0 12px;">Every weekday at 07:30 the system checks for invoices that are past their due date and not fully paid (after receipts and credit notes). The job’s designer gets a <strong>Payment reminder</strong> in Messages to follow up with the customer; jobs without a designer go to you. While an invoice stays unpaid the reminder repeats.</div>' +
+      '<label style="display:flex; gap:8px; align-items:center; margin-bottom:10px; cursor:pointer;"><input type="checkbox" id="cfgRemOn" style="width:auto;"'+(on?' checked':'')+'> Send payment reminders automatically</label>' +
+      '<div class="field"><label for="cfgRemEvery">Repeat every (days) while unpaid</label><input type="number" id="cfgRemEvery" min="1" max="60" style="max-width:110px;" value="'+every+'"></div>' +
+      '<div style="display:flex; gap:8px; flex-wrap:wrap;">' +
+        '<button class="btn btn-primary btn-sm" data-action="save-reminders">Save</button>' +
+        '<button class="btn btn-sm" data-action="send-reminders-now"'+(STATE.remBusy?' disabled':'')+'>'+(STATE.remBusy?'Checking…':'Send reminders now')+'</button>' +
+      '</div>' +
+    '</div>';
+  }
+  function saveReminderSettings(){
+    if(!isOwnerRole()) return;
+    var patch = {paymentReminders: !!document.getElementById('cfgRemOn').checked, reminderEveryDays: Math.min(60, Math.max(1, parseInt(document.getElementById('cfgRemEvery').value,10)||7))};
+    STATE.config = Object.assign({}, STATE.config, patch);
+    if(STATE.isLive && STATE.db){ STATE.db.doc('config/business').merge(patch).then(function(){ toast('Reminder settings saved'); }).catch(function(){ toast('Could not save — try again'); }); }
+    else { toast('Reminder settings saved'); render(); }
+  }
+  function sendRemindersNow(){
+    if(!isOwnerRole() || STATE.remBusy) return;
+    if(!(window.DSX && window.DSX.call)){ toast('Reminders need the live app'); return; }
+    STATE.remBusy = true; render();
+    window.DSX.call('sendPaymentReminders', {}).then(function(r){
+      var d = (r && r.data) || r || {}; STATE.remBusy = false; render();
+      var n = (d.sent||0) + (d.updated||0);
+      toast(n ? (n+' reminder'+(n===1?'':'s')+' sent to Messages') : 'No reminders due today — overdue invoices were already reminded recently, or nothing is overdue');
+    }).catch(function(e){ STATE.remBusy = false; render(); toast((e && /not.found|NOT_FOUND|internal/i.test(String(e.code||e.message))) ? 'Deploy the functions first (firebase deploy --only functions)' : 'Could not send reminders — try again'); });
+  }
+
+  function commissionReportPdf(){
+    if(!window.jspdf || !window.jspdf.jsPDF){ toast('PDF tools are still loading — try again in a moment'); return; }
+    var range = reportRange(), data = commissionRows(range);
+    var ownerView = isOwnerRole(), me = currentTeamMember();
+    var rows = ownerView ? data.rows : data.rows.filter(function(r){ return me && r.member.id===me.id; });
+    rows = rows.slice().sort(function(a,b){ return b.total - a.total || String(a.member.name).localeCompare(b.member.name); });
+    var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
+    var L = 15, R = 195, MAROON = [78,9,40];
+    var y = 0;
+    function head(){
+      try { doc.addImage(LOGO_PDF_DATA_URL, 'PNG', L, 10, 40, 40*(358/800)); } catch(e){}
+      doc.setFont('helvetica','bold'); doc.setFontSize(10.5); doc.setTextColor(MAROON[0],MAROON[1],MAROON[2]); doc.text(lh('docCompanyName'), R, 15, {align:'right'});
+      doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(95,99,88); doc.text(lh('docAddress'), R, 19.5, {align:'right'});
+      doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, 30, R-L, 0.7, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.setTextColor(MAROON[0],MAROON[1],MAROON[2]); doc.text('COMMISSION REPORT', L, 39);
+      doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(60,60,60);
+      doc.text(rangeLabel(range)+(ownerView?'':'  ·  '+(me?me.name:''))+'   ·   Generated '+fullDate(todayIso()), L, 44.5);
+      y = 51;
+    }
+    function bar(cols){
+      doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, y, R-L, 7.5, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(7.3); doc.setTextColor(255,255,255);
+      cols.forEach(function(c){ doc.text(c[0], c[1], y+5, c[2]==='r'?{align:'right'}:{}); });
+      y += 7.5;
+    }
+    function need(h, cols){ if(y + h > 280){ doc.addPage(); head(); if(cols) bar(cols); } }
+    head();
+    // summary
+    var SC = [['TEAM MEMBER',L+1,'l'],['ROLE',L+52,'l'],['JOBS',L+98,'r'],['SALES EXCL. VAT',L+135,'r'],['RATE',L+152,'r'],['COMMISSION',R-1,'r']];
+    bar(SC);
+    var tSales = 0, tComm = 0, tJobs = 0;
+    rows.forEach(function(r, i){
+      need(7, SC);
+      if(i%2===1){ doc.setFillColor(246,245,241); doc.rect(L, y, R-L, 7, 'F'); }
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8.6); doc.setTextColor(43,43,43);
+      doc.setFont('helvetica','bold'); doc.text(String(r.member.name), SC[0][1], y+4.8); doc.setFont('helvetica','normal');
+      doc.text(roleLabel(r.member.role)||'', SC[1][1], y+4.8);
+      doc.text(String(r.jobs.length), SC[2][1], y+4.8, {align:'right'});
+      doc.text(pdfNum(r.total), SC[3][1], y+4.8, {align:'right'});
+      doc.text(fmtRate(r.rate), SC[4][1], y+4.8, {align:'right'});
+      doc.setFont('helvetica','bold'); doc.text(pdfNum(r.commission), SC[5][1], y+4.8, {align:'right'});
+      tSales += r.total; tComm += r.commission; tJobs += r.jobs.length; y += 7;
+    });
+    if(ownerView){
+      need(10, SC);
+      doc.setDrawColor(MAROON[0],MAROON[1],MAROON[2]); doc.setLineWidth(0.4); doc.line(L, y+0.5, R, y+0.5);
+      doc.setFont('helvetica','bold'); doc.setFontSize(8.6); doc.setTextColor(43,43,43);
+      doc.text('TOTAL COMMISSION PAYABLE', SC[0][1], y+5.5); doc.text(pdfNum(round2(tComm)), SC[5][1], y+5.5, {align:'right'});
+      y += 9;
+      doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(95,99,88);
+      doc.text('Invoiced sales in the period: '+money(data.salesTotal)+' excl. VAT ('+data.salesCount+' job'+(data.salesCount===1?'':'s')+').'+(data.unassignedCount ? '  Unassigned: '+money(data.unassignedTotal)+' ('+data.unassignedCount+'), not counted.' : ''), L, y+2);
+      y += 6;
+    }
+    // per person
+    var DC = [['INVOICE',L+1,'l'],['DATE',L+30,'l'],['CUSTOMER',L+52,'l'],['JOB',L+100,'l'],['SHARE',L+152,'r'],['SALES CREDITED',R-1,'r']];
+    rows.filter(function(r){ return r.jobs.length; }).forEach(function(r){
+      y += 5; need(30);
+      doc.setFont('helvetica','bold'); doc.setFontSize(10.5); doc.setTextColor(MAROON[0],MAROON[1],MAROON[2]);
+      doc.text(r.member.name+'  ·  '+roleLabel(r.member.role), L, y+3);
+      doc.setFont('helvetica','normal'); doc.setFontSize(8.3); doc.setTextColor(95,99,88);
+      doc.text(money(r.total)+' excl. VAT  ·  rate '+fmtRate(r.rate)+'  ·  commission '+money(r.commission), R, y+3, {align:'right'});
+      y += 6; bar(DC);
+      r.jobs.slice().sort(function(a,b){ return String(saleDate(a)).localeCompare(String(saleDate(b))); }).forEach(function(o, i){
+        need(6.5, DC);
+        if(i%2===1){ doc.setFillColor(246,245,241); doc.rect(L, y, R-L, 6.5, 'F'); }
+        var share = creditShare(o, r.member.id);
+        doc.setFont('helvetica','normal'); doc.setFontSize(7.9); doc.setTextColor(43,43,43);
+        doc.text(String(o.invoiceNumber||jobNo(o.id)), DC[0][1], y+4.4);
+        doc.text(fullDate(String(saleDate(o)).slice(0,10)), DC[1][1], y+4.4);
+        doc.text(doc.splitTextToSize(String(o.customerName||''), 46)[0]||'', DC[2][1], y+4.4);
+        doc.text(doc.splitTextToSize(String(o.title||''), 50)[0]||'', DC[3][1], y+4.4);
+        doc.text(share===1?'100%':(Math.round(share*100)+'%'), DC[4][1], y+4.4, {align:'right'});
+        doc.text(pdfNum(round2(saleExVat(o)*share)), DC[5][1], y+4.4, {align:'right'});
+        y += 6.5;
+      });
+    });
+    // tiers
+    y += 6; need(48);
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(MAROON[0],MAROON[1],MAROON[2]); doc.text('COMMISSION SCALE', L, y+3); y += 6;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(60,60,60);
+    COMMISSION_TIERS.forEach(function(t){ doc.text(tierLabel(t).replace(/R\s/g,'R '), L+2, y+3); doc.text(fmtRate(t.rate), L+80, y+3, {align:'right'}); y += 4.6; });
+    doc.setFontSize(7.6); doc.setTextColor(95,99,88);
+    doc.text('Sales are invoiced amounts excl. VAT, after credit notes. The rate for a person’s total applies to the whole total. Two technicians on a job share it 50/50.', L, y+3, {maxWidth:R-L});
+    var name = 'DsignX-commission-'+(rangeIsMonth(range)||((range.from||'start')+'_to_'+(range.to||todayIso())))+(ownerView?'':'-'+String(me?me.name:'').replace(/\W+/g,''))+'.pdf';
+    var blob = doc.output('blob');
+    if(STATE.downloads){ STATE.downloads.save({filename:name, data:blob}).catch(function(){ fallbackDownload(blob, name); }); } else fallbackDownload(blob, name);
   }
 
   /* ============================ boot ============================ */

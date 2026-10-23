@@ -111,3 +111,18 @@ test('WhatsApp media: expired files give a clear error', async () => {
   await assert.rejects(core.fetchMedia(async () => ({ status: 410, ok: false, headers: new Map() }), r), /media_expired/);
   assert.throws(() => core.birdRequest('whatsapp_media', { message_id: '../x', media_id: 'a' }, { apiKey: 'bk_us1_x' }), /Invalid/);
 });
+
+const rem = require('../lib/reminders');
+test('payment reminders: overdue unpaid invoices go to the designer, every 7 days', () => {
+  const cfg = { businessVatNumber: '4230321509', vatRate: 15, invoiceDueDays: 7 };
+  const inv = (id, extra) => Object.assign({ id, invoiceNumber: 'INV' + id, invoiceGeneratedAt: '2026-10-01', invoiceLineItems: [{ qty: 1, unitPrice: 1000 }], invoiceVatEnabled: true, designerId: 't1' }, extra);
+  const orders = [inv('a'), inv('b'), inv('c', { invoiceGeneratedAt: '2026-10-20' }), inv('d', { designerId: 'gone' }), inv('e')];
+  const receipts = [{ orderId: 'b', amount: 1150 }, { orderId: 'e', amount: 100, voided: true }];
+  const credits = [{ orderId: 'e', total: 150 }];
+  const team = [{ id: 't1', name: 'Shanya' }];
+  const plan = rem.planReminders({ orders, receipts, credits, team, cfg, sent: { e: { lastSentAt: '2026-10-20' } }, today: '2026-10-23', everyDays: 7 });
+  assert.deepStrictEqual(plan.map((p) => [p.order.id, p.toId, p.balance, p.daysOverdue]), [['a', 't1', 1150, 15], ['d', 'owner', 1150, 15]]);
+  const again = rem.planReminders({ orders: [inv('e')], receipts: [], credits, team, cfg, sent: { e: { lastSentAt: '2026-10-16' } }, today: '2026-10-23', everyDays: 7 });
+  assert.strictEqual(again.length, 1); assert.strictEqual(again[0].balance, 1000);
+  assert.match(rem.reminderText(plan[0]).body, /15 days overdue/);
+});
