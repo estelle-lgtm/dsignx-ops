@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-10-26.28';
+import './platform.js?v=2026-10-26.29';
 
 (function(){
   "use strict";
@@ -1850,7 +1850,7 @@ import './platform.js?v=2026-10-26.28';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-26.28</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-26.29</span></div>' +
       '</div>'
     );
   }
@@ -2755,6 +2755,14 @@ import './platform.js?v=2026-10-26.28';
   }
 
   /* ============================ quotes & invoicing ============================ */
+  function qDate(d, label){ d = String(d||'').slice(0,10); return d ? '<div class="q-date">'+(label?label+' ':'')+fullDate(d)+'</div>' : ''; }
+  function payDatesHtml(o){
+    var recs = orderReceipts(o.id), cns = (STATE.creditNotes||[]).filter(function(c){ return c.orderId===o.id && !c.voided; });
+    var out = '';
+    if(recs.length) out += qDate(recs[recs.length-1].date, recs.length===1 ? 'Paid' : (recs.length+' payments · last'));
+    if(cns.length) out += qDate(cns[cns.length-1].date, 'Credited');
+    return out;
+  }
   function renderQuotesTab(){
     var list = STATE.orders.filter(function(o){ return o.quoteOnly || (o.quoteAmount!==null && o.quoteAmount!==undefined && o.quoteAmount!==''); });
     if(STATE.quoteFilter==='quoteonly') list = list.filter(function(o){ return o.quoteOnly; });
@@ -2770,15 +2778,16 @@ import './platform.js?v=2026-10-26.28';
         '<tr>' +
           '<td><input type="checkbox" data-action="select-export" data-id="'+o.id+'" '+(checked?'checked':'')+'></td>' +
           '<td class="row-btn" data-action="'+(o.quoteOnly?'open-quote':'open-order')+'" data-id="'+o.id+'">'+escapeHtml(o.customerName)+'</td>' +
+          '<td style="white-space:nowrap;">'+(o.quoteOnly ? '<span style="color:var(--ink-faint);">—</span>' : (orderDateOf(o) ? fullDate(orderDateOf(o)) : ''))+'</td>' +
           '<td class="row-btn" data-action="'+(o.quoteOnly?'open-quote':'open-order')+'" data-id="'+o.id+'">'+escapeHtml(o.title)+(o.quoteOnly ? ' <span class="pay-chip quote-only-chip">Quote only</span>' : (o.jobNumber ? '<div class="mono" style="font-size:11px; color:var(--ink-faint);">'+escapeHtml(o.jobNumber)+'</div>' : ''))+'</td>' +
           '<td class="num">'+money(o.quoteAmount||0)+'</td>' +
-          '<td>'+(o.quoteOnly ? '<button class="btn btn-ghost btn-sm" data-action="quote-convert" data-id="'+o.id+'">Convert to job</button>' : o.invoiced ? ('<span class="status-chip status-invoiced">'+escapeHtml(o.invoiceNumber||'Invoiced')+'</span>') : '<button class="btn btn-ghost btn-sm" data-action="open-invoice" data-id="'+o.id+'">Generate</button>')+'</td>' +
+          '<td>'+(o.quoteOnly ? '<button class="btn btn-ghost btn-sm" data-action="quote-convert" data-id="'+o.id+'">Convert to job</button>' : o.invoiced ? ('<span class="status-chip status-invoiced">'+escapeHtml(o.invoiceNumber||'Invoiced')+'</span>'+qDate(o.invoiceGeneratedAt||o.invoicedAt)) : '<button class="btn btn-ghost btn-sm" data-action="open-invoice" data-id="'+o.id+'">Generate</button>')+'</td>' +
           '<td>'+shortDate(o.dueDate)+'</td>' +
-          '<td>'+(o.quoteNumber ? ('<span class="mono" style="font-size:11.5px;">'+escapeHtml(o.quoteNumber)+'</span>') : '<button class="btn btn-ghost btn-sm" data-action="open-quote" data-id="'+o.id+'">Generate</button>')+'</td>' +
-          '<td>'+(o.quoteOnly ? '<span style="color:var(--ink-faint);">—</span>' : '')+(o.quoteOnly ? '' : (function(){ var st = payStatus(o); return '<span class="pay-chip pay-'+st.key+'">'+st.label+'</span>'; })())+'</td>' +
+          '<td>'+(o.quoteNumber ? ('<span class="mono" style="font-size:11.5px;">'+escapeHtml(o.quoteNumber)+'</span>'+qDate(o.quoteGeneratedAt)) : '<button class="btn btn-ghost btn-sm" data-action="open-quote" data-id="'+o.id+'">Generate</button>')+'</td>' +
+          '<td>'+(o.quoteOnly ? '<span style="color:var(--ink-faint);">—</span>' : '')+(o.quoteOnly ? '' : (function(){ var st = payStatus(o); return '<span class="pay-chip pay-'+st.key+'">'+st.label+'</span>'+payDatesHtml(o); })())+'</td>' +
         '</tr>'
       );
-    }).join('') : '<tr><td colspan="8" class="empty-note">No quotations yet — use “+ New quotation”, or set a quote amount on any job card.</td></tr>';
+    }).join('') : '<tr><td colspan="9" class="empty-note">No quotations yet — use “+ New quotation”, or set a quote amount on any job card.</td></tr>';
 
     return (
       '<div class="topline"><div><h1>Quotes &amp; invoicing</h1><div class="sub">Quote a customer without opening a job, or export selected jobs as a Xero-ready invoice CSV</div></div>' + exampleBadge() +
@@ -2792,8 +2801,8 @@ import './platform.js?v=2026-10-26.28';
         '<span style="flex:1"></span>' +
         '<button class="btn btn-primary btn-sm" data-action="export-xero" '+(selectedCount?'':'disabled')+'>Export '+(selectedCount||'')+' to Xero CSV</button>' +
       '</div>' +
-      '<div class="panel"><div class="tbl-wrap"><table><thead><tr><th></th><th>Customer</th><th>Job</th><th>Amount</th><th>Invoice</th><th>Due</th><th>Quotation</th><th>Payment</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>' +
-      '<div class="hint" style="margin-top:10px;">Xero import needs the <strong>ContactName</strong> to match an existing Xero contact exactly, and every line filled in for AccountCode and TaxType — set your defaults in Settings.</div>'
+      '<div class="panel"><div class="tbl-wrap"><table><thead><tr><th></th><th>Customer</th><th>Ordered</th><th>Job</th><th>Amount</th><th>Invoice</th><th>Due</th><th>Quotation</th><th>Payment</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>' +
+      '<div class="hint" style="margin-top:10px;">Xero import needs the <strong>ContactName</strong> to match an existing Xero contact exactly, and every line filled in for AccountCode and TaxType — set your defaults on the Exports tab.</div>'
     );
   }
 
@@ -6579,7 +6588,7 @@ import './platform.js?v=2026-10-26.28';
     doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(60,60,60);
     COMMISSION_TIERS.forEach(function(t){ doc.text(tierLabel(t).replace(/R\s/g,'R '), L+2, y+3); doc.text(fmtRate(t.rate), L+80, y+3, {align:'right'}); y += 4.6; });
     doc.setFontSize(7.6); doc.setTextColor(95,99,88);
-    doc.text('Sales are invoiced amounts excl. VAT, after credit notes, plus any extra sales the owner added. The rate for a person’s total applies to the whole total. Two technicians on a job share it 50/50.', L, y+3, {maxWidth:R-L});
+    doc.text(doc.splitTextToSize('Sales are invoiced amounts excl. VAT, after credit notes, plus any extra sales the owner added. The rate for a person’s total applies to the whole total. Two technicians on a job share it 50/50.', R-L), L, y+3);
     var name = 'DsignX-commission-'+(rangeIsMonth(range)||((range.from||'start')+'_to_'+(range.to||todayIso())))+(ownerView?'':'-'+String(me?me.name:'').replace(/\W+/g,''))+'.pdf';
     var blob = doc.output('blob');
     if(STATE.downloads){ STATE.downloads.save({filename:name, data:blob}).catch(function(){ fallbackDownload(blob, name); }); } else fallbackDownload(blob, name);

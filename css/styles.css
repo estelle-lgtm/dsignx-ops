@@ -661,3 +661,6 @@ img{max-width:100%}
 .adj-form{display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-bottom:12px;}
 .adj-form .field{flex:1; min-width:140px; margin-bottom:0;}
 .breakdown tr.adj-row td{background:#FBF0D9;}
+
+/* update 29 */
+.q-date{font-size:11px; color:var(--ink-faint); margin-top:3px; white-space:nowrap;}
