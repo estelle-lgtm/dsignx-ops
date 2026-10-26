@@ -112,6 +112,12 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Extra sales the owner adds for commission. Each person can see their own lines; only the owner writes.
+    match /commissionAdjustments/{id} {
+      allow read: if isOwner() || (memberOk() && resource.data.memberId == lnk().get('memberId', ''));
+      allow create, update, delete: if isOwner();
+    }
+
     // Internal messages (enquiries and ad hoc tasks). Only the sender and the receiver can read and
     // act on one; the owner can also read all of them. Nobody can delete or re-address a message.
     function myMsgId() { return isOwner() ? 'owner' : lnk().get('memberId', ''); }

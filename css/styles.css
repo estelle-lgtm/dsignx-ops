@@ -656,3 +656,8 @@ img{max-width:100%}
 /* update 25 */
 .card .jobno .ordered{float:right; font-family:inherit; font-size:10.5px; color:var(--ink-faint); letter-spacing:0;}
 .msg-reminder{background:#FBE7E3; color:#8A1C1C;}
+
+/* update 28 */
+.adj-form{display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-bottom:12px;}
+.adj-form .field{flex:1; min-width:140px; margin-bottom:0;}
+.breakdown tr.adj-row td{background:#FBF0D9;}

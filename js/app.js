@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-10-23.26';
+import './platform.js?v=2026-10-26.28';
 
 (function(){
   "use strict";
@@ -84,7 +84,7 @@ import './platform.js?v=2026-10-23.26';
     custExportFrom:'', custExportTo:'', custExportMode:'added',
     customerForm:null,
     products:[], productForm:null, productImport:null, productQuery:'',
-    receipts:[], receiptForm:null, messages:[], msgForm:null, msgOpenId:null, msgBox:'inbox', msgShow:'open', msgDraft:'', creditNotes:[], creditForm:null, cnExFrom:'', cnExTo:'', cnExStatus:'Draft', ageAsAt:'', ageOpen:null, stocktakes:[], stockDraft:{}, stockQuery:'', cashups:{}, cashupDate:'', cashupForm:null, rxFrom:'', rxTo:'', rxMethod:'all',
+    receipts:[], receiptForm:null, commAdj:[], adjForm:null, messages:[], msgForm:null, msgOpenId:null, msgBox:'inbox', msgShow:'open', msgDraft:'', creditNotes:[], creditForm:null, cnExFrom:'', cnExTo:'', cnExStatus:'Draft', ageAsAt:'', ageOpen:null, stocktakes:[], stockDraft:{}, stockQuery:'', cashups:{}, cashupDate:'', cashupForm:null, rxFrom:'', rxTo:'', rxMethod:'all',
     user:null, links:{},
     auth:{phase:'checking', uid:null, isOwner:false, memberId:null, role:null, error:'', busy:false, myAuth:null, myLink:null, teamLoaded:false, fails:0, lockUntil:0}
   };
@@ -1333,6 +1333,10 @@ import './platform.js?v=2026-10-23.26';
       STATE.stocktakes = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
       renderKeepCountFocus();
     }, function(){});
+    (A.role==='owner' ? db.collection('commissionAdjustments') : db.collection('commissionAdjustments').where('memberId','==',STATE.currentUserId||'-')).onSnapshot(function(qs){
+      STATE.commAdj = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+      render();
+    }, function(){});
     db.collection('creditNotes').onSnapshot(function(qs){
       STATE.creditNotes = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
       render();
@@ -1846,7 +1850,7 @@ import './platform.js?v=2026-10-23.26';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-23.26</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-26.28</span></div>' +
       '</div>'
     );
   }
@@ -2053,12 +2057,12 @@ import './platform.js?v=2026-10-23.26';
   // Sliding scale on total sales excl. VAT for the month. The bracket the month's total falls in sets
   // the rate, and that rate applies to the whole total.
   var COMMISSION_TIERS = [
-    {from:0,      to:49999,  rate:1.125},
-    {from:50000,  to:64999,  rate:2.25},
-    {from:65000,  to:79999,  rate:3.38},
-    {from:80000,  to:99999,  rate:4.50},
-    {from:100000, to:149999, rate:5.63},
-    {from:150000, to:null,   rate:6.75}
+    {from:0,      to:54999,  rate:1.125},
+    {from:55000,  to:74999,  rate:2.25},
+    {from:75000,  to:89999,  rate:3.38},
+    {from:90000,  to:109999, rate:4.50},
+    {from:110000, to:159999, rate:5.63},
+    {from:160000, to:null,   rate:6.75}
   ];
   function tierIndexFor(total){
     for(var i=COMMISSION_TIERS.length-1;i>=0;i--){ if(total >= COMMISSION_TIERS[i].from) return i; }
@@ -2137,9 +2141,11 @@ import './platform.js?v=2026-10-23.26';
     var sales = salesInRange(r.from, r.to);
     var rows = STATE.team.map(function(m){
       var jobs = sales.filter(function(o){ return onJob(o, m.id); });
-      var total = round2(jobs.reduce(function(s,o){ return s + saleExVat(o) * creditShare(o, m.id); }, 0));
-      var c = commissionFor(total);
-      return {member:m, jobs:jobs, total:total, rate:c.rate, tier:c.tier, commission:c.amount, next:c.next};
+      var adj = adjInRange(r, m.id);
+      var adjTotal = round2(adj.reduce(function(s,a){ return s + (Number(a.amount)||0); }, 0));
+      var total = round2(jobs.reduce(function(s,o){ return s + saleExVat(o) * creditShare(o, m.id); }, 0) + adjTotal);
+      var c = commissionFor(Math.max(0, total));
+      return {member:m, jobs:jobs, adj:adj, adjTotal:adjTotal, total:total, rate:c.rate, tier:c.tier, commission:c.amount, next:c.next};
     });
     var unassigned = sales.filter(isUnassigned);
     return {
@@ -2175,7 +2181,7 @@ import './platform.js?v=2026-10-23.26';
       var open = STATE.reportOpenMember===r.member.id;
       var main = '<tr class="row-btn" data-action="report-toggle" data-id="'+r.member.id+'">' +
         '<td><strong>'+escapeHtml(r.member.name)+'</strong><div style="font-size:11.5px; color:var(--ink-faint);">'+roleLabel(r.member.role)+'</div></td>' +
-        '<td class="num">'+r.jobs.length+'</td>' +
+        '<td class="num">'+r.jobs.length+(r.adj.length?'<div style="font-size:11px; color:var(--ink-faint);">+ '+money(r.adjTotal)+' extra</div>':'')+'</td>' +
         '<td class="num">'+money(r.total)+'<div class="progress" title="Progress to the next bracket"><i style="width:'+pct.toFixed(1)+'%"></i></div>'+nextNote+'</td>' +
         '<td class="num"><span class="rate-chip">'+fmtRate(r.rate)+'</span></td>' +
         '<td class="num"><strong>'+money(r.commission)+'</strong></td>' +
@@ -2187,6 +2193,7 @@ import './platform.js?v=2026-10-23.26';
           var credit = creditShare(o, r.member.id);
           return '<tr><td>'+shortDate(String(saleDate(o)).slice(0,10))+'</td><td>'+escapeHtml(o.invoiceNumber||jobNo(o.id))+'</td><td>'+escapeHtml(o.title)+'<div style="font-size:11px; color:var(--ink-faint);">'+escapeHtml(o.customerName||'')+' &middot; '+asRole+'</div></td><td class="num">'+money(round2(saleExVat(o)*credit))+(credit<1 ? '<div style="font-size:11px; color:var(--ink-faint);">of '+money(saleExVat(o))+'</div>' : '')+'</td></tr>';
         }).join('') : '<tr><td colspan="4" class="empty-note">No invoiced jobs in this '+periodWord+'.</td></tr>';
+        jr += r.adj.map(function(a){ return '<tr class="adj-row"><td>'+shortDate(a.date)+'</td><td>Extra sales</td><td>'+escapeHtml(a.reason||'')+'<div style="font-size:11px; color:var(--ink-faint);">Added by the owner</div></td><td class="num">'+money(a.amount)+'</td></tr>'; }).join('');
         detail = '<tr><td colspan="5" style="padding:0 0 4px;"><div class="breakdown"><table><thead><tr><th>Date</th><th>Invoice</th><th>Job</th><th style="text-align:right;">Credited (excl. VAT)</th></tr></thead><tbody>'+jr+'</tbody></table></div></td></tr>';
       }
       return main + detail;
@@ -2205,7 +2212,7 @@ import './platform.js?v=2026-10-23.26';
     var note = (ownerView && data.unassignedCount) ? '<div class="rep-note">'+data.unassignedCount+' invoiced job'+(data.unassignedCount===1?'':'s')+' ('+money(data.unassignedTotal)+') this '+periodWord+' '+(data.unassignedCount===1?'has':'have')+' no designer or technician assigned, so '+(data.unassignedCount===1?'it doesn’t':'they don’t')+' count towards anyone’s commission.</div>' : '';
 
     var tilesHtml = ownerView ?
-      (tile('Sales excl. VAT', money(data.salesTotal), data.salesCount+' invoiced job'+(data.salesCount===1?'':'s')) +
+      (tile('Sales excl. VAT', money(data.salesTotal), data.salesCount+' invoiced job'+(data.salesCount===1?'':'s')+(function(){ var x = round2(rows.reduce(function(s,r){ return s + (r.adjTotal||0); }, 0)); return x ? ' &middot; + '+money(x)+' extra for commission' : ''; })()) +
        tile('Commission payable', money(commissionTotal), rows.filter(function(r){ return r.commission>0; }).length+' team member'+(rows.filter(function(r){ return r.commission>0; }).length===1?'':'s')) +
        tile('Unassigned sales', money(data.unassignedTotal), 'Not counted for commission') +
        tile('Commission vs sales', data.salesTotal ? ((commissionTotal/data.salesTotal*100).toFixed(2)+'%') : '—', 'Of this '+periodWord+'’s sales'))
@@ -2238,9 +2245,10 @@ import './platform.js?v=2026-10-23.26';
         '</div>' +
         '<div class="panel"><div class="panel-head"><h2>Sliding scale</h2></div>' +
           '<div class="tier-list">'+tiers+'</div>' +
-          '<div class="hint" style="margin-top:10px;">Each person’s total invoiced sales excl. VAT for the period sets their bracket, and that rate is paid on the whole total. Designers and technicians earn on the full value of jobs they’re assigned to; when two technicians share a job, each is credited half. A job counts on the date it was invoiced.</div>' +
+          '<div class="hint" style="margin-top:10px;">Extra sales the owner adds count towards the total. Each person’s total invoiced sales excl. VAT for the period sets their bracket, and that rate is paid on the whole total. Designers and technicians earn on the full value of jobs they’re assigned to; when two technicians share a job, each is credited half. A job counts on the date it was invoiced.</div>' +
         '</div>' +
-      '</div>'
+      '</div>' +
+      renderAdjPanel(range)
     );
   }
 
@@ -2256,6 +2264,7 @@ import './platform.js?v=2026-10-23.26';
     lines.push(['Period','Team member','Invoice','Job','Customer','Date','Sales excl VAT'].join(','));
     data.rows.forEach(function(r){
       r.jobs.forEach(function(o){ lines.push([ym, r.member.name, o.invoiceNumber||jobNo(o.id), o.title, o.customerName, String(saleDate(o)).slice(0,10), saleExVat(o).toFixed(2)].map(q).join(',')); });
+      (r.adj||[]).forEach(function(a){ lines.push([ym, r.member.name, 'Extra sales', a.reason||'', '', a.date, Number(a.amount).toFixed(2)].map(q).join(',')); });
     });
     var csv = lines.join('\r\n'), filename = 'dsignx-commission-'+(rangeIsMonth(range)||((range.from||'start')+'_to_'+(range.to||todayIso())))+'.csv';
     if(STATE.downloads){
@@ -3353,6 +3362,8 @@ import './platform.js?v=2026-10-23.26';
       else if(action==='save-reminders'){ saveReminderSettings(); }
       else if(action==='send-reminders-now'){ sendRemindersNow(); }
       else if(action==='report-pdf'){ commissionReportPdf(); }
+      else if(action==='adj-add'){ addAdj(); }
+      else if(action==='adj-delete'){ deleteAdj(el.getAttribute('data-id')); }
       else if(action==='toggle-nav'){ toggleNav(); }
       else if(action==='toggle-collected'){ STATE.showAllCollected = !STATE.showAllCollected; render(); }
       else if(action==='cn-new'){ openCreditForm(el.getAttribute('data-id')); }
@@ -6531,7 +6542,7 @@ import './platform.js?v=2026-10-23.26';
     }
     // per person
     var DC = [['INVOICE',L+1,'l'],['DATE',L+30,'l'],['CUSTOMER',L+52,'l'],['JOB',L+100,'l'],['SHARE',L+152,'r'],['SALES CREDITED',R-1,'r']];
-    rows.filter(function(r){ return r.jobs.length; }).forEach(function(r){
+    rows.filter(function(r){ return r.jobs.length || (r.adj||[]).length; }).forEach(function(r){
       y += 5; need(30);
       doc.setFont('helvetica','bold'); doc.setFontSize(10.5); doc.setTextColor(MAROON[0],MAROON[1],MAROON[2]);
       doc.text(r.member.name+'  ·  '+roleLabel(r.member.role), L, y+3);
@@ -6551,6 +6562,16 @@ import './platform.js?v=2026-10-23.26';
         doc.text(pdfNum(round2(saleExVat(o)*share)), DC[5][1], y+4.4, {align:'right'});
         y += 6.5;
       });
+      (r.adj||[]).forEach(function(a){
+        need(6.5, DC);
+        doc.setFillColor(251,240,217); doc.rect(L, y, R-L, 6.5, 'F');
+        doc.setFont('helvetica','normal'); doc.setFontSize(7.9); doc.setTextColor(43,43,43);
+        doc.text('Extra sales', DC[0][1], y+4.4);
+        doc.text(fullDate(a.date), DC[1][1], y+4.4);
+        doc.text(doc.splitTextToSize(String(a.reason||''), 96)[0]||'', DC[2][1], y+4.4);
+        doc.text(pdfNum(a.amount), DC[5][1], y+4.4, {align:'right'});
+        y += 6.5;
+      });
     });
     // tiers
     y += 6; need(48);
@@ -6558,10 +6579,65 @@ import './platform.js?v=2026-10-23.26';
     doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(60,60,60);
     COMMISSION_TIERS.forEach(function(t){ doc.text(tierLabel(t).replace(/R\s/g,'R '), L+2, y+3); doc.text(fmtRate(t.rate), L+80, y+3, {align:'right'}); y += 4.6; });
     doc.setFontSize(7.6); doc.setTextColor(95,99,88);
-    doc.text('Sales are invoiced amounts excl. VAT, after credit notes. The rate for a person’s total applies to the whole total. Two technicians on a job share it 50/50.', L, y+3, {maxWidth:R-L});
+    doc.text('Sales are invoiced amounts excl. VAT, after credit notes, plus any extra sales the owner added. The rate for a person’s total applies to the whole total. Two technicians on a job share it 50/50.', L, y+3, {maxWidth:R-L});
     var name = 'DsignX-commission-'+(rangeIsMonth(range)||((range.from||'start')+'_to_'+(range.to||todayIso())))+(ownerView?'':'-'+String(me?me.name:'').replace(/\W+/g,''))+'.pdf';
     var blob = doc.output('blob');
     if(STATE.downloads){ STATE.downloads.save({filename:name, data:blob}).catch(function(){ fallbackDownload(blob, name); }); } else fallbackDownload(blob, name);
+  }
+
+  /* ============================ extra sales for commission (update 28) ============================ */
+  // The owner adds sales that are not invoiced in the app (excl. VAT, + or −) for a team member on a date.
+  // They count towards that person's sales total for the period, so they can move them into a higher bracket.
+  function adjInRange(range, memberId){
+    return (STATE.commAdj||[]).filter(function(a){
+      return a.memberId===memberId && (!range.from || a.date >= range.from) && (!range.to || a.date <= range.to);
+    }).sort(function(a,b){ return String(a.date).localeCompare(String(b.date)); });
+  }
+  function renderAdjPanel(range){
+    if(!isOwnerRole()) return '';
+    var f = STATE.adjForm || {memberId:'', date:'', amount:'', reason:''};
+    var defDate = (range.to && range.to < todayIso()) ? range.to : todayIso();
+    var list = (STATE.commAdj||[]).filter(function(a){ return (!range.from || a.date >= range.from) && (!range.to || a.date <= range.to); })
+      .sort(function(a,b){ return String(a.date).localeCompare(String(b.date)) || String(a.memberName).localeCompare(String(b.memberName)); });
+    var opts = '<option value="">Choose a team member</option>' + STATE.team.filter(function(m){ return m.active!==false; }).map(function(m){ return '<option value="'+m.id+'"'+(f.memberId===m.id?' selected':'')+'>'+escapeHtml(m.name)+' ('+roleLabel(m.role)+')</option>'; }).join('');
+    var rows = list.length ? list.map(function(a){
+      return '<tr><td>'+shortDate(a.date)+'</td><td>'+escapeHtml(a.memberName)+'</td><td>'+escapeHtml(a.reason||'')+'</td><td class="num"'+(a.amount<0?' style="color:var(--critical);"':'')+'>'+money(a.amount)+'</td><td style="text-align:right;"><button class="btn btn-ghost btn-sm" data-action="adj-delete" data-id="'+a.id+'">Remove</button></td></tr>';
+    }).join('') + '<tr class="total-row"><td colspan="3">Total extra sales in this period</td><td class="num">'+money(round2(list.reduce(function(s,a){ return s+(Number(a.amount)||0); },0)))+'</td><td></td></tr>'
+      : '<tr><td colspan="5" class="empty-note">No extra sales added for this period.</td></tr>';
+    return '<div class="panel" style="margin-top:16px;"><div class="panel-head"><h2>Extra sales for commission</h2><span class="hint" style="margin:0;">Only you can add these</span></div>' +
+      '<div class="hint" style="margin:-4px 0 12px;">Add sales that were not invoiced in the app (amounts excl. VAT). They count towards the person’s sales total for the period they are dated in, so they can move them into a higher bracket. Use a minus amount to take sales off. The person sees these lines in their own commission figures.</div>' +
+      (f.error ? '<div class="field-error" style="margin-bottom:8px;">'+escapeHtml(f.error)+'</div>' : '') +
+      '<div class="adj-form">' +
+        '<div class="field"><label for="adjMember">Team member</label><select id="adjMember">'+opts+'</select></div>' +
+        '<div class="field"><label for="adjDate">Date</label><input type="date" id="adjDate" value="'+escapeHtml(f.date||defDate)+'"></div>' +
+        '<div class="field"><label for="adjAmount">Sales excl. VAT (R)</label><input type="number" step="0.01" id="adjAmount" placeholder="e.g. 4500" value="'+escapeHtml(String(f.amount||''))+'"></div>' +
+        '<div class="field" style="flex:2;"><label for="adjReason">Reason</label><input type="text" id="adjReason" maxlength="120" placeholder="e.g. Xero invoice INV-1234, Kroon Motors" value="'+escapeHtml(f.reason||'')+'"></div>' +
+        '<div class="field"><label>&nbsp;</label><button class="btn btn-primary btn-sm" data-action="adj-add">Add</button></div>' +
+      '</div>' +
+      '<div class="tbl-wrap"><table><thead><tr><th>Date</th><th>Team member</th><th>Reason</th><th style="text-align:right;">Sales excl. VAT</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
+    '</div>';
+  }
+  function addAdj(){
+    if(!isOwnerRole()) return;
+    var v = function(id){ var el = document.getElementById(id); return el ? el.value : ''; };
+    var f = STATE.adjForm = {memberId:v('adjMember'), date:v('adjDate'), amount:v('adjAmount'), reason:String(v('adjReason')).trim(), error:''};
+    var m = STATE.team.find(function(x){ return x.id===f.memberId; });
+    var amt = round2(String(f.amount).replace(/[^0-9.\-]/g,''));
+    if(!m){ f.error = 'Choose the team member.'; render(); return; }
+    if(!f.date){ f.error = 'Choose the date the sale counts on.'; render(); return; }
+    if(!amt){ f.error = 'Enter the sales amount excl. VAT (use a minus for a deduction).'; render(); return; }
+    if(!f.reason){ f.error = 'Add a reason, e.g. the invoice number.'; render(); return; }
+    var rec = {memberId:m.id, memberName:m.name, date:f.date, amount:amt, reason:f.reason, createdAt:new Date().toISOString()};
+    var done = function(){ STATE.adjForm = {memberId:m.id, date:f.date, amount:'', reason:''}; render(); toast(money(amt)+' added to '+m.name+'’s sales'); };
+    if(STATE.isLive && STATE.db){ STATE.db.collection('commissionAdjustments').add(rec).then(done).catch(function(){ f.error = 'Couldn’t save — check your connection and try again.'; render(); }); }
+    else { STATE.commAdj = (STATE.commAdj||[]).concat([Object.assign({id:uid()}, rec)]); done(); }
+  }
+  function deleteAdj(id){
+    if(!isOwnerRole()) return;
+    var a = (STATE.commAdj||[]).find(function(x){ return x.id===id; }); if(!a) return;
+    if(!confirm('Remove '+money(a.amount)+' from '+a.memberName+'’s sales ('+a.reason+')?')) return;
+    if(STATE.isLive && STATE.db){ STATE.db.doc('commissionAdjustments/'+id).delete().catch(function(){ toast('Could not remove — try again'); }); }
+    else { STATE.commAdj = STATE.commAdj.filter(function(x){ return x.id!==id; }); render(); }
   }
 
   /* ============================ boot ============================ */
