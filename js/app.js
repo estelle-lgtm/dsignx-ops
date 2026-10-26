@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-10-26.31';
+import './platform.js?v=2026-10-26.32';
 
 (function(){
   "use strict";
@@ -1850,7 +1850,7 @@ import './platform.js?v=2026-10-26.31';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-26.31</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-26.32</span></div>' +
       '</div>'
     );
   }
@@ -2151,7 +2151,9 @@ import './platform.js?v=2026-10-26.31';
     var OWNER_RATE = 3.38;
     // Owner: every invoiced sale in the period (including unassigned jobs) plus all extra sales added.
     if(isOwnerRole()){
-      var allAdj = (STATE.commAdj||[]).filter(function(a){ return (!r.from || a.date >= r.from) && (!r.to || a.date <= r.to); })
+      // Extra sales added for technicians (Alfred, Victor) are not added to the owner's total.
+      var techIds = {}; STATE.team.forEach(function(m){ if(m.role==='technician') techIds[m.id] = true; });
+      var allAdj = (STATE.commAdj||[]).filter(function(a){ return !techIds[a.memberId] && (!r.from || a.date >= r.from) && (!r.to || a.date <= r.to); })
         .sort(function(a,b){ return String(a.date).localeCompare(String(b.date)); });
       var allAdjTotal = round2(allAdj.reduce(function(s,a){ return s + (Number(a.amount)||0); }, 0));
       var ownTotal = round2(sales.reduce(function(s,o){ return s + saleExVat(o); }, 0) + allAdjTotal);
@@ -2256,7 +2258,7 @@ import './platform.js?v=2026-10-26.31';
         '</div>' +
         '<div class="panel"><div class="panel-head"><h2>Sliding scale</h2></div>' +
           '<div class="tier-list">'+tiers+'</div>' +
-          '<div class="hint" style="margin-top:10px;">'+(ownerView?'The owner earns a fixed 3.38% on the total sales for the period (every invoiced job, including unassigned ones, plus all extra sales). ':'')+'Extra sales the owner adds count towards the total. Each person’s total invoiced sales excl. VAT for the period sets their bracket, and that rate is paid on the whole total. Designers and technicians earn on the full value of jobs they’re assigned to; when two technicians share a job, each is credited half. A job counts on the date it was invoiced.</div>' +
+          '<div class="hint" style="margin-top:10px;">'+(ownerView?'The owner earns a fixed 3.38% on the total sales for the period (every invoiced job, including unassigned ones, plus extra sales added for you and the designers; extra sales for technicians are not included). ':'')+'Extra sales the owner adds count towards the total. Each person’s total invoiced sales excl. VAT for the period sets their bracket, and that rate is paid on the whole total. Designers and technicians earn on the full value of jobs they’re assigned to; when two technicians share a job, each is credited half. A job counts on the date it was invoiced.</div>' +
         '</div>' +
       '</div>' +
       renderAdjPanel(range)
@@ -6625,7 +6627,7 @@ import './platform.js?v=2026-10-26.31';
     }).join('') + '<tr class="total-row"><td colspan="3">Total extra sales in this period</td><td class="num">'+money(round2(list.reduce(function(s,a){ return s+(Number(a.amount)||0); },0)))+'</td><td></td></tr>'
       : '<tr><td colspan="5" class="empty-note">No extra sales added for this period.</td></tr>';
     return '<div class="panel" style="margin-top:16px;"><div class="panel-head"><h2>Extra sales for commission</h2><span class="hint" style="margin:0;">Only you can add these</span></div>' +
-      '<div class="hint" style="margin:-4px 0 12px;">Add sales that were not invoiced in the app (amounts excl. VAT). They count towards the person’s sales total for the period they are dated in, so they can move them into a higher bracket. All extra sales also count towards your own total. Use a minus amount to take sales off. The person sees these lines in their own commission figures.</div>' +
+      '<div class="hint" style="margin:-4px 0 12px;">Add sales that were not invoiced in the app (amounts excl. VAT). They count towards the person’s sales total for the period they are dated in, so they can move them into a higher bracket. Extra sales for you and the designers also count towards your own total; extra sales for technicians do not. Use a minus amount to take sales off. The person sees these lines in their own commission figures.</div>' +
       (f.error ? '<div class="field-error" style="margin-bottom:8px;">'+escapeHtml(f.error)+'</div>' : '') +
       '<div class="adj-form">' +
         '<div class="field"><label for="adjMember">Team member</label><select id="adjMember">'+opts+'</select></div>' +
