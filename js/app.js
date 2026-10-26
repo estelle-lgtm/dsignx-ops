@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-10-26.29';
+import './platform.js?v=2026-10-26.31';
 
 (function(){
   "use strict";
@@ -36,7 +36,7 @@ import './platform.js?v=2026-10-26.29';
     {key:'designer', label:'Designer', plural:'Designers'},
     {key:'technician', label:'Technician', plural:'Technicians'}
   ];
-  function roleLabel(k){ for(var i=0;i<TEAM_ROLES.length;i++){ if(TEAM_ROLES[i].key===k) return TEAM_ROLES[i].label; } return k; }
+  function roleLabel(k){ if(k==='owner') return 'Owner'; for(var i=0;i<TEAM_ROLES.length;i++){ if(TEAM_ROLES[i].key===k) return TEAM_ROLES[i].label; } return k; }
   function initials(name){
     var parts = String(name||'').trim().split(/\s+/);
     if(!parts[0]) return '?';
@@ -1850,7 +1850,7 @@ import './platform.js?v=2026-10-26.29';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-26.29</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-26.31</span></div>' +
       '</div>'
     );
   }
@@ -2133,6 +2133,7 @@ import './platform.js?v=2026-10-26.29';
   // The designer earns on the full value of a job. Technicians do too, unless two technicians
   // share the job: then each is credited half (50/50).
   function creditShare(o, id){
+    if(id==='owner') return 1; // the owner is credited with every sale
     if(o.designerId===id) return 1;
     if(o.technicianId && o.technician2Id && o.technicianId!==o.technician2Id && isTechOn(o, id)) return 0.5;
     return isTechOn(o, id) ? 1 : 0;
@@ -2147,6 +2148,16 @@ import './platform.js?v=2026-10-26.29';
       var c = commissionFor(Math.max(0, total));
       return {member:m, jobs:jobs, adj:adj, adjTotal:adjTotal, total:total, rate:c.rate, tier:c.tier, commission:c.amount, next:c.next};
     });
+    var OWNER_RATE = 3.38;
+    // Owner: every invoiced sale in the period (including unassigned jobs) plus all extra sales added.
+    if(isOwnerRole()){
+      var allAdj = (STATE.commAdj||[]).filter(function(a){ return (!r.from || a.date >= r.from) && (!r.to || a.date <= r.to); })
+        .sort(function(a,b){ return String(a.date).localeCompare(String(b.date)); });
+      var allAdjTotal = round2(allAdj.reduce(function(s,a){ return s + (Number(a.amount)||0); }, 0));
+      var ownTotal = round2(sales.reduce(function(s,o){ return s + saleExVat(o); }, 0) + allAdjTotal);
+      // Fixed rate for the owner (not the sliding scale).
+      rows.push({member:{id:'owner', name:'Owner', role:'owner'}, isOwnerRow:true, jobs:sales, adj:allAdj, adjTotal:allAdjTotal, total:ownTotal, rate:OWNER_RATE, tier:-1, commission:round2(Math.max(0, ownTotal) * OWNER_RATE / 100), next:null});
+    }
     var unassigned = sales.filter(isUnassigned);
     return {
       rows: rows,
@@ -2172,7 +2183,7 @@ import './platform.js?v=2026-10-26.29';
     var commissionTotal = round2(rows.reduce(function(s,r){ return s + r.commission; }, 0));
 
     var tableRows = rows.map(function(r){
-      var pct = 100, nextNote = '<div class="next-note">Top bracket reached</div>';
+      var pct = 100, nextNote = r.isOwnerRow ? '<div class="next-note">Fixed rate</div>' : '<div class="next-note">Top bracket reached</div>';
       if(r.next){
         var cur = COMMISSION_TIERS[r.tier];
         pct = Math.max(2, Math.min(100, (r.total - cur.from) / (r.next.from - cur.from) * 100));
@@ -2189,11 +2200,11 @@ import './platform.js?v=2026-10-26.29';
       var detail = '';
       if(open){
         var jr = r.jobs.length ? r.jobs.slice().sort(function(a,b){ return String(saleDate(a)).localeCompare(String(saleDate(b))); }).map(function(o){
-          var asRole = (o.designerId===r.member.id && isTechOn(o, r.member.id)) ? 'Designer & technician' : (o.designerId===r.member.id ? 'Designer' : 'Technician'+(creditShare(o, r.member.id)===0.5 ? ' (shared 50/50 with '+escapeHtml(firstName(o.technicianId===r.member.id ? o.technician2Name : o.technicianName))+')' : ''));
+          var asRole = r.isOwnerRow ? 'All sales' : (o.designerId===r.member.id && isTechOn(o, r.member.id)) ? 'Designer & technician' : (o.designerId===r.member.id ? 'Designer' : 'Technician'+(creditShare(o, r.member.id)===0.5 ? ' (shared 50/50 with '+escapeHtml(firstName(o.technicianId===r.member.id ? o.technician2Name : o.technicianName))+')' : ''));
           var credit = creditShare(o, r.member.id);
           return '<tr><td>'+shortDate(String(saleDate(o)).slice(0,10))+'</td><td>'+escapeHtml(o.invoiceNumber||jobNo(o.id))+'</td><td>'+escapeHtml(o.title)+'<div style="font-size:11px; color:var(--ink-faint);">'+escapeHtml(o.customerName||'')+' &middot; '+asRole+'</div></td><td class="num">'+money(round2(saleExVat(o)*credit))+(credit<1 ? '<div style="font-size:11px; color:var(--ink-faint);">of '+money(saleExVat(o))+'</div>' : '')+'</td></tr>';
         }).join('') : '<tr><td colspan="4" class="empty-note">No invoiced jobs in this '+periodWord+'.</td></tr>';
-        jr += r.adj.map(function(a){ return '<tr class="adj-row"><td>'+shortDate(a.date)+'</td><td>Extra sales</td><td>'+escapeHtml(a.reason||'')+'<div style="font-size:11px; color:var(--ink-faint);">Added by the owner</div></td><td class="num">'+money(a.amount)+'</td></tr>'; }).join('');
+        jr += r.adj.map(function(a){ return '<tr class="adj-row"><td>'+shortDate(a.date)+'</td><td>Extra sales</td><td>'+escapeHtml(a.reason||'')+'<div style="font-size:11px; color:var(--ink-faint);">'+(r.isOwnerRow ? 'For '+escapeHtml(a.memberName||'') : 'Added by the owner')+'</div></td><td class="num">'+money(a.amount)+'</td></tr>'; }).join('');
         detail = '<tr><td colspan="5" style="padding:0 0 4px;"><div class="breakdown"><table><thead><tr><th>Date</th><th>Invoice</th><th>Job</th><th style="text-align:right;">Credited (excl. VAT)</th></tr></thead><tbody>'+jr+'</tbody></table></div></td></tr>';
       }
       return main + detail;
@@ -2245,7 +2256,7 @@ import './platform.js?v=2026-10-26.29';
         '</div>' +
         '<div class="panel"><div class="panel-head"><h2>Sliding scale</h2></div>' +
           '<div class="tier-list">'+tiers+'</div>' +
-          '<div class="hint" style="margin-top:10px;">Extra sales the owner adds count towards the total. Each person’s total invoiced sales excl. VAT for the period sets their bracket, and that rate is paid on the whole total. Designers and technicians earn on the full value of jobs they’re assigned to; when two technicians share a job, each is credited half. A job counts on the date it was invoiced.</div>' +
+          '<div class="hint" style="margin-top:10px;">'+(ownerView?'The owner earns a fixed 3.38% on the total sales for the period (every invoiced job, including unassigned ones, plus all extra sales). ':'')+'Extra sales the owner adds count towards the total. Each person’s total invoiced sales excl. VAT for the period sets their bracket, and that rate is paid on the whole total. Designers and technicians earn on the full value of jobs they’re assigned to; when two technicians share a job, each is credited half. A job counts on the date it was invoiced.</div>' +
         '</div>' +
       '</div>' +
       renderAdjPanel(range)
@@ -6608,13 +6619,13 @@ import './platform.js?v=2026-10-26.29';
     var defDate = (range.to && range.to < todayIso()) ? range.to : todayIso();
     var list = (STATE.commAdj||[]).filter(function(a){ return (!range.from || a.date >= range.from) && (!range.to || a.date <= range.to); })
       .sort(function(a,b){ return String(a.date).localeCompare(String(b.date)) || String(a.memberName).localeCompare(String(b.memberName)); });
-    var opts = '<option value="">Choose a team member</option>' + STATE.team.filter(function(m){ return m.active!==false; }).map(function(m){ return '<option value="'+m.id+'"'+(f.memberId===m.id?' selected':'')+'>'+escapeHtml(m.name)+' ('+roleLabel(m.role)+')</option>'; }).join('');
+    var opts = '<option value="">Choose a team member</option><option value="owner"'+(f.memberId==='owner'?' selected':'')+'>Owner (you)</option>' + STATE.team.filter(function(m){ return m.active!==false; }).map(function(m){ return '<option value="'+m.id+'"'+(f.memberId===m.id?' selected':'')+'>'+escapeHtml(m.name)+' ('+roleLabel(m.role)+')</option>'; }).join('');
     var rows = list.length ? list.map(function(a){
       return '<tr><td>'+shortDate(a.date)+'</td><td>'+escapeHtml(a.memberName)+'</td><td>'+escapeHtml(a.reason||'')+'</td><td class="num"'+(a.amount<0?' style="color:var(--critical);"':'')+'>'+money(a.amount)+'</td><td style="text-align:right;"><button class="btn btn-ghost btn-sm" data-action="adj-delete" data-id="'+a.id+'">Remove</button></td></tr>';
     }).join('') + '<tr class="total-row"><td colspan="3">Total extra sales in this period</td><td class="num">'+money(round2(list.reduce(function(s,a){ return s+(Number(a.amount)||0); },0)))+'</td><td></td></tr>'
       : '<tr><td colspan="5" class="empty-note">No extra sales added for this period.</td></tr>';
     return '<div class="panel" style="margin-top:16px;"><div class="panel-head"><h2>Extra sales for commission</h2><span class="hint" style="margin:0;">Only you can add these</span></div>' +
-      '<div class="hint" style="margin:-4px 0 12px;">Add sales that were not invoiced in the app (amounts excl. VAT). They count towards the person’s sales total for the period they are dated in, so they can move them into a higher bracket. Use a minus amount to take sales off. The person sees these lines in their own commission figures.</div>' +
+      '<div class="hint" style="margin:-4px 0 12px;">Add sales that were not invoiced in the app (amounts excl. VAT). They count towards the person’s sales total for the period they are dated in, so they can move them into a higher bracket. All extra sales also count towards your own total. Use a minus amount to take sales off. The person sees these lines in their own commission figures.</div>' +
       (f.error ? '<div class="field-error" style="margin-bottom:8px;">'+escapeHtml(f.error)+'</div>' : '') +
       '<div class="adj-form">' +
         '<div class="field"><label for="adjMember">Team member</label><select id="adjMember">'+opts+'</select></div>' +
@@ -6630,7 +6641,7 @@ import './platform.js?v=2026-10-26.29';
     if(!isOwnerRole()) return;
     var v = function(id){ var el = document.getElementById(id); return el ? el.value : ''; };
     var f = STATE.adjForm = {memberId:v('adjMember'), date:v('adjDate'), amount:v('adjAmount'), reason:String(v('adjReason')).trim(), error:''};
-    var m = STATE.team.find(function(x){ return x.id===f.memberId; });
+    var m = f.memberId==='owner' ? {id:'owner', name:'Owner'} : STATE.team.find(function(x){ return x.id===f.memberId; });
     var amt = round2(String(f.amount).replace(/[^0-9.\-]/g,''));
     if(!m){ f.error = 'Choose the team member.'; render(); return; }
     if(!f.date){ f.error = 'Choose the date the sale counts on.'; render(); return; }
