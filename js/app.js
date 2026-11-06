@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-06.36';
+import './platform.js?v=2026-11-06.37';
 
 (function(){
   "use strict";
@@ -93,7 +93,7 @@ import './platform.js?v=2026-11-06.36';
   // Who can open what. Owner = the account that completed first-time setup; everyone else must be
   // a team member who redeemed an invite code. The same rules are enforced in firestore.rules.
   var ROLE_TABS = {
-    owner:      ['dashboard','board','messages','whatsapp','customers','team','quotes','products','cashup','reports','exports','settings'],
+    owner:      ['dashboard','board','messages','whatsapp','customers','team','quotes','products','cashup','bankimport','reports','exports','settings'],
     designer:   ['dashboard','board','messages','whatsapp','customers','team','quotes','products','cashup','reports'],
     technician: ['board','messages']
   };
@@ -1796,6 +1796,7 @@ import './platform.js?v=2026-11-06.36';
     {key:'products', label:'Products'},
     {key:'cashup', label:'Cash-ups'},
     {key:'reports', label:'Reports'},
+    {key:'bankimport', label:'Bank import'},
     {key:'exports', label:'Exports'},
     {key:'settings', label:'Settings'}
   ];
@@ -1827,6 +1828,7 @@ import './platform.js?v=2026-11-06.36';
     cashup:'<rect x="2.5" y="6" width="19" height="12" rx="1.5"/><circle cx="12" cy="12" r="2.5"/><path d="M6 9.5v5M18 9.5v5"/>',
     reports:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
     exports:'<path d="M12 3v12M7 10l5 5 5-5M4 21h16"/>',
+    bankimport:'<path d="M3 10l9-6 9 6M5 10v8M9.5 10v8M14.5 10v8M19 10v8M3 21h18"/>',
     messages:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3.5 6.5l8.5 6.5 8.5-6.5"/>',
     settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>'
   };
@@ -1851,7 +1853,7 @@ import './platform.js?v=2026-11-06.36';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-06.36</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-06.37</span></div>' +
       '</div>'
     );
   }
@@ -1869,6 +1871,7 @@ import './platform.js?v=2026-11-06.36';
       case 'settings': return renderSettingsTab();
       case 'reports': return renderReportsTab();
       case 'exports': return renderExportsTab();
+      case 'bankimport': return isOwnerRole() ? renderBankImportTab() : '';
       default: return renderDashboardTab();
     }
   }
@@ -3440,6 +3443,9 @@ import './platform.js?v=2026-11-06.36';
       else if(action==='prof-edit'){ var pcid = el.getAttribute('data-id'); if(canAccess('customers')){ STATE.tab = 'customers'; STATE.viewCustomerId = pcid; openCustomerForm(pcid); } }
       else if(action==='prof-send'){ sendProfileTasksNow(); }
       else if(action==='prof-mine'){ STATE.profMine = el.getAttribute('data-v')==='1'; render(); }
+      else if(action==='bi-template'){ e.preventDefault(); downloadBankTemplate(); }
+      else if(action==='bi-confirm'){ confirmBankImport(); }
+      else if(action==='bi-reset'){ STATE.bankImport = null; render(); }
       else if(action==='toggle-nav'){ toggleNav(); }
       else if(action==='toggle-collected'){ STATE.showAllCollected = !STATE.showAllCollected; render(); }
       else if(action==='cn-new'){ openCreditForm(el.getAttribute('data-id')); }
@@ -3669,6 +3675,17 @@ import './platform.js?v=2026-11-06.36';
       if(e.target.id==='chatAttach'){ attachFromDevice(e.target.getAttribute('data-phone'), e.target.files[0]); e.target.value=''; }
       if(e.target.id==='importFile'){ importBackupFile(e.target.files[0]); e.target.value=''; }
       if(e.target.id==='productFile'){ importProductsFile(e.target.files[0]); e.target.value=''; }
+      if(e.target.id==='bankFile'){ bankImportFile(e.target.files[0]); e.target.value=''; return; }
+      if(e.target.hasAttribute && e.target.hasAttribute('data-bi-row') && STATE.bankImport && STATE.bankImport.rows){
+        var bir = STATE.bankImport.rows[Number(e.target.getAttribute('data-bi-row'))];
+        if(bir){ bir.orderId = e.target.value; bir.how = e.target.value ? 'manual' : 'none'; bir.include = !!e.target.value; render(); }
+        return;
+      }
+      if(e.target.hasAttribute && e.target.hasAttribute('data-bi-inc') && STATE.bankImport && STATE.bankImport.rows){
+        var bic = STATE.bankImport.rows[Number(e.target.getAttribute('data-bi-inc'))];
+        if(bic){ bic.include = e.target.checked && !!bic.orderId; render(); }
+        return;
+      }
       if(e.target.id==='cuDate' && e.target.value){ STATE.cashupDate = e.target.value; STATE.cashupForm = null; render(); }
       if((e.target.id==='rxFrom' || e.target.id==='rxTo') && e.target.value){ STATE[e.target.id] = e.target.value; render(); }
       if(e.target.id==='rxMethod'){ STATE.rxMethod = e.target.value; render(); }
@@ -4467,6 +4484,7 @@ import './platform.js?v=2026-11-06.36';
   }
 
   /* ============================ receipts ============================ */
+  function methodLabel(m, lower){ var t = m==='card' ? 'Card' : (m==='eft' ? 'EFT' : 'Cash'); return lower && m!=='eft' ? t.toLowerCase() : t; }
   function orderReceipts(orderId){
     return STATE.receipts.filter(function(r){ return r.orderId===orderId && !r.voided; })
       .sort(function(a,b){ return String(a.createdAt).localeCompare(String(b.createdAt)); });
@@ -4560,7 +4578,7 @@ import './platform.js?v=2026-11-06.36';
     font('normal', 8.8); color(GREY); if(r.phone) doc.text(String(r.phone), L, 72);
 
     var bx = 115.5, by = 46;
-    var info = [['Receipt Number', r.number, true], ['Date', fullDate(r.date)], ['Payment Method', r.method==='card'?'Card':'Cash'], ['Job Number', r.jobNumber||'']];
+    var info = [['Receipt Number', r.number, true], ['Date', fullDate(r.date)], ['Payment Method', methodLabel(r.method)], ['Job Number', r.jobNumber||'']];
     if(r.invoiceNumber) info.push(['Invoice Number', r.invoiceNumber]);
     var boxH = 8 + info.length*4.7;
     doc.setFillColor(PANEL[0],PANEL[1],PANEL[2]); doc.rect(bx, by, R-bx, boxH, 'F');
@@ -4624,7 +4642,7 @@ import './platform.js?v=2026-11-06.36';
     var st = payStatus(o);
     var list = STATE.receipts.filter(function(r){ return r.orderId===o.id; }).sort(function(a,b){ return String(a.createdAt).localeCompare(String(b.createdAt)); });
     var rows = list.map(function(r){
-      return '<div class="pay-row'+(r.voided?' voided':'')+'"><span class="mono">'+escapeHtml(r.number)+'</span><span>'+shortDate(r.date)+'</span><span>'+(r.method==='card'?'Card':'Cash')+(r.kind==='prepayment'?' · pre-payment':'')+'</span><span class="num">'+money(r.amount)+'</span>' +
+      return '<div class="pay-row'+(r.voided?' voided':'')+'"><span class="mono">'+escapeHtml(r.number)+'</span><span>'+shortDate(r.date)+'</span><span>'+methodLabel(r.method)+(r.kind==='prepayment'?' · pre-payment':'')+'</span><span class="num">'+money(r.amount)+'</span>' +
         '<span class="pay-actions">' + (r.voided ? '<em>VOID</em>' :
           '<button class="btn btn-ghost btn-sm" data-action="receipt-pdf" data-id="'+r.id+'">PDF</button>' +
           (waPhone(r.phone) && STATE.mcp ? '<button class="btn btn-ghost btn-sm" data-action="receipt-wa" data-id="'+r.id+'">WhatsApp</button>' : '') +
@@ -4654,7 +4672,7 @@ import './platform.js?v=2026-11-06.36';
       var r = f.saved;
       return '<div class="overlay" data-action="close-modal-bg"><div class="modal" role="dialog" aria-modal="true" aria-label="Receipt saved" style="max-width:460px;">' +
         '<div class="modal-head"><div><div class="jobno mono">'+escapeHtml(r.number)+'</div><h2>Receipt saved</h2></div><button class="modal-close" data-action="receipt-close" aria-label="Close">&times;</button></div>' +
-        '<p style="margin-top:0;">'+money(r.amount)+' '+(r.method==='card'?'card':'cash')+' payment from '+escapeHtml(r.customerName)+' on '+fullDate(r.date)+'.</p>' +
+        '<p style="margin-top:0;">'+money(r.amount)+' '+methodLabel(r.method, true)+' payment from '+escapeHtml(r.customerName)+' on '+fullDate(r.date)+'.</p>' +
         '<div class="modal-foot">' +
           '<button class="btn btn-ghost" data-action="receipt-close">Done</button>' +
           '<button class="btn" data-action="receipt-pdf" data-id="'+r.id+'">Download PDF</button>' +
@@ -4678,7 +4696,7 @@ import './platform.js?v=2026-11-06.36';
   }
 
   /* ============================ cash-ups ============================ */
-  function receiptsOn(date){ return STATE.receipts.filter(function(r){ return r.date===date && !r.voided; }).sort(function(a,b){ return String(a.createdAt).localeCompare(String(b.createdAt)); }); }
+  function receiptsOn(date){ return STATE.receipts.filter(function(r){ return r.date===date && !r.voided && r.method!=='eft'; }).sort(function(a,b){ return String(a.createdAt).localeCompare(String(b.createdAt)); }); }
   function defaultFloat(){ var f = Number(STATE.config.cashFloat); return isNaN(f) || STATE.config.cashFloat==null || STATE.config.cashFloat==='' ? 350 : f; }
   function cashupFormFor(date){
     var c = STATE.cashups[date];
@@ -4799,13 +4817,13 @@ import './platform.js?v=2026-11-06.36';
   }
   function receiptsBetween(from, to, method){
     return STATE.receipts.filter(function(r){
-      return !r.voided && r.date>=from && r.date<=to && (method==='all' || r.method===method);
+      return !r.voided && r.date>=from && r.date<=to && (method==='all' ? r.method!=='eft' : r.method===method);
     }).sort(function(a,b){ return String(a.date+a.createdAt).localeCompare(String(b.date+b.createdAt)); });
   }
   function ddmmyyyy(iso){ var p = String(iso||'').split('-'); return p.length===3 ? p[2]+'/'+p[1]+'/'+p[0] : ''; }
   function receiptExportRows(recs){
     return recs.map(function(r){
-      var what = (r.method==='card' ? 'Card' : 'Cash') + (r.kind==='prepayment' ? ' deposit' : ' payment');
+      var what = methodLabel(r.method) + (r.kind==='prepayment' ? ' deposit' : ' payment');
       var job = [r.jobNumber, r.jobTitle].filter(Boolean).join(' ');
       return [ddmmyyyy(r.date), Number(r.amount).toFixed(2), r.customerName||'', what + (job ? ' - '+job : ''), [r.number, r.invoiceNumber].filter(Boolean).join(' / '), ''];
     });
@@ -4858,7 +4876,7 @@ import './platform.js?v=2026-11-06.36';
     var late = closed ? calc.recs.filter(function(r){ return (closed.receiptIds||[]).indexOf(r.id)<0; }) : [];
     var dis = closed ? ' disabled' : '';
     var recRows = calc.recs.length ? calc.recs.map(function(r){
-      return '<tr><td class="mono">'+escapeHtml(r.number)+'</td><td>'+escapeHtml(String(r.createdAt).slice(11,16))+'</td><td class="row-btn" data-action="open-order" data-id="'+r.orderId+'">'+escapeHtml(r.customerName)+'</td><td class="mono">'+escapeHtml(r.jobNumber||'')+'</td><td>'+(r.method==='card'?'Card':'Cash')+'</td><td class="num">'+money(r.amount)+'</td></tr>';
+      return '<tr><td class="mono">'+escapeHtml(r.number)+'</td><td>'+escapeHtml(String(r.createdAt).slice(11,16))+'</td><td class="row-btn" data-action="open-order" data-id="'+r.orderId+'">'+escapeHtml(r.customerName)+'</td><td class="mono">'+escapeHtml(r.jobNumber||'')+'</td><td>'+methodLabel(r.method)+'</td><td class="num">'+money(r.amount)+'</td></tr>';
     }).join('') : '<tr><td colspan="6" class="empty-note">No receipts captured for this day.</td></tr>';
     var history = Object.keys(STATE.cashups).sort().reverse().slice(0,14).map(function(d){
       var c = STATE.cashups[d];
@@ -5280,7 +5298,7 @@ import './platform.js?v=2026-11-06.36';
   function cashupReportRows(from, to){
     var days = {};
     Object.keys(STATE.cashups).forEach(function(d){ if((!from || d>=from) && (!to || d<=to)) days[d] = true; });
-    STATE.receipts.forEach(function(r){ if(!r.voided && r.date && (!from || r.date>=from) && (!to || r.date<=to)) days[r.date] = true; });
+    STATE.receipts.forEach(function(r){ if(!r.voided && r.method!=='eft' && r.date && (!from || r.date>=from) && (!to || r.date<=to)) days[r.date] = true; });
     return Object.keys(days).sort().map(function(d){
       var c = STATE.cashups[d] || null, recs = receiptsOn(d);
       var cashRec = round2(recs.filter(function(r){ return r.method==='cash'; }).reduce(function(s,r){ return s+Number(r.amount||0); },0));
@@ -5293,7 +5311,7 @@ import './platform.js?v=2026-11-06.36';
     });
   }
   function receiptsInRange(from, to, includeVoid){
-    return STATE.receipts.filter(function(r){ return r.date && (includeVoid || !r.voided) && (!from || r.date>=from) && (!to || r.date<=to); })
+    return STATE.receipts.filter(function(r){ return r.date && r.method!=='eft' && (includeVoid || !r.voided) && (!from || r.date>=from) && (!to || r.date<=to); })
       .sort(function(a,b){ return String(a.date+a.createdAt).localeCompare(String(b.date+b.createdAt)); });
   }
   function receiptStatus(r){ return r.voided ? 'VOID' : (r.cashupDate ? 'Cashed up' : 'Open'); }
@@ -5364,7 +5382,7 @@ import './platform.js?v=2026-11-06.36';
     var rows = list.map(function(r){
       var st = receiptStatus(r);
       return '<tr class="'+(r.voided?'cr-void':'')+'"><td>'+fullDate(r.date)+'</td><td class="mono">'+escapeHtml(String(r.createdAt||'').slice(11,16))+'</td><td class="mono">'+escapeHtml(r.number||'')+'</td><td>'+escapeHtml(r.customerName||'')+'</td>' +
-        '<td class="mono">'+escapeHtml(r.jobNumber||'')+'</td><td class="mono">'+escapeHtml(r.invoiceNumber||'')+'</td><td>'+(r.method==='card'?'Card':'Cash')+'</td><td>'+(r.kind==='prepayment'?'Deposit':'Payment')+'</td>' +
+        '<td class="mono">'+escapeHtml(r.jobNumber||'')+'</td><td class="mono">'+escapeHtml(r.invoiceNumber||'')+'</td><td>'+methodLabel(r.method)+'</td><td>'+(r.kind==='prepayment'?'Deposit':'Payment')+'</td>' +
         '<td class="num">'+money(r.amount)+'</td><td><strong>'+escapeHtml(r.receivedBy||'—')+'</strong></td>' +
         '<td>'+(r.voided ? '<span class="pay-chip pay-unpaid" title="'+escapeHtml(r.voidReason||'')+'">Void</span>'+(r.voidReason?' <span class="cr-reason">'+escapeHtml(r.voidReason)+'</span>':'') : (r.cashupDate ? '<span class="pay-chip pay-paid">Cashed up</span>' : '<span class="pay-chip pay-part">Open</span>'))+'</td></tr>';
     }).join('');
@@ -5459,7 +5477,7 @@ import './platform.js?v=2026-11-06.36';
         if(y + rh > 192){ doc.addPage(); y = header(); }
         if(i%2===1){ doc.setFillColor(246,245,241); doc.rect(L, y, R-L, rh, 'F'); }
         doc.setFont('helvetica','normal'); doc.setFontSize(7.8); doc.setTextColor(r.voided?150:43, r.voided?150:43, r.voided?140:43);
-        var v = [fullDate(r.date), String(r.createdAt||'').slice(11,16), r.number||'', doc.splitTextToSize(String(r.customerName||''), 54)[0], r.jobNumber||'', r.invoiceNumber||'', r.method==='card'?'Card':'Cash', r.kind==='prepayment'?'Deposit':'Payment', num(r.amount), r.receivedBy||'', r.voided ? 'VOID' : (r.cashupDate?'Cashed up':'Open')];
+        var v = [fullDate(r.date), String(r.createdAt||'').slice(11,16), r.number||'', doc.splitTextToSize(String(r.customerName||''), 54)[0], r.jobNumber||'', r.invoiceNumber||'', methodLabel(r.method), r.kind==='prepayment'?'Deposit':'Payment', num(r.amount), r.receivedBy||'', r.voided ? 'VOID' : (r.cashupDate?'Cashed up':'Open')];
         v.forEach(function(val, k){
           if(k===9) doc.setFont('helvetica','bold');
           if(k===10 && r.voided){ doc.setTextColor(150,30,30); doc.setFont('helvetica','bold'); }
@@ -5557,7 +5575,7 @@ import './platform.js?v=2026-11-06.36';
     days.push([{v:'Total', s:1}, {v:t.done+' of '+t.days+' days cashed up', s:1}, B(t.counted), B(t.float), B(t.takings), B(t.cashRec), B(t.cashDiff), B(t.card), B(t.cardRec), B(t.cardDiff), B(t.totalDiff)]);
     var recs = [[H('Date'),H('Time'),H('Receipt'),H('Customer'),H('Job'),H('Invoice'),H('Method'),H('Type'),H('Amount'),H('Issued by'),H('Status'),H('Void reason'),H('Note')]];
     var rlist = receiptsInRange(range.from, range.to, true);
-    rlist.forEach(function(r){ recs.push([r.date, String(r.createdAt||'').slice(11,16), r.number, r.customerName||'', r.jobNumber||'', r.invoiceNumber||'', r.method==='card'?'Card':'Cash', r.kind==='prepayment'?'Deposit':'Payment', Number(r.amount)||0, r.receivedBy||'', receiptStatus(r), r.voided?(r.voidReason||''):'', r.note||'']); });
+    rlist.forEach(function(r){ recs.push([r.date, String(r.createdAt||'').slice(11,16), r.number, r.customerName||'', r.jobNumber||'', r.invoiceNumber||'', methodLabel(r.method), r.kind==='prepayment'?'Deposit':'Payment', Number(r.amount)||0, r.receivedBy||'', receiptStatus(r), r.voided?(r.voidReason||''):'', r.note||'']); });
     var validR = rlist.filter(function(r){ return !r.voided; });
     recs.push([]); recs.push([{v:'Total (excl. voided)', s:1}, '', {v:validR.length+' receipts', s:1}, '', '', '', '', '', B(round2(validR.reduce(function(s,r){ return s+(Number(r.amount)||0); },0)))]);
     var byUser = [[H('Issued by'),H('Receipts'),H('Cash'),H('Card'),H('Total'),H('Voided')]];
@@ -6838,6 +6856,279 @@ import './platform.js?v=2026-11-06.36';
     return '<div class="section-label" style="margin-top:18px;">Customer profile tasks</div>' +
       '<label style="display:flex; gap:8px; align-items:center; margin-bottom:10px; cursor:pointer;"><input type="checkbox" id="cfgProfOn" style="width:auto;"'+(on?' checked':'')+'> Every Monday, send the person who created each incomplete customer a task to complete it</label>' +
       '<div class="field"><label for="cfgProfEvery">Repeat every (days) while details are missing</label><input type="number" id="cfgProfEvery" min="1" max="60" style="max-width:110px;" value="'+every+'"></div>';
+  }
+
+  /* ============================ bank statement import: EFT payments (update 37) ============================ */
+  // Owner only. Upload the DsignX bank import template (CSV or Excel) filled from any bank's statement.
+  // Each money-in line is matched to an open invoice/job (invoice number in the reference first, then
+  // customer + amount, then amount only). The owner checks the matches and imports: each ticked line
+  // becomes an EFT receipt. Lines already imported (same date, amount and reference) are skipped.
+  var BANK_HEADERS = {
+    date: ['date','transaction date','trans date','value date','posting date','*date'],
+    amount: ['amount','amount (r)','amount (zar)','value','*amount'],
+    credit: ['credit','credit amount','money in','deposit','deposits','in'],
+    debit: ['debit','debit amount','money out','withdrawal','withdrawals','out'],
+    reference: ['reference','ref','your reference','statement reference','payment reference','beneficiary reference'],
+    description: ['description','details','narrative','transaction description','particulars','memo'],
+    payer: ['payer','payee','from','name','paid by','customer']
+  };
+  function biKey(s){ return String(s==null?'':s).trim().toLowerCase().replace(/\*/g,'').replace(/\s+/g,' '); }
+  function biNorm(s){ return String(s==null?'':s).toUpperCase().replace(/[^A-Z0-9]/g,''); }
+  var BI_MONTHS = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,sept:9,oct:10,nov:11,dec:12};
+  function biDate(v){
+    if(v==null || v==='') return '';
+    if(typeof v==='number' && v > 20000 && v < 80000){ var d = new Date(Math.round((v - 25569) * 86400000)); return d.toISOString().slice(0,10); }
+    if(v instanceof Date && !isNaN(v)) return v.getFullYear()+'-'+String(v.getMonth()+1).padStart(2,'0')+'-'+String(v.getDate()).padStart(2,'0');
+    var s = String(v).trim(), m;
+    function iso(y, mo, da){ y = Number(y); if(y < 100) y += 2000; mo = Number(mo); da = Number(da); if(!(mo>=1 && mo<=12 && da>=1 && da<=31)) return ''; return y+'-'+String(mo).padStart(2,'0')+'-'+String(da).padStart(2,'0'); }
+    if((m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/))) return iso(m[1], m[2], m[3]);
+    if((m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/))) return iso(m[3], m[2], m[1]);       // DD/MM/YYYY (South African)
+    if((m = s.match(/^(\d{4})(\d{2})(\d{2})$/))) return iso(m[1], m[2], m[3]);
+    if((m = s.match(/^(\d{1,2})[\s\-]([A-Za-z]{3,4})[A-Za-z]*[\s\-,]+(\d{2,4})/)) && BI_MONTHS[m[2].toLowerCase()]) return iso(m[3], BI_MONTHS[m[2].toLowerCase()], m[1]);
+    return '';
+  }
+  function bankLineKey(l){ return [l.date, Number(l.amount).toFixed(2), biNorm(l.reference + '|' + l.description)].join('|'); }
+  function parseBankRows(rows){
+    var hi = -1, cols = {};
+    for(var r=0; r<Math.min(rows.length, 20); r++){
+      var c = {};
+      (rows[r]||[]).forEach(function(h, idx){
+        var k = biKey(h);
+        Object.keys(BANK_HEADERS).forEach(function(f){ if(c[f]===undefined && BANK_HEADERS[f].indexOf(k)>=0) c[f] = idx; });
+      });
+      if(c.date!==undefined && (c.amount!==undefined || c.credit!==undefined)){ hi = r; cols = c; break; }
+    }
+    if(hi<0) return {error:'Couldn’t find the column headings. Use the DsignX bank import template: Date, Amount, Reference, Description, Payer.'};
+    var lines = [], skippedOut = 0, bad = 0;
+    rows.slice(hi+1).forEach(function(row){
+      if(!row || !row.some(function(x){ return String(x==null?'':x).trim(); })) return;
+      var date = biDate(row[cols.date]);
+      var amt = null;
+      if(cols.credit!==undefined){ var cr = parseMoney(row[cols.credit]); if(cr!=null && cr!==0) amt = Math.abs(cr); else if(cols.amount===undefined){ skippedOut++; return; } }
+      if(amt==null && cols.amount!==undefined) amt = parseMoney(row[cols.amount]);
+      if(amt==null || isNaN(amt) || !date){ bad++; return; }
+      if(amt <= 0){ skippedOut++; return; }          // money out: not a customer payment
+      var g = function(f){ return cols[f]!==undefined ? String(row[cols[f]]==null?'':row[cols[f]]).trim() : ''; };
+      lines.push({date:date, amount:round2(amt), reference:g('reference'), description:g('description'), payer:g('payer')});
+    });
+    return {lines:lines, skippedOut:skippedOut, bad:bad};
+  }
+
+  // Orders that can still take a payment, with what is left to pay.
+  function bankOpenItems(){
+    return STATE.orders.filter(function(o){ return !o.quoteOnly; }).map(function(o){
+      var st = payStatus(o);
+      return {o:o, balance:round2(st.balance), invoiced:hasInvoiceDoc(o)};
+    }).filter(function(x){ return x.balance > 0.004; });
+  }
+  function bankItemLabel(o, bal){
+    var num = hasInvoiceDoc(o) ? o.invoiceNumber : (o.jobNumber || o.quoteNumber || jobNo(o.id));
+    return num + ' · ' + (o.customerName||'') + (bal!=null ? ' · owes ' + money(bal) : '');
+  }
+  function bankFindByNumber(text, items){
+    var t = biNorm(text), m, hits = [];
+    var num = function(s){ return Number(String(s).replace(/\D/g,'')) || 0; };
+    var reInv = /INV0*(\d{1,6})/g, reJob = /(?:DSXJ|JOB)0*(\d{1,6})/g, reQ = /DSXQ0*(\d{1,6})/g, reOld = /DSX0*(\d{3,6})/g;
+    while((m = reInv.exec(t))){ var n1 = Number(m[1]); items.forEach(function(x){ if(x.o.invoiceNumber && /INV/i.test(x.o.invoiceNumber) && num(x.o.invoiceNumber)===n1) hits.push(x); }); }
+    while((m = reJob.exec(t))){ var n2 = Number(m[1]); items.forEach(function(x){ if(x.o.jobNumber && num(x.o.jobNumber)===n2) hits.push(x); }); }
+    while((m = reQ.exec(t))){ var n3 = Number(m[1]); items.forEach(function(x){ if(x.o.quoteNumber && num(x.o.quoteNumber)===n3) hits.push(x); }); }
+    while((m = reOld.exec(t))){ var n4 = Number(m[1]); items.forEach(function(x){ if(x.o.invoiceNumber && !/INV/i.test(x.o.invoiceNumber) && num(x.o.invoiceNumber)===n4) hits.push(x); }); }
+    return hits.filter(function(x, i){ return hits.indexOf(x)===i; });
+  }
+  function bankCustomerHit(text, items){
+    var t = ' ' + String(text||'').toUpperCase().replace(/[^A-Z0-9]+/g,' ') + ' ';
+    var ids = {};
+    STATE.customers.forEach(function(c){
+      var names = [c.name, [c.firstName, c.lastName].filter(Boolean).join(' '), c.lastName && c.lastName.length>=4 ? c.lastName : ''];
+      (c.contacts||[]).forEach(function(p){ names.push([p.firstName, p.lastName].filter(Boolean).join(' ')); });
+      names.forEach(function(n){
+        var k = String(n||'').toUpperCase().replace(/[^A-Z0-9]+/g,' ').trim();
+        if(k.length >= 4 && t.indexOf(' '+k+' ') >= 0) ids[c.id] = true;
+      });
+    });
+    return items.filter(function(x){ return x.o.customerId && ids[x.o.customerId]; });
+  }
+  function matchBankLines(lines){
+    var items = bankOpenItems();
+    var left = {}; items.forEach(function(x){ left[x.o.id] = x.balance; });
+    var done = {};
+    STATE.receipts.forEach(function(r){ if(r.importKey && !r.voided) done[r.importKey] = r; });
+    var seen = {};
+    return lines.map(function(l, i){
+      var row = {i:i, line:l, key:bankLineKey(l), orderId:'', how:'none', include:false, note:''};
+      if(done[row.key]){ row.how = 'dup'; row.note = 'Already imported as '+done[row.key].number; return row; }
+      if(seen[row.key]){ row.how = 'dup'; row.note = 'Same line twice in this file'; return row; }
+      seen[row.key] = true;
+      var text = [l.reference, l.description, l.payer].join(' ');
+      var pick = null, how = 'none';
+      var byNum = bankFindByNumber(text, items);
+      if(byNum.length){ pick = byNum.find(function(x){ return Math.abs(left[x.o.id] - l.amount) < 0.01; }) || byNum[0]; how = 'number'; }
+      if(!pick){
+        var byCust = bankCustomerHit(text, items);
+        var exact = byCust.filter(function(x){ return Math.abs(left[x.o.id] - l.amount) < 0.01; });
+        if(exact.length===1){ pick = exact[0]; how = 'customer'; }
+        else if(byCust.length===1){ pick = byCust[0]; how = 'customer-only'; }
+      }
+      if(!pick){
+        var same = items.filter(function(x){ return Math.abs(left[x.o.id] - l.amount) < 0.01; });
+        if(same.length===1){ pick = same[0]; how = 'amount'; }
+      }
+      if(pick){
+        row.orderId = pick.o.id; row.how = how;
+        row.include = (how==='number' || how==='customer');
+        left[pick.o.id] = round2(left[pick.o.id] - l.amount);
+      }
+      return row;
+    });
+  }
+  var BI_HOW = {
+    number:['Invoice/job no. in reference','bi-good'], customer:['Customer name + exact amount','bi-good'],
+    'customer-only':['Customer name — amount differs','bi-check'], amount:['Amount only — please check','bi-check'],
+    none:['No match — choose the invoice','bi-none'], manual:['Chosen by you','bi-good'], dup:['Skipped','bi-dup']
+  };
+
+  function bankImportFile(file){
+    if(!file || !isOwnerRole()) return;
+    STATE.bankImport = {status:'reading', name:file.name};
+    render();
+    var isCsv = /\.(csv|txt)$/i.test(file.name) || file.type==='text/csv';
+    var p = isCsv
+      ? file.text().then(function(t){ return parseCsv(t.replace(/^﻿/,'')); })
+      : loadXlsx().then(function(X){
+          return file.arrayBuffer().then(function(buf){
+            var wb = X.read(buf, {type:'array'});
+            return X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1, raw:true, defval:''});
+          });
+        });
+    p.then(function(rows){
+      var res = parseBankRows(rows);
+      if(res.error){ STATE.bankImport = {status:'error', name:file.name, error:res.error}; render(); return; }
+      if(!res.lines.length){ STATE.bankImport = {status:'error', name:file.name, error:'No money-in lines were found in that file.'+(res.skippedOut?' ('+res.skippedOut+' money-out lines ignored.)':'')}; render(); return; }
+      STATE.bankImport = {status:'review', name:file.name, rows:matchBankLines(res.lines), skippedOut:res.skippedOut, bad:res.bad};
+      render();
+    }).catch(function(e){ STATE.bankImport = {status:'error', name:file.name, error:(e && e.message) || 'Could not read that file.'}; render(); });
+  }
+
+  function confirmBankImport(){
+    var bi = STATE.bankImport; if(!bi || bi.status!=='review' || !isOwnerRole()) return;
+    var todo = bi.rows.filter(function(r){ return r.include && r.orderId && r.how!=='dup'; });
+    if(!todo.length){ toast('Tick at least one matched line to import'); return; }
+    bi.status = 'saving'; render();
+    var batch = 'bank-'+new Date().toISOString().replace(/[^0-9]/g,'').slice(0,14);
+    reserveNumbers('nextReceiptNumber', todo.length).then(function(start){
+      return Promise.all(todo.map(function(r, i){
+        var o = STATE.orders.find(function(x){ return x.id===r.orderId; }) || {};
+        var l = r.line;
+        var rec = {
+          number:'DSX-R'+pad4(start+i), date:l.date, createdAt:new Date().toISOString(), amount:l.amount, method:'eft',
+          orderId:o.id, jobNumber:o.jobNumber||jobNo(o.id), jobTitle:o.title||'', invoiceNumber: hasInvoiceDoc(o) ? o.invoiceNumber : '',
+          kind: hasInvoiceDoc(o) ? 'payment' : 'prepayment', customerId:o.customerId||null, customerName:o.customerName||'', phone:o.phone||'',
+          note:('EFT — bank statement: '+[l.reference, l.description, l.payer].filter(Boolean).join(' / ')).slice(0, 300),
+          receivedBy:'Owner (bank import)', receivedById:'owner', voided:false, cashupDate:null,
+          bankReference:l.reference||'', bankDescription:l.description||'', bankPayer:l.payer||'', importKey:r.key, importBatch:batch, importFile:bi.name||''
+        };
+        if(STATE.isLive && STATE.db) return STATE.db.collection('receipts').add(rec).then(function(ref){ return Object.assign({id:ref.id}, rec); });
+        var x = Object.assign({id:uid()}, rec); STATE.receipts.push(x); return Promise.resolve(x);
+      }));
+    }).then(function(list){
+      var total = round2(list.reduce(function(s,r){ return s + r.amount; }, 0));
+      STATE.bankImport = {status:'done', name:bi.name, count:list.length, total:total, numbers:list.map(function(r){ return r.number; })};
+      render(); toast(list.length+' EFT receipt'+(list.length===1?'':'s')+' created');
+    }).catch(function(){ bi.status = 'review'; render(); toast('Import stopped — check your connection and try again'); });
+  }
+
+  // Excel template: sheet 1 "Statement" (headings only — the import reads this sheet), sheet 2 "Example and help".
+  function downloadBankTemplate(){
+    var name = 'DsignX_EFT_Bank_Import_Template.xlsx';
+    loadXlsx().then(function(X){
+      var head = ['Date','Amount','Reference','Description','Payer'];
+      var ws = X.utils.aoa_to_sheet([head]);
+      ws['!cols'] = [{wch:12},{wch:12},{wch:26},{wch:34},{wch:26}];
+      var help = X.utils.aoa_to_sheet([
+        ['DsignX — EFT bank statement import'],
+        [''],
+        ['Copy the lines from your bank statement into the Statement sheet (only that sheet is imported), save, then upload it under Bank import.'],
+        [''],
+        ['Column','Required','What to enter'],
+        ['Date','Yes','Date the money came in, DD/MM/YYYY (e.g. 03/11/2026)'],
+        ['Amount','Yes','Amount received, e.g. 1150.00. Negative amounts (money out) are ignored, so you can paste the whole statement.'],
+        ['Reference','Recommended','The payment reference — ideally the invoice number (DSX-INV0012), job number (DSX-J0031) or quote number'],
+        ['Description','Optional','The bank’s description, e.g. EFT CREDIT, MAGTAPE CREDIT CAPITEC'],
+        ['Payer','Optional','Who paid, if the statement shows it — helps match by customer name'],
+        [''],
+        ['Example lines'],
+        head,
+        ['03/11/2026', 1150.00, 'DSX-INV0012', 'EFT CREDIT', 'Kroon Motors'],
+        ['04/11/2026', 575.00, 'INV 15 Pretorius', 'MAGTAPE CREDIT CAPITEC', 'R Pretorius'],
+        ['05/11/2026', 2000.00, 'DSX-J0031 deposit', 'FNB APP PAYMENT FROM', 'Kroonstad Primary'],
+        ['06/11/2026', -450.00, 'SARS', 'DEBIT ORDER', '(ignored — money out)'],
+        [''],
+        ['Every line is shown for you to check before any receipt is created. A line that was already imported (same date, amount and reference) is skipped.']
+      ]);
+      help['!cols'] = [{wch:14},{wch:14},{wch:100}];
+      var wb = X.utils.book_new();
+      X.utils.book_append_sheet(wb, ws, 'Statement');
+      X.utils.book_append_sheet(wb, help, 'Example and help');
+      var out = X.write(wb, {bookType:'xlsx', type:'array'});
+      var blob = new Blob([out], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+      if(STATE.downloads){ STATE.downloads.save({filename:name, data:blob}).catch(function(){ fallbackDownload(blob, name); }); }
+      else fallbackDownload(blob, name);
+    }).catch(function(e){ toast((e && e.message) || 'Could not create the template'); });
+  }
+
+  function renderBankImportTab(){
+    var bi = STATE.bankImport, body = '';
+    if(bi && bi.status==='reading') body = '<div class="hint">Reading '+escapeHtml(bi.name)+'…</div>';
+    else if(bi && bi.status==='error') body = '<div class="hint" style="color:var(--critical);">'+escapeHtml(bi.error)+'</div>';
+    else if(bi && bi.status==='saving') body = '<div class="hint">Creating EFT receipts…</div>';
+    else if(bi && bi.status==='done') body = '<div class="bi-done"><strong>'+bi.count+' EFT receipt'+(bi.count===1?'':'s')+' created ('+money(bi.total)+')</strong> from '+escapeHtml(bi.name)+': '+escapeHtml(bi.numbers.join(', '))+'.<div style="margin-top:8px;"><button class="btn btn-sm" data-action="bi-reset">Import another statement</button></div></div>';
+    else if(bi && bi.status==='review'){
+      var items = bankOpenItems();
+      var rows = bi.rows.map(function(r){
+        var l = r.line, h = BI_HOW[r.how] || BI_HOW.none;
+        var o = r.orderId ? STATE.orders.find(function(x){ return x.id===r.orderId; }) : null;
+        var opts = '<option value="">— Not a customer payment / skip —</option>';
+        var list = items.slice();
+        if(o && !list.some(function(x){ return x.o.id===o.id; })) list.unshift({o:o, balance:round2(payStatus(o).balance)});
+        list.sort(function(a,b){ return String(a.o.customerName||'').localeCompare(String(b.o.customerName||'')); });
+        opts += list.map(function(x){ return '<option value="'+x.o.id+'"'+(x.o.id===r.orderId?' selected':'')+'>'+escapeHtml(bankItemLabel(x.o, x.balance))+'</option>'; }).join('');
+        var diff = o ? round2(payStatus(o).balance - l.amount) : 0;
+        var warn = o && diff < -0.004 ? '<div class="q-date" style="color:var(--warning);">More than owed by '+money(-diff)+'</div>' : (o && diff > 0.004 ? '<div class="q-date">Leaves '+money(diff)+' owing</div>' : '');
+        return '<tr class="'+(r.how==='dup'?'bi-row-dup':'')+'">' +
+          '<td style="text-align:center;">'+(r.how==='dup' ? '' : '<input type="checkbox" data-bi-inc="'+r.i+'"'+(r.include?' checked':'')+(r.orderId?'':' disabled')+' aria-label="Import this line">')+'</td>' +
+          '<td style="white-space:nowrap;">'+shortDate(l.date)+'</td>' +
+          '<td><strong>'+escapeHtml(l.reference||'—')+'</strong><div class="q-date">'+escapeHtml([l.description, l.payer].filter(Boolean).join(' · '))+'</div></td>' +
+          '<td class="num">'+money(l.amount)+'</td>' +
+          '<td>'+(r.how==='dup' ? '<span class="q-date">'+escapeHtml(r.note)+'</span>' : '<select data-bi-row="'+r.i+'" style="max-width:320px; width:100%;">'+opts+'</select>'+warn)+'</td>' +
+          '<td><span class="bi-chip '+h[1]+'">'+h[0]+'</span></td></tr>';
+      }).join('');
+      var ticked = bi.rows.filter(function(r){ return r.include && r.orderId && r.how!=='dup'; });
+      var tot = round2(ticked.reduce(function(s,r){ return s + r.line.amount; }, 0));
+      var dup = bi.rows.filter(function(r){ return r.how==='dup'; }).length;
+      body = '<div class="hint" style="margin-bottom:10px;">'+bi.rows.length+' money-in line'+(bi.rows.length===1?'':'s')+' in '+escapeHtml(bi.name)+
+          (bi.skippedOut ? ' &middot; '+bi.skippedOut+' money-out line'+(bi.skippedOut===1?'':'s')+' ignored' : '') +
+          (bi.bad ? ' &middot; <span style="color:var(--critical);">'+bi.bad+' line'+(bi.bad===1?'':'s')+' without a valid date or amount ignored</span>' : '') +
+          (dup ? ' &middot; '+dup+' already imported' : '') + '. Check each match, change it if needed, and untick anything that isn’t a customer payment.</div>' +
+        '<div class="tbl-wrap"><table class="bi-table"><thead><tr><th style="width:34px;">Import</th><th>Date</th><th>Bank reference</th><th class="num">Amount</th><th>Pay against</th><th>Match</th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
+        '<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:12px;">' +
+          '<button class="btn btn-primary" data-action="bi-confirm"'+(ticked.length?'':' disabled')+'>Create '+ticked.length+' EFT receipt'+(ticked.length===1?'':'s')+' ('+money(tot)+')</button>' +
+          '<button class="btn btn-ghost" data-action="bi-reset">Cancel</button></div>';
+    }
+    var recent = STATE.receipts.filter(function(r){ return r.method==='eft' && !r.voided; })
+      .sort(function(a,b){ return String(b.date+b.createdAt).localeCompare(String(a.date+a.createdAt)); }).slice(0, 15);
+    var recentHtml = recent.length ? '<div class="tbl-wrap"><table><thead><tr><th>Receipt</th><th>Date</th><th>Customer</th><th>Invoice / job</th><th>Bank reference</th><th class="num">Amount</th></tr></thead><tbody>' +
+        recent.map(function(r){ return '<tr><td class="mono">'+escapeHtml(r.number)+'</td><td>'+shortDate(r.date)+'</td><td class="row-btn" data-action="open-order" data-id="'+r.orderId+'">'+escapeHtml(r.customerName||'')+'</td><td class="mono">'+escapeHtml(r.invoiceNumber||r.jobNumber||'')+'</td><td>'+escapeHtml(r.bankReference||'')+'</td><td class="num">'+money(r.amount)+'</td></tr>'; }).join('') +
+      '</tbody></table></div>' : '<div class="empty-note">No EFT payments imported yet.</div>';
+    return '<div class="topline"><div><h1>Bank import</h1><div class="sub">Import EFT payments from your bank statement and record them as receipts</div></div></div>' +
+      '<div class="panel">' +
+        '<div class="section-label">1. Fill in the template</div>' +
+        '<p class="hint" style="margin-top:0;">Copy the money-in lines from your bank statement into the template: <strong>Date</strong> (DD/MM/YYYY), <strong>Amount</strong>, <strong>Reference</strong>, and optionally <strong>Description</strong> and <strong>Payer</strong>. Money-out (negative) lines are ignored, so you can paste the whole statement. A bank CSV with Date and Amount (or Credit) columns also works. <a href="#" data-action="bi-template">Download the template</a>.</p>' +
+        '<div class="section-label">2. Upload it</div>' +
+        '<label class="btn btn-sm'+(bi && bi.status==='review' ? '' : ' btn-primary')+'" style="cursor:pointer;">Choose statement file…<input type="file" id="bankFile" accept=".csv,.txt,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" style="display:none"></label>' +
+        '<div style="margin-top:12px;">'+body+'</div>' +
+        '<div class="hint" style="margin-top:12px;">Matching: the invoice number (e.g. DSX-INV0012, “INV 12”), job number or quote number in the reference is used first; then a customer’s name with the exact amount owed; then a single invoice owing exactly that amount. EFT receipts don’t affect the daily cash-up and are left out of the cash and speedpoint exports (the bank already has them).</div>' +
+      '</div>' +
+      '<div class="panel"><div class="section-label">Recent EFT receipts</div>'+recentHtml+'</div>';
   }
 
   /* ============================ boot ============================ */

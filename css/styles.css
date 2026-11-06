@@ -668,3 +668,13 @@ img{max-width:100%}
 /* update 35 */
 .gap-chip{display:inline-block; font-size:11.5px; background:#FBE7E3; color:#8A1C1C; border-radius:4px; padding:2px 7px; margin:2px 2px 2px 0;}
 .msg-profile{background:#E3EEF7; color:#2A5D84;}
+
+/* bank import (update 37) */
+.bi-chip{display:inline-block; font-size:11px; font-weight:600; border-radius:99px; padding:2px 8px; white-space:nowrap;}
+.bi-good{background:#E4F1E6; color:#2E6B3A;}
+.bi-check{background:#FBF0D9; color:#8A5A00;}
+.bi-none{background:#F7E3E3; color:#9B2C2C;}
+.bi-dup{background:var(--surface-2); color:var(--ink-faint);}
+.bi-row-dup td{opacity:.55;}
+.bi-table select{font-size:12.5px; padding:5px 6px;}
+.bi-done{background:#E4F1E6; border-radius:var(--radius-s); padding:12px 14px; font-size:13.5px;}

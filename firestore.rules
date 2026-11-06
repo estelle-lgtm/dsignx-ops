@@ -112,7 +112,8 @@ service cloud.firestore {
     // People allowed to cash up may read receipts and lock them to a cash-up.
     match /receipts/{id} {
       allow read: if isStaff() || canCashup();
-      allow create: if isStaff();
+      // EFT receipts come from the owner's bank statement import only.
+      allow create: if isStaff() && (request.resource.data.get('method', '') != 'eft' || isOwner());
       allow update: if isStaff()
         || (canCashup() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['cashupDate']));
       allow delete: if false;
