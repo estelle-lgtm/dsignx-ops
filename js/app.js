@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-10-26.32';
+import './platform.js?v=2026-11-06.33';
 
 (function(){
   "use strict";
@@ -1850,7 +1850,7 @@ import './platform.js?v=2026-10-26.32';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-10-26.32</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-06.33</span></div>' +
       '</div>'
     );
   }
@@ -2710,9 +2710,30 @@ import './platform.js?v=2026-10-26.32';
   }
 
   /* ============================ customers ============================ */
+  // Search helpers: every word typed must appear somewhere; phone numbers match on digits (0 or 27 at the start).
+  function digitsOf(v){ return String(v||'').replace(/\D/g,''); }
+  function searchMatch(q, text, phones){
+    var words = String(q||'').trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if(!words.length) return true;
+    text = String(text||'').toLowerCase();
+    var ph = (phones||[]).map(function(p){ var d = digitsOf(p); return d + ' ' + d.replace(/^27/,'0'); }).join(' ');
+    var whole = String(q).replace(/[\s()+.-]/g,'');
+    if(/^\d{3,}$/.test(whole) && ph.indexOf(whole.replace(/^27/,'0'))>=0) return true;
+    return words.every(function(w){
+      if(text.indexOf(w)>=0) return true;
+      var dw = digitsOf(w); return dw.length>=3 && dw.length===w.replace(/[\s()+-]/g,'').length && ph.indexOf(dw.replace(/^27/,'0'))>=0;
+    });
+  }
+  function customerSearchText(c){
+    var a = [c.name, c.email, c.firstName, c.lastName, c.vatNumber, c.regNumber, c.website, c.notes];
+    [c.postalAddress, c.deliveryAddress].forEach(function(ad){ if(ad) a.push(ad.line1, ad.line2, ad.city, ad.region, ad.postalCode); });
+    (c.contacts||[]).forEach(function(p){ a.push(p.firstName, p.lastName, p.email, p.phone); });
+    STATE.orders.forEach(function(o){ if(o.customerId===c.id) a.push(o.jobNumber, o.quoteNumber, o.invoiceNumber, o.poNumber, o.title); });
+    return a.filter(Boolean).join(' ');
+  }
   function renderCustomersTab(){
     var q = STATE.customerQuery.trim().toLowerCase();
-    var list = STATE.customers.filter(function(c){ return !q || c.name.toLowerCase().indexOf(q)>=0 || (c.phone||'').indexOf(q)>=0; });
+    var list = STATE.customers.filter(function(c){ return !q || searchMatch(q, customerSearchText(c), [c.phone].concat((c.contacts||[]).map(function(p){ return p.phone; }))); });
 
     var rows = list.length ? list.map(function(c){
       var os = STATE.orders.filter(function(o){ return o.customerId===c.id; });
@@ -2759,7 +2780,8 @@ import './platform.js?v=2026-10-26.32';
       '</div>' +
       '<div class="two-col">' +
         '<div>' +
-          '<div class="search" style="margin-bottom:12px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><input type="text" id="customerSearch" placeholder="Search customers" value="'+escapeHtml(STATE.customerQuery)+'"></div>' +
+          '<div class="search" style="margin-bottom:12px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><input type="text" id="customerSearch" placeholder="Search name, phone, email, VAT no, job, quote or invoice number" value="'+escapeHtml(STATE.customerQuery)+'"></div>' +
+          (STATE.customerQuery.trim() ? '<div class="hint" style="margin:-6px 0 10px;">'+list.length+' of '+STATE.customers.length+' customer'+(STATE.customers.length===1?'':'s')+' match “'+escapeHtml(STATE.customerQuery.trim())+'”</div>' : '') +
           '<div class="customer-list">'+rows+'</div>' +
         '</div>' +
         '<div>'+(detail || '<div class="panel"><div class="empty-note">Select a customer to see their order history.</div></div>')+'</div>' +
@@ -2782,6 +2804,14 @@ import './platform.js?v=2026-10-26.32';
     if(STATE.quoteFilter==='pending') list = list.filter(function(o){ return !o.invoiced; });
     if(STATE.quoteFilter==='invoiced') list = list.filter(function(o){ return o.invoiced; });
     list = list.slice().sort(function(a,b){ return (b.updatedAt||'').localeCompare(a.updatedAt||''); });
+    var qq = String(STATE.quoteQuery||'').trim(), beforeSearch = list.length;
+    if(qq) list = list.filter(function(o){
+      var cn = (STATE.creditNotes||[]).filter(function(c){ return c.orderId===o.id; }).map(function(c){ return c.number; });
+      var rc = STATE.receipts.filter(function(r){ return r.orderId===o.id; }).map(function(r){ return r.number; });
+      var text = [o.customerName, o.title, o.jobNumber, o.quoteNumber, o.invoiceNumber, o.poNumber, o.designerName, o.technicianName, o.technician2Name, o.description,
+                  (o.quoteAmount!=null ? Number(o.quoteAmount).toFixed(2) : '')].concat(cn, rc).filter(Boolean).join(' ');
+      return searchMatch(qq, text, [o.phone]);
+    });
 
     var selectedCount = Object.keys(STATE.selectedForExport).filter(function(k){ return STATE.selectedForExport[k]; }).length;
 
@@ -2800,7 +2830,7 @@ import './platform.js?v=2026-10-26.32';
           '<td>'+(o.quoteOnly ? '<span style="color:var(--ink-faint);">—</span>' : '')+(o.quoteOnly ? '' : (function(){ var st = payStatus(o); return '<span class="pay-chip pay-'+st.key+'">'+st.label+'</span>'+payDatesHtml(o); })())+'</td>' +
         '</tr>'
       );
-    }).join('') : '<tr><td colspan="9" class="empty-note">No quotations yet — use “+ New quotation”, or set a quote amount on any job card.</td></tr>';
+    }).join('') : qq ? '<tr><td colspan="9" class="empty-note">Nothing matches “'+escapeHtml(qq)+'”.</td></tr>' : '<tr><td colspan="9" class="empty-note">No quotations yet — use “+ New quotation”, or set a quote amount on any job card.</td></tr>';
 
     return (
       '<div class="topline"><div><h1>Quotes &amp; invoicing</h1><div class="sub">Quote a customer without opening a job, or export selected jobs as a Xero-ready invoice CSV</div></div>' + exampleBadge() +
@@ -2811,9 +2841,11 @@ import './platform.js?v=2026-10-26.32';
         '<button class="chip-toggle '+(STATE.quoteFilter==='quoteonly'?'active':'')+'" data-action="quote-filter" data-filter="quoteonly">Quotes only (no job yet)</button>' +
         '<button class="chip-toggle '+(STATE.quoteFilter==='pending'?'active':'')+'" data-action="quote-filter" data-filter="pending">Not yet invoiced</button>' +
         '<button class="chip-toggle '+(STATE.quoteFilter==='invoiced'?'active':'')+'" data-action="quote-filter" data-filter="invoiced">Invoiced</button>' +
+        '<div class="search" style="flex:1; min-width:220px; max-width:420px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><input type="text" id="quoteSearch" placeholder="Search customer, job, quote, invoice, PO or receipt no." value="'+escapeHtml(STATE.quoteQuery||'')+'"></div>' +
         '<span style="flex:1"></span>' +
         '<button class="btn btn-primary btn-sm" data-action="export-xero" '+(selectedCount?'':'disabled')+'>Export '+(selectedCount||'')+' to Xero CSV</button>' +
       '</div>' +
+      (qq ? '<div class="hint" style="margin:-4px 0 10px;">'+list.length+' of '+beforeSearch+' match “'+escapeHtml(qq)+'”</div>' : '') +
       '<div class="panel"><div class="tbl-wrap"><table><thead><tr><th></th><th>Customer</th><th>Ordered</th><th>Job</th><th>Amount</th><th>Invoice</th><th>Due</th><th>Quotation</th><th>Payment</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>' +
       '<div class="hint" style="margin-top:10px;">Xero import needs the <strong>ContactName</strong> to match an existing Xero contact exactly, and every line filled in for AccountCode and TaxType — set your defaults on the Exports tab.</div>'
     );
@@ -3610,7 +3642,7 @@ import './platform.js?v=2026-10-26.32';
     app.onchange = function(e){
       if(e.target.id==='cfDelSame' && STATE.customerForm){ STATE.customerForm.draft.deliverySame = e.target.checked; render(); return; }
       if(e.target.id==='boardSearch' && STATE.boardQuery!==e.target.value){ STATE.boardQuery = e.target.value; render(); focusEl('boardSearch'); }
-      if(e.target.id==='customerSearch'){ STATE.customerQuery = e.target.value; render(); focusEl('customerSearch'); }
+      if(e.target.id==='customerSearch' && STATE.customerQuery!==e.target.value){ STATE.customerQuery = e.target.value; render(); focusEl('customerSearch'); }
       if(e.target.id==='ofAttach'){ handleAttach(e.target.files[0]); }
       if(e.target.id==='chatAttach'){ attachFromDevice(e.target.getAttribute('data-phone'), e.target.files[0]); e.target.value=''; }
       if(e.target.id==='importFile'){ importBackupFile(e.target.files[0]); e.target.value=''; }
@@ -3642,8 +3674,9 @@ import './platform.js?v=2026-10-26.32';
       var cfp = e.target.getAttribute && e.target.getAttribute('data-cf');
       if(cfp && STATE.customerForm){ setDraftPath(cfp, e.target.value); if(cfp==='name' && STATE.customerForm.errors && STATE.customerForm.errors.name){ STATE.customerForm.errors.name = null; e.target.classList.remove('invalid'); } return; }
       if(e.target.id==='boardSearch' && STATE.boardQuery!==e.target.value){ STATE.boardQuery = e.target.value; render(); focusEl('boardSearch'); }
-      if(e.target.id==='customerSearch'){ STATE.customerQuery = e.target.value; render(); focusEl('customerSearch'); }
+      if(e.target.id==='customerSearch' && STATE.customerQuery!==e.target.value){ STATE.customerQuery = e.target.value; render(); focusEl('customerSearch'); }
       if(e.target.id==='msgText'){ STATE.msgDraft = e.target.value; }
+      if(e.target.id==='quoteSearch' && STATE.quoteQuery!==e.target.value){ STATE.quoteQuery = e.target.value; render(); focusEl('quoteSearch'); return; }
       if(e.target.id==='chatCompose'){ var p = currentChatPhone(); if(p){ STATE.chatDraft[p] = e.target.value; } }
       if(e.target.id==='inviteMsg'){ STATE.inviteDraftText = e.target.value; }
       var pfk = e.target.getAttribute && e.target.getAttribute('data-pf'); if(pfk && STATE.productForm){ STATE.productForm[pfk] = e.target.value; }
