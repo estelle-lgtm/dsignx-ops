@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-06.34';
+import './platform.js?v=2026-11-06.36';
 
 (function(){
   "use strict";
@@ -515,12 +515,13 @@ import './platform.js?v=2026-11-06.34';
   }
 
   function addCustomerLocal(data){
-    var c = {id:uid(), name:data.name, phone:data.phone||'', email:data.email||'', notes:data.notes||'', createdAt:todayIso()};
+    var c = Object.assign({}, data, {id:uid(), name:data.name, phone:data.phone||'', email:data.email||'', notes:data.notes||'', createdAt:todayIso()});
     STATE.customers.unshift(c);
     return c;
   }
 
   function persistCustomer(data){
+    if(!data.createdById){ data = Object.assign({}, data, {createdById: myMsgId(), createdByName: myMsgName()}); }
     if(STATE.isLive && STATE.db){
       if(!data.createdAt){ data = Object.assign({}, data, {createdAt:todayIso()}); }
       return STATE.db.collection('customers').add(data).then(function(ref){
@@ -1850,7 +1851,7 @@ import './platform.js?v=2026-11-06.34';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-06.34</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-06.36</span></div>' +
       '</div>'
     );
   }
@@ -2175,6 +2176,7 @@ import './platform.js?v=2026-11-06.34';
     if(STATE.reportView==='cashup' && canCashup()) return renderCashupReport(range);
     if(STATE.reportView==='age' && canSeeSalesReports()) return renderAgeReport();
     if(STATE.reportView==='quotes' && canSeeSalesReports()) return renderQuoteStats(range);
+    if(STATE.reportView==='profiles' && canSeeSalesReports()) return renderProfileReport();
     var data = commissionRows(range);
     var isMonth = rangeIsMonth(range);
     var periodWord = isMonth ? 'month' : 'period';
@@ -3435,6 +3437,9 @@ import './platform.js?v=2026-11-06.34';
       else if(action==='report-pdf'){ commissionReportPdf(); }
       else if(action==='adj-add'){ addAdj(); }
       else if(action==='adj-delete'){ deleteAdj(el.getAttribute('data-id')); }
+      else if(action==='prof-edit'){ var pcid = el.getAttribute('data-id'); if(canAccess('customers')){ STATE.tab = 'customers'; STATE.viewCustomerId = pcid; openCustomerForm(pcid); } }
+      else if(action==='prof-send'){ sendProfileTasksNow(); }
+      else if(action==='prof-mine'){ STATE.profMine = el.getAttribute('data-v')==='1'; render(); }
       else if(action==='toggle-nav'){ toggleNav(); }
       else if(action==='toggle-collected'){ STATE.showAllCollected = !STATE.showAllCollected; render(); }
       else if(action==='cn-new'){ openCreditForm(el.getAttribute('data-id')); }
@@ -3920,13 +3925,33 @@ import './platform.js?v=2026-11-06.34';
       postalAddress: Object.assign(blankAddress(), (c && c.postalAddress) || {}),
       deliverySame: c ? c.deliverySame!==false : true,
       deliveryAddress: Object.assign(blankAddress(), (c && c.deliveryAddress) || {}),
-      contacts: ((c && c.contacts) || []).map(function(p){ return Object.assign(blankPerson(), p); })
+      contacts: ((c && c.contacts) || []).map(function(p){ return Object.assign(blankPerson(), p); }),
+      createdById: (c && c.createdById) || ''
     };
     STATE.customerForm = {id: c ? c.id : null, draft: d, errors: {}};
     render();
     setTimeout(function(){ var el = document.getElementById('cfName'); if(el && !id) el.focus(); }, 0);
   }
   function addCustomerPrompt(){ openCustomerForm(null); }
+  function customerCreatorName(c){
+    if(!c || !c.createdById) return '';
+    if(c.createdById==='owner') return 'Owner';
+    var m = STATE.team.find(function(x){ return x.id===c.createdById; });
+    return m ? m.name : (c.createdByName || '');
+  }
+  function renderCreatedByField(d){
+    var c = STATE.customers.find(function(x){ return x.id===STATE.customerForm.id; });
+    if(!isOwnerRole()){
+      var nm = customerCreatorName(c);
+      return nm ? '<div class="hint" style="margin-top:10px;">Created by '+escapeHtml(nm)+'</div>' : '';
+    }
+    var opts = '<option value=""'+(d.createdById?'':' selected')+'>Not recorded</option><option value="owner"'+(d.createdById==='owner'?' selected':'')+'>Owner</option>' +
+      STATE.team.filter(function(m){ return m.role!=='technician' && (m.active!==false || m.id===d.createdById); }).map(function(m){
+        return '<option value="'+escapeHtml(m.id)+'"'+(m.id===d.createdById?' selected':'')+'>'+escapeHtml(m.name)+(m.active===false?' (inactive)':'')+'</option>';
+      }).join('');
+    return '<div class="form-section"><div class="field"><label for="cfCreatedBy">Created by</label><select id="cfCreatedBy" style="max-width:260px;">'+opts+'</select>' +
+      '<div class="hint">This person gets the task to complete the profile when details are missing. Only you can change it.</div></div></div>';
+  }
 
   function setDraftPath(path, value){
     var d = STATE.customerForm && STATE.customerForm.draft; if(!d) return;
@@ -3976,6 +4001,7 @@ import './platform.js?v=2026-11-06.34';
                         .filter(function(p){ return p.firstName||p.lastName||p.email||p.phone; }).slice(0, MAX_EXTRA_CONTACTS) : [],
       updatedAt: todayIso()
     };
+    if(f.id && isOwnerRole()){ var cbEl = document.getElementById('cfCreatedBy'); if(cbEl && cbEl.value && cbEl.value!==d.createdById){ data.createdById = cbEl.value; data.createdByName = cbEl.value==='owner' ? 'Owner' : ((STATE.team.find(function(m){ return m.id===cbEl.value; })||{}).name || ''); } }
     var p = f.id ? updateCustomerRecord(f.id, data) : persistCustomer(Object.assign({createdAt: todayIso()}, data));
     var wasEdit = !!f.id;
     p.then(function(c){
@@ -4045,6 +4071,7 @@ import './platform.js?v=2026-11-06.34';
           '</div>' +
           contacts +
           '<div class="form-section"><div class="field"><label for="cfNotes">Notes</label><textarea id="cfNotes" data-cf="notes" rows="3">'+escapeHtml(d.notes||'')+'</textarea></div></div>' +
+          (f.id ? renderCreatedByField(d) : '') +
           '<div class="modal-foot">' +
             '<button class="btn btn-ghost" data-action="cf-cancel">Cancel</button>' +
             '<button class="btn btn-primary" data-action="cf-save">'+(f.id?'Save changes':'Add customer')+'</button>' +
@@ -5294,7 +5321,7 @@ import './platform.js?v=2026-11-06.34';
   function reportSwitcher(){
     var views = [{k:'commission', l:'Commission'}];
     if(canCashup()) views.push({k:'cashup', l:'Daily cash-up'});
-    if(canSeeSalesReports()){ views.push({k:'age', l:'Age analysis'}); views.push({k:'quotes', l:'Quote success'}); }
+    if(canSeeSalesReports()){ views.push({k:'age', l:'Age analysis'}); views.push({k:'quotes', l:'Quote success'}); views.push({k:'profiles', l:'Customer profiles'}); }
     if(views.length < 2) return '';
     var v = views.some(function(x){ return x.k===STATE.reportView; }) ? STATE.reportView : 'commission';
     return '<div class="filterbar" style="margin:-6px 0 14px;">' + views.map(function(x){
@@ -6259,7 +6286,7 @@ import './platform.js?v=2026-11-06.34';
   function msgToastText(m){
     var last = (m.log||[])[m.log ? m.log.length-1 : 0];
     if(!last) return 'New '+(m.kind==='task'?'task':'enquiry')+' from '+m.fromName+': '+m.subject;
-    if(last.type==='system') return 'Payment reminder: '+m.subject.replace(/^Payment overdue:\s*/,'');
+    if(last.type==='system') return m.kind==='profile' ? ('Customer profile still incomplete: '+(m.customerName||'')) : ('Payment reminder: '+m.subject.replace(/^Payment overdue:\s*/,''));
     var verb = {accept:'accepted', reply:'replied to', finish:'finished', note:'added a note to'}[last.type] || 'updated';
     return last.byName+' '+verb+' “'+m.subject+'”';
   }
@@ -6427,7 +6454,7 @@ import './platform.js?v=2026-11-06.34';
     if(m.status==='accepted') return '<span class="pay-chip pay-part">Accepted</span>';
     return '<span class="pay-chip pay-unpaid">'+(m.toId===me ? 'Accept please' : 'Not accepted yet')+'</span>';
   }
-  function msgKindChip(m){ return '<span class="msg-kind msg-'+m.kind+'">'+(m.kind==='task'?'Task':m.kind==='reminder'?'Payment reminder':'Enquiry')+'</span>'; }
+  function msgKindChip(m){ return '<span class="msg-kind msg-'+m.kind+'">'+(m.kind==='task'?'Task':m.kind==='reminder'?'Payment reminder':m.kind==='profile'?'Customer profile':'Enquiry')+'</span>'; }
   function msgList(){
     var me = myMsgId(), box = STATE.msgBox || 'inbox', open = STATE.msgShow || 'open';
     return (STATE.messages||[]).filter(function(m){
@@ -6483,7 +6510,7 @@ import './platform.js?v=2026-11-06.34';
     var draft = escapeHtml(STATE.msgDraft||'');
     var actions = '';
     if(part && m.status!=='finished'){
-      var ph = m.fromId==='system' ? 'What did the customer say? Keep notes on your follow-up here…' : isTo ? (m.status==='pending' ? 'Need more information before you accept? Type your question and press “Reply to '+escapeHtml(m.fromName)+'”.' : 'Notes on your progress, or a question for '+escapeHtml(m.fromName)+'…')
+      var ph = m.kind==='profile' ? 'Notes, e.g. “Phoned — waiting for their email address”…' : m.fromId==='system' ? 'What did the customer say? Keep notes on your follow-up here…' : isTo ? (m.status==='pending' ? 'Need more information before you accept? Type your question and press “Reply to '+escapeHtml(m.fromName)+'”.' : 'Notes on your progress, or a question for '+escapeHtml(m.fromName)+'…')
                     : 'Answer '+escapeHtml(m.toName)+'’s question, add more detail, or keep a note…';
       actions = '<div class="msg-compose">' +
         '<textarea id="msgText" rows="3" placeholder="'+ph+'">'+draft+'</textarea>' +
@@ -6495,7 +6522,7 @@ import './platform.js?v=2026-11-06.34';
           (m.fromId==='system' ? '' : '<button class="btn btn-sm" data-action="msg-act" data-type="reply">'+(isTo ? 'Reply to '+escapeHtml(m.fromName) : 'Send reply to '+escapeHtml(m.toName))+'</button>') +
           (isTo && m.status==='accepted' ? '<button class="btn btn-primary btn-sm" data-action="msg-act" data-type="finish">Finish</button>' : '') +
         '</div>' +
-        '<div class="hint">'+(m.fromId==='system' ? 'Accept it, keep notes on your follow-up, and press Finish once the customer has paid or it is sorted. The owner sees when you accept and finish.' : isTo ? (m.status==='pending' ? 'You need to accept this before you can finish it.' : '“Finish” closes it and lets '+escapeHtml(m.fromName)+' know. Anything typed in the box is sent with it.') : 'Replies notify '+escapeHtml(m.toName)+'. Notes are saved without a notification.')+'</div>' +
+        '<div class="hint">'+(m.kind==='profile' ? 'Accept it, add the missing details on the customer (Open customer), and press Finish. The owner sees when you accept and finish.' : m.fromId==='system' ? 'Accept it, keep notes on your follow-up, and press Finish once the customer has paid or it is sorted. The owner sees when you accept and finish.' : isTo ? (m.status==='pending' ? 'You need to accept this before you can finish it.' : '“Finish” closes it and lets '+escapeHtml(m.fromName)+' know. Anything typed in the box is sent with it.') : 'Replies notify '+escapeHtml(m.toName)+'. Notes are saved without a notification.')+'</div>' +
       '</div>';
     } else if(m.status==='finished'){
       actions = '<div class="hint" style="margin-top:10px;">Finished by '+escapeHtml(m.toName)+(m.finishedAt?(' on '+msgTime(m.finishedAt)):'')+'.</div>';
@@ -6506,6 +6533,7 @@ import './platform.js?v=2026-11-06.34';
       '<div class="msg-thread-head"><div>'+msgKindChip(m)+' '+msgStatusChip(m)+'<h2>'+escapeHtml(m.subject)+'</h2>' +
         '<div class="hint" style="margin:2px 0 0;">From <strong>'+escapeHtml(m.fromName)+'</strong> to <strong>'+escapeHtml(m.toName)+'</strong> &middot; '+msgTime(m.createdAt) +
         (m.dueDate ? ' &middot; <span class="msg-due'+(m.dueDate<todayIso() && m.status!=='finished'?' late':'')+'">Due '+fullDate(m.dueDate)+'</span>' : '') + '</div>' +
+        (m.customerId ? '<div style="margin-top:6px;"><button type="button" class="btn btn-sm" data-action="prof-edit" data-id="'+escapeHtml(m.customerId)+'">Open customer</button></div>' : '') +
         (m.orderId ? '<div style="margin-top:6px;"><button type="button" class="btn btn-ghost btn-sm" data-action="open-order" data-id="'+escapeHtml(m.orderId)+'"'+(o?'':' disabled')+'>Job '+escapeHtml(m.jobNumber||'')+(o?' — '+escapeHtml(o.title||''):' (not found)')+'</button></div>' : '') +
       '</div><button class="modal-close" data-action="msg-close" aria-label="Close">&times;</button></div>' +
       '<div class="msg-entry msg-original"><div class="msg-entry-text">'+escapeHtml(m.body).replace(/\n/g,'<br>')+'</div>'+msgFilesHtml(m.attachments, m)+'</div>' +
@@ -6540,10 +6568,11 @@ import './platform.js?v=2026-11-06.34';
   function renderReminderPanel(){
     var on = STATE.config.paymentReminders !== false, every = Number(STATE.config.reminderEveryDays)||7;
     return '<div class="panel">' +
-      '<div class="section-label">Payment reminders</div>' +
+      '<div class="section-label">Payment reminders &amp; customer profile tasks</div>' +
       '<div class="hint" style="margin:-4px 0 12px;">Every weekday at 07:30 the system checks for invoices that are past their due date and not fully paid (after receipts and credit notes). The job’s designer gets a <strong>Payment reminder</strong> in Messages to follow up with the customer; jobs without a designer go to you. While an invoice stays unpaid the reminder repeats.</div>' +
       '<label style="display:flex; gap:8px; align-items:center; margin-bottom:10px; cursor:pointer;"><input type="checkbox" id="cfgRemOn" style="width:auto;"'+(on?' checked':'')+'> Send payment reminders automatically</label>' +
       '<div class="field"><label for="cfgRemEvery">Repeat every (days) while unpaid</label><input type="number" id="cfgRemEvery" min="1" max="60" style="max-width:110px;" value="'+every+'"></div>' +
+      renderProfileTaskSettings() +
       '<div style="display:flex; gap:8px; flex-wrap:wrap;">' +
         '<button class="btn btn-primary btn-sm" data-action="save-reminders">Save</button>' +
         '<button class="btn btn-sm" data-action="send-reminders-now"'+(STATE.remBusy?' disabled':'')+'>'+(STATE.remBusy?'Checking…':'Send reminders now')+'</button>' +
@@ -6552,7 +6581,8 @@ import './platform.js?v=2026-11-06.34';
   }
   function saveReminderSettings(){
     if(!isOwnerRole()) return;
-    var patch = {paymentReminders: !!document.getElementById('cfgRemOn').checked, reminderEveryDays: Math.min(60, Math.max(1, parseInt(document.getElementById('cfgRemEvery').value,10)||7))};
+    var patch = {paymentReminders: !!document.getElementById('cfgRemOn').checked, reminderEveryDays: Math.min(60, Math.max(1, parseInt(document.getElementById('cfgRemEvery').value,10)||7)),
+                 profileTasks: !!document.getElementById('cfgProfOn').checked, profileEveryDays: Math.min(60, Math.max(1, parseInt(document.getElementById('cfgProfEvery').value,10)||7))};
     STATE.config = Object.assign({}, STATE.config, patch);
     if(STATE.isLive && STATE.db){ STATE.db.doc('config/business').merge(patch).then(function(){ toast('Reminder settings saved'); }).catch(function(){ toast('Could not save — try again'); }); }
     else { toast('Reminder settings saved'); render(); }
@@ -6719,6 +6749,95 @@ import './platform.js?v=2026-11-06.34';
     if(!confirm('Remove '+money(a.amount)+' from '+a.memberName+'’s sales ('+a.reason+')?')) return;
     if(STATE.isLive && STATE.db){ STATE.db.doc('commissionAdjustments/'+id).delete().catch(function(){ toast('Could not remove — try again'); }); }
     else { STATE.commAdj = STATE.commAdj.filter(function(x){ return x.id!==id; }); render(); }
+  }
+
+  /* ============================ incomplete customer profiles (update 35) ============================ */
+  // Keep customerGaps() in step with functions/lib/profiles.js.
+  function pFilled(v){ return !!String(v==null?'':v).trim(); }
+  function customerGaps(c){
+    var miss = [], biz = c.type==='business';
+    if(!biz && !(pFilled(c.firstName) && pFilled(c.lastName))) miss.push('first and last name');
+    if(biz && !(c.contacts||[]).some(function(p){ return pFilled(p.firstName) || pFilled(p.lastName); })) miss.push('contact person');
+    if(!pFilled(c.phone)) miss.push('cellphone number');
+    if(!pFilled(c.email)) miss.push('email address');
+    var a = c.postalAddress || {}, parts = [];
+    if(!pFilled(a.line1)) parts.push('street'); if(!pFilled(a.city)) parts.push('town'); if(!pFilled(a.postalCode)) parts.push('postal code');
+    if(parts.length) miss.push('postal address ('+parts.join(', ')+')');
+    return miss;
+  }
+  // Same rule as profileOwner() in functions/lib/profiles.js: the person who created the customer;
+  // older customers (creator not recorded) fall back to the designer of their first job; else the owner.
+  function profileOwnerC(c, jobs, active){
+    if(c.createdById){
+      if(c.createdById!=='owner' && active[c.createdById]) return {id:c.createdById, name:active[c.createdById].name, how:'created'};
+      return {id:'owner', name:'Owner', how: c.createdById==='owner' ? 'created' : 'left'};
+    }
+    var first = (jobs||[]).slice().sort(function(a,b){ return String(a.createdAt||a.orderDate||'').localeCompare(String(b.createdAt||b.orderDate||'')); })
+      .find(function(o){ return o.designerId; });
+    if(first && active[first.designerId]) return {id:first.designerId, name:active[first.designerId].name, how:'firstjob'};
+    return {id:'owner', name:'Owner', how:'unknown'};
+  }
+  function profileRows(){
+    var byCust = {};
+    STATE.orders.forEach(function(o){ if(o.customerId) (byCust[o.customerId] = byCust[o.customerId] || []).push(o); });
+    var active = {}; STATE.team.forEach(function(m){ if(m.active!==false) active[m.id] = m; });
+    var withJobs = STATE.customers.filter(function(c){ return byCust[c.id] && byCust[c.id].length; });
+    var rows = withJobs.map(function(c){
+      var jobs = byCust[c.id].slice().sort(function(a,b){ return String(orderDateOf(b)).localeCompare(String(orderDateOf(a))); });
+      var who = profileOwnerC(c, byCust[c.id], active);
+      var task = (STATE.messages||[]).filter(function(m){ return m.kind==='profile' && m.customerId===c.id; })
+        .sort(function(a,b){ return String(b.createdAt).localeCompare(String(a.createdAt)); })[0] || null;
+      return {c:c, missing:customerGaps(c), designer: who.id==='owner' ? null : who, how: who.how, lastJob: jobs[0], task:task};
+    });
+    return {all:withJobs.length, incomplete: rows.filter(function(r){ return r.missing.length; }).sort(function(a,b){ return b.missing.length - a.missing.length || String(a.c.name).localeCompare(String(b.c.name)); })};
+  }
+  function renderProfileReport(){
+    var d = profileRows(), me = currentTeamMember();
+    var mine = !isOwnerRole() && STATE.profMine !== false;
+    var list = mine ? d.incomplete.filter(function(r){ return r.designer && me && r.designer.id===me.id; }) : d.incomplete;
+    var pct = d.all ? Math.round((d.all - d.incomplete.length) / d.all * 100) : 100;
+    var counts = {};
+    d.incomplete.forEach(function(r){ r.missing.forEach(function(m){ var k = m.replace(/ \(.*/, ''); counts[k] = (counts[k]||0)+1; }); });
+    var top = Object.keys(counts).sort(function(a,b){ return counts[b]-counts[a]; })[0];
+    var rows = list.length ? list.map(function(r){
+      var t = r.task, ts = !t ? '<span style="color:var(--ink-faint);">No task yet</span>' : (t.status==='finished' ? '<span class="pay-chip pay-paid">Finished</span>' : '<span class="pay-chip pay-part">'+(t.status==='accepted'?'Accepted':'Sent')+'</span>') + '<div class="q-date">'+escapeHtml(t.toName||'')+' · '+shortDate(String(t.createdAt).slice(0,10))+'</div>';
+      return '<tr><td class="row-btn" data-action="prof-edit" data-id="'+r.c.id+'"><strong>'+escapeHtml(r.c.name)+'</strong>'+(r.c.type==='business'?' <span class="cust-type">Business</span>':'')+'<div class="q-date">'+escapeHtml(r.c.phone||'')+'</div></td>' +
+        '<td>'+r.missing.map(function(m){ return '<span class="gap-chip">'+escapeHtml(m)+'</span>'; }).join(' ')+'</td>' +
+        '<td>'+(r.designer ? escapeHtml(r.designer.name) : 'Owner')+(r.how==='firstjob' ? '<div class="q-date">Not recorded &middot; first job</div>' : (r.how==='left' ? '<div class="q-date">Creator inactive</div>' : (r.how==='unknown' ? '<div class="q-date">Not recorded</div>' : '')))+'</td>' +
+        '<td>'+(r.lastJob ? escapeHtml(r.lastJob.jobNumber||'')+'<div class="q-date">'+shortDate(orderDateOf(r.lastJob))+'</div>' : '')+'</td>' +
+        '<td>'+ts+'</td>' +
+        '<td style="text-align:right;"><button class="btn btn-ghost btn-sm" data-action="prof-edit" data-id="'+r.c.id+'">Complete profile</button></td></tr>';
+    }).join('') : '<tr><td colspan="6" class="empty-note">'+(mine ? 'None of your customers have missing details.' : 'Every customer with a job has a complete profile.')+'</td></tr>';
+    return '<div class="topline"><div><h1>Reports</h1><div class="sub">Incomplete customer profiles &middot; customers with at least one job</div></div>' +
+        (isOwnerRole() ? '<button class="btn btn-primary btn-sm" data-action="prof-send"'+(STATE.profBusy?' disabled':'')+'>'+(STATE.profBusy?'Sending…':'Send correction tasks now')+'</button>' : '') + '</div>' +
+      reportSwitcher() +
+      '<div class="tiles">' +
+        tile('Complete profiles', pct+'%', (d.all - d.incomplete.length)+' of '+d.all+' customers') +
+        tile('Incomplete', String(d.incomplete.length), d.incomplete.length ? 'Need details added' : 'Nothing to fix') +
+        tile('Most often missing', top ? escapeHtml(top.charAt(0).toUpperCase()+top.slice(1)) : '—', top ? counts[top]+' customer'+(counts[top]===1?'':'s') : 'All complete') +
+        tile('Open correction tasks', String(d.incomplete.filter(function(r){ return r.task && r.task.status!=='finished'; }).length), 'In Messages') +
+      '</div>' +
+      '<div class="panel">' +
+        (isOwnerRole() ? '' : '<div class="filterbar" style="margin-bottom:10px;"><button class="chip-toggle'+(mine?' active':'')+'" data-action="prof-mine" data-v="1">My customers</button><button class="chip-toggle'+(mine?'':' active')+'" data-action="prof-mine" data-v="0">All customers</button></div>') +
+        '<div class="tbl-wrap"><table><thead><tr><th>Customer</th><th>Missing</th><th>Created by</th><th>Latest job</th><th>Correction task</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
+        '<div class="hint" style="margin-top:10px;">A profile is complete with a cellphone number, email address and postal address (street, town and postal code), plus the first and last name for an individual or a contact person for a business. Each Monday at 07:40 the person who <strong>created the customer</strong> gets a <strong>Customer profile</strong> task in Messages for every incomplete customer. For customers added before this was recorded, the designer of their first job gets it (the owner can set the creator on the customer form); if that person is no longer active, the task goes to the owner. Change this under Settings &rarr; Payment reminders.</div>' +
+      '</div>';
+  }
+  function sendProfileTasksNow(){
+    if(!isOwnerRole() || STATE.profBusy) return;
+    if(!(window.DSX && window.DSX.call)){ toast('Tasks need the live app'); return; }
+    STATE.profBusy = true; render();
+    window.DSX.call('sendProfileTasks', {}).then(function(r){
+      var d = (r && r.data) || r || {}; STATE.profBusy = false; render();
+      var n = (d.sent||0) + (d.updated||0);
+      toast(n ? (n+' correction task'+(n===1?'':'s')+' sent to Messages') : 'No tasks to send — incomplete customers were sent a task in the last few days, or every profile is complete');
+    }).catch(function(e){ STATE.profBusy = false; render(); toast((e && /not.found|NOT_FOUND|internal/i.test(String(e.code||e.message))) ? 'Deploy the functions first (firebase deploy --only functions)' : 'Could not send the tasks — try again'); });
+  }
+  function renderProfileTaskSettings(){
+    var on = STATE.config.profileTasks !== false, every = Number(STATE.config.profileEveryDays)||7;
+    return '<div class="section-label" style="margin-top:18px;">Customer profile tasks</div>' +
+      '<label style="display:flex; gap:8px; align-items:center; margin-bottom:10px; cursor:pointer;"><input type="checkbox" id="cfgProfOn" style="width:auto;"'+(on?' checked':'')+'> Every Monday, send the person who created each incomplete customer a task to complete it</label>' +
+      '<div class="field"><label for="cfgProfEvery">Repeat every (days) while details are missing</label><input type="number" id="cfgProfEvery" min="1" max="60" style="max-width:110px;" value="'+every+'"></div>';
   }
 
   /* ============================ boot ============================ */

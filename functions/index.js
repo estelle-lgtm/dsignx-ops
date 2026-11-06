@@ -206,3 +206,53 @@ exports.sendPaymentReminders = onCall(async (req) => {
   if ((await roleOf(req.auth.uid)) !== 'owner') throw new HttpsError('permission-denied', 'Only the owner can send reminders.');
   return runPaymentReminders('manual');
 });
+
+/* ---------------- customer profile tasks ---------------- */
+// Every Monday at 07:40 (and on demand by the owner) each customer with a job whose profile is incomplete
+// gets a "Customer profile" task in Messages for the person who created the customer (or the owner).
+// Repeats every N days (Settings; default 7) while details are still missing.
+const prof = require('./lib/profiles');
+
+async function runProfileTasks(trigger) {
+  const cfgSnap = await db.doc('config/business').get();
+  const cfg = cfgSnap.exists ? cfgSnap.data() : {};
+  if (trigger === 'schedule' && cfg.profileTasks === false) return { sent: 0, updated: 0, skipped: 'off' };
+  const all = async (name) => (await db.collection(name).get()).docs.map((d) => Object.assign({ id: d.id }, d.data()));
+  const [customers, orders, team, sentList] = await Promise.all([all('customers'), all('orders'), all('team'), all('profileTasks')]);
+  const sent = {}; sentList.forEach((r) => { sent[r.id] = r; });
+  const today = core.todayInJoburg();
+  const plan = prof.planProfileTasks({ customers, orders, team, sent, today, everyDays: cfg.profileEveryDays || 7 });
+  let created = 0, updated = 0;
+  for (const p of plan) {
+    const t = prof.profileText(p), now = new Date().toISOString();
+    let msgId = p.prev && p.prev.messageId, msg = null;
+    if (msgId) { const s = await db.doc(`messages/${msgId}`).get(); msg = s.exists ? s.data() : null; }
+    if (msg && msg.status !== 'finished' && msg.toId === p.toId) {
+      await db.doc(`messages/${msgId}`).update({
+        log: admin.firestore.FieldValue.arrayUnion({ at: now, byId: 'system', byName: 'DsignX Ops', type: 'system', text: t.again }),
+        [`attn.${p.toId}`]: true, updatedAt: now,
+      });
+      updated++;
+    } else {
+      const ref = await db.collection('messages').add({
+        kind: 'profile', subject: t.subject, body: t.body,
+        fromId: 'system', fromName: 'DsignX Ops', toId: p.toId, toName: p.toName,
+        createdAt: now, updatedAt: now, dueDate: '', orderId: (p.job && p.job.id) || '', jobNumber: (p.job && p.job.jobNumber) || '',
+        customerId: p.customer.id, customerName: p.customer.name || '',
+        status: 'pending', needsAnswer: false, log: [], attn: { [p.toId]: true }, attachments: [],
+      });
+      msgId = ref.id; created++;
+    }
+    await db.doc(`profileTasks/${p.customer.id}`).set({ lastSentAt: today, messageId: msgId, count: ((p.prev && p.prev.count) || 0) + 1, missing: p.missing }, { merge: true });
+  }
+  logger.info('profile tasks', { trigger, created, updated, today });
+  return { sent: created, updated };
+}
+
+exports.profileTasks = onSchedule({ schedule: '40 7 * * 1', timeZone: 'Africa/Johannesburg' }, async () => { await runProfileTasks('schedule'); });
+
+exports.sendProfileTasks = onCall(async (req) => {
+  if (!req.auth) throw new HttpsError('unauthenticated', 'Sign in first.');
+  if ((await roleOf(req.auth.uid)) !== 'owner') throw new HttpsError('permission-denied', 'Only the owner can send these tasks.');
+  return runProfileTasks('manual');
+});

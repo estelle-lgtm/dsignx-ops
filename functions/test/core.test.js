@@ -126,3 +126,20 @@ test('payment reminders: overdue unpaid invoices go to the designer, every 7 day
   assert.strictEqual(again.length, 1); assert.strictEqual(again[0].balance, 1000);
   assert.match(rem.reminderText(plan[0]).body, /15 days overdue/);
 });
+
+const prof = require('../lib/profiles');
+test('customer profiles: gaps and who fixes them', () => {
+  assert.deepStrictEqual(prof.customerGaps({ type: 'individual', firstName: 'Riaan', lastName: 'P', phone: '073', email: 'a@b.co', postalAddress: { line1: '1 St', city: 'Kroonstad', postalCode: '9499' } }), []);
+  assert.deepStrictEqual(prof.customerGaps({ type: 'business', name: 'Kroon Motors', phone: '073', postalAddress: { city: 'Kroonstad' } }), ['contact person', 'email address', 'postal address (street, postal code)']);
+  const customers = [{ id: 'c1', name: 'Anna', type: 'individual' }, { id: 'c2', name: 'No jobs' }, { id: 'c3', name: 'Recent', type: 'individual' }];
+  const orders = [{ customerId: 'c1', designerId: 't1', createdAt: '2026-10-01' }, { customerId: 'c1', designerId: 't2', createdAt: '2026-10-20' }, { customerId: 'c3', createdAt: '2026-10-20' }];
+  const team = [{ id: 't1', name: 'Shanya' }, { id: 't2', name: 'Jessica' }];
+  const plan = prof.planProfileTasks({ customers, orders, team, sent: { c3: { lastSentAt: '2026-11-04' } }, today: '2026-11-06', everyDays: 7 });
+  // no creator recorded (older customer): designer of the first job
+  assert.deepStrictEqual(plan.map((p) => [p.customer.id, p.toId]), [['c1', 't1']]);
+  // the person who created the customer gets it, even if someone else did the latest job
+  const plan2 = prof.planProfileTasks({ customers: [{ id: 'c1', name: 'Anna', createdById: 't2', createdByName: 'Jessica' }, { id: 'c4', name: 'Left', createdById: 't9' }, { id: 'c5', name: 'Mine', createdById: 'owner' }],
+    orders: [{ customerId: 'c1', designerId: 't1', createdAt: '2026-10-25' }, { customerId: 'c4', designerId: 't1' }, { customerId: 'c5', designerId: 't1' }], team, sent: {}, today: '2026-11-06' });
+  assert.deepStrictEqual(plan2.map((p) => [p.customer.id, p.toId]), [['c1', 't2'], ['c4', 'owner'], ['c5', 'owner']]);
+  assert.match(prof.profileText(plan[0]).body, /Missing: first and last name, cellphone number/);
+});

@@ -664,3 +664,7 @@ img{max-width:100%}
 
 /* update 29 */
 .q-date{font-size:11px; color:var(--ink-faint); margin-top:3px; white-space:nowrap;}
+
+/* update 35 */
+.gap-chip{display:inline-block; font-size:11.5px; background:#FBE7E3; color:#8A1C1C; border-radius:4px; padding:2px 7px; margin:2px 2px 2px 0;}
+.msg-profile{background:#E3EEF7; color:#2A5D84;}

@@ -64,8 +64,14 @@ service cloud.firestore {
       allow write: if isStaff();  // designers advance quote/invoice numbers
     }
 
+    // Customers. createdById/createdByName (who added the customer — they get the profile-correction task)
+    // can only be changed by the owner once set.
     match /customers/{id} {
-      allow read, write: if isStaff();
+      allow read, create, delete: if isStaff();
+      allow update: if isStaff()
+        && (isOwner()
+            || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['createdById', 'createdByName'])
+            || !('createdById' in resource.data));
     }
 
     match /orders/{id} {
