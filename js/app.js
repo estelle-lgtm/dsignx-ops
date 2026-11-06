@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-06.37';
+import './platform.js?v=2026-11-06.38';
 
 (function(){
   "use strict";
@@ -1853,7 +1853,7 @@ import './platform.js?v=2026-11-06.37';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-06.37</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-06.38</span></div>' +
       '</div>'
     );
   }
@@ -6858,8 +6858,11 @@ import './platform.js?v=2026-11-06.37';
       '<div class="field"><label for="cfgProfEvery">Repeat every (days) while details are missing</label><input type="number" id="cfgProfEvery" min="1" max="60" style="max-width:110px;" value="'+every+'"></div>';
   }
 
-  /* ============================ bank statement import: EFT payments (update 37) ============================ */
-  // Owner only. Upload the DsignX bank import template (CSV or Excel) filled from any bank's statement.
+  /* ============================ bank statement import: EFT payments (update 37, 38) ============================ */
+  // Owner only. Upload the Capitec Business statement CSV as downloaded from the bank: the DsignX EFT
+  // Statement Converter rules are built in (only "Payment Received" lines; card machine settlements and
+  // money out left out; bank prefixes and PayShap codes stripped from the reference). The DsignX bank
+  // import template (CSV or Excel, also what the stand-alone converter downloads) still works for other banks.
   // Each money-in line is matched to an open invoice/job (invoice number in the reference first, then
   // customer + amount, then amount only). The owner checks the matches and imports: each ticked line
   // becomes an EFT receipt. Lines already imported (same date, amount and reference) are skipped.
@@ -6888,7 +6891,53 @@ import './platform.js?v=2026-11-06.37';
     return '';
   }
   function bankLineKey(l){ return [l.date, Number(l.amount).toFixed(2), biNorm(l.reference + '|' + l.description)].join('|'); }
+  /* ---- DsignX EFT Statement Converter rules (Capitec Business statement CSV) ---- */
+  var EFT_BANK_PREFIX = /^(?:PayShapReceived|ABSA BANK|ABSA|CASHFOCUS|FNB|CAPITEC|NEDBANK|STANDARD BANK|STD BANK|INVESTEC|TYMEBANK|DISCOVERY BANK)\s+/i;
+  var EFT_UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+  var EFT_DOC_CODE = /\b(DSX[\s-]?(?:INV|QUO|JO|Q|J)?[\s-]?\d+(?:\/\d+)?|INV[\s-]?\d+|QUO[\s-]?\d+|J\d{3,})\b/i;
+  function eftCleanText(s){
+    s = String(s||'').replace(EFT_UUID, ' ').replace(/\s+/g, ' ').trim();
+    var prev;
+    do { prev = s; s = s.replace(EFT_BANK_PREFIX, '').trim(); } while(s !== prev);
+    return s;
+  }
+  function capitecColumns(rows){
+    for(var r=0; r<Math.min(rows.length, 20); r++){
+      var h = (rows[r]||[]).map(biKey);
+      var f = function(names){ for(var i=0;i<names.length;i++){ var x = h.indexOf(names[i]); if(x>=0) return x; } return -1; };
+      var c = {row:r, posting:f(['posting date','transaction date','date']), desc:f(['description']), orig:f(['original description']),
+               cat:f(['category']), amount:f(['amount']), moneyIn:f(['money in','credit'])};
+      // the converter's statement layout: Posting Date + Description + (Original Description or Category) + Amount/Money In
+      if(h.indexOf('posting date')>=0 && c.desc>=0 && (c.orig>=0 || c.cat>=0) && (c.amount>=0 || c.moneyIn>=0)) return c;
+    }
+    return null;
+  }
+  function convertCapitecStatement(rows, col){
+    var lines = [], moneyOut = 0, card = 0, other = 0, bad = 0;
+    rows.slice(col.row+1).forEach(function(r){
+      if(!r || !r.some(function(x){ return String(x==null?'':x).trim(); })) return;
+      var amt = parseMoney(col.amount>=0 ? r[col.amount] : r[col.moneyIn]);
+      if(amt==null || isNaN(amt)) return;
+      if(amt <= 0){ moneyOut++; return; }
+      var date = biDate(r[col.posting]);
+      if(!date){ bad++; return; }
+      var desc = String(r[col.desc]||'').trim(), orig = col.orig>=0 ? String(r[col.orig]||'').trim() : '';
+      var colon = desc.indexOf(':');
+      var bankType = colon > 0 ? desc.slice(0, colon).trim() : (col.cat>=0 ? String(r[col.cat]||'').trim() : desc);
+      var raw = orig || (colon > 0 ? desc.slice(colon+1) : desc);
+      var kind = /card machine sales|possettle/i.test(desc+' '+orig) ? 'card' : (/payment received/i.test(desc) ? 'eft' : 'other');
+      if(kind==='card'){ card++; return; }                 // speedpoint settlements: already receipted as card
+      var reference = eftCleanText(raw), m = reference.match(EFT_DOC_CODE);
+      var payer = m ? reference.replace(m[0], ' ').replace(/\s+/g, ' ').trim() : reference;
+      if(kind==='other') other++;
+      lines.push({date:date, amount:round2(amt), reference:reference, description:bankType || 'EFT CREDIT', payer:payer, code:m ? m[0] : '', kind:kind});
+    });
+    return {lines:lines, skippedOut:moneyOut, bad:bad, card:card, other:other, capitec:true};
+  }
+
   function parseBankRows(rows){
+    var cap = capitecColumns(rows);
+    if(cap) return convertCapitecStatement(rows, cap);
     var hi = -1, cols = {};
     for(var r=0; r<Math.min(rows.length, 20); r++){
       var c = {};
@@ -6898,7 +6947,7 @@ import './platform.js?v=2026-11-06.37';
       });
       if(c.date!==undefined && (c.amount!==undefined || c.credit!==undefined)){ hi = r; cols = c; break; }
     }
-    if(hi<0) return {error:'Couldn’t find the column headings. Use the DsignX bank import template: Date, Amount, Reference, Description, Payer.'};
+    if(hi<0) return {error:'Couldn’t read that file. Upload the Capitec Business statement CSV as downloaded from the bank, or the DsignX bank import template (Date, Amount, Reference, Description, Payer).'};
     var lines = [], skippedOut = 0, bad = 0;
     rows.slice(hi+1).forEach(function(row){
       if(!row || !row.some(function(x){ return String(x==null?'':x).trim(); })) return;
@@ -6928,9 +6977,11 @@ import './platform.js?v=2026-11-06.37';
   function bankFindByNumber(text, items){
     var t = biNorm(text), m, hits = [];
     var num = function(s){ return Number(String(s).replace(/\D/g,'')) || 0; };
-    var reInv = /INV0*(\d{1,6})/g, reJob = /(?:DSXJ|JOB)0*(\d{1,6})/g, reQ = /DSXQ0*(\d{1,6})/g, reOld = /DSX0*(\d{3,6})/g;
+    var reInv = /INV0*(\d{1,6})/g, reJob = /(?:DSXJO?|JOB)0*(\d{1,6})/g, reQ = /(?:DSXQ|QUO)0*(\d{1,6})/g, reOld = /DSX0*(\d{3,6})/g;
+    var sp = ' ' + String(text||'').toUpperCase().replace(/[^A-Z0-9]+/g,' ') + ' ', reJ = / J0*(\d{3,6}) /g;
     while((m = reInv.exec(t))){ var n1 = Number(m[1]); items.forEach(function(x){ if(x.o.invoiceNumber && /INV/i.test(x.o.invoiceNumber) && num(x.o.invoiceNumber)===n1) hits.push(x); }); }
     while((m = reJob.exec(t))){ var n2 = Number(m[1]); items.forEach(function(x){ if(x.o.jobNumber && num(x.o.jobNumber)===n2) hits.push(x); }); }
+    while((m = reJ.exec(sp))){ var n5 = Number(m[1]); items.forEach(function(x){ if(x.o.jobNumber && num(x.o.jobNumber)===n5) hits.push(x); }); reJ.lastIndex--; }
     while((m = reQ.exec(t))){ var n3 = Number(m[1]); items.forEach(function(x){ if(x.o.quoteNumber && num(x.o.quoteNumber)===n3) hits.push(x); }); }
     while((m = reOld.exec(t))){ var n4 = Number(m[1]); items.forEach(function(x){ if(x.o.invoiceNumber && !/INV/i.test(x.o.invoiceNumber) && num(x.o.invoiceNumber)===n4) hits.push(x); }); }
     return hits.filter(function(x, i){ return hits.indexOf(x)===i; });
@@ -6975,7 +7026,7 @@ import './platform.js?v=2026-11-06.37';
       }
       if(pick){
         row.orderId = pick.o.id; row.how = how;
-        row.include = (how==='number' || how==='customer');
+        row.include = (how==='number' || how==='customer') && l.kind!=='other';
         left[pick.o.id] = round2(left[pick.o.id] - l.amount);
       }
       return row;
@@ -7003,8 +7054,8 @@ import './platform.js?v=2026-11-06.37';
     p.then(function(rows){
       var res = parseBankRows(rows);
       if(res.error){ STATE.bankImport = {status:'error', name:file.name, error:res.error}; render(); return; }
-      if(!res.lines.length){ STATE.bankImport = {status:'error', name:file.name, error:'No money-in lines were found in that file.'+(res.skippedOut?' ('+res.skippedOut+' money-out lines ignored.)':'')}; render(); return; }
-      STATE.bankImport = {status:'review', name:file.name, rows:matchBankLines(res.lines), skippedOut:res.skippedOut, bad:res.bad};
+      if(!res.lines.length){ STATE.bankImport = {status:'error', name:file.name, error:(res.capitec ? 'No EFT payments (Payment Received) were found in that statement.' : 'No money-in lines were found in that file.')+(res.card?' '+res.card+' card machine settlements left out.':'')+(res.skippedOut?' ('+res.skippedOut+' money-out lines ignored.)':'')}; render(); return; }
+      STATE.bankImport = {status:'review', name:file.name, rows:matchBankLines(res.lines), skippedOut:res.skippedOut, bad:res.bad, card:res.card||0, capitec:!!res.capitec};
       render();
     }).catch(function(e){ STATE.bankImport = {status:'error', name:file.name, error:(e && e.message) || 'Could not read that file.'}; render(); });
   }
@@ -7100,12 +7151,14 @@ import './platform.js?v=2026-11-06.37';
           '<td><strong>'+escapeHtml(l.reference||'—')+'</strong><div class="q-date">'+escapeHtml([l.description, l.payer].filter(Boolean).join(' · '))+'</div></td>' +
           '<td class="num">'+money(l.amount)+'</td>' +
           '<td>'+(r.how==='dup' ? '<span class="q-date">'+escapeHtml(r.note)+'</span>' : '<select data-bi-row="'+r.i+'" style="max-width:320px; width:100%;">'+opts+'</select>'+warn)+'</td>' +
-          '<td><span class="bi-chip '+h[1]+'">'+h[0]+'</span></td></tr>';
+          '<td><span class="bi-chip '+h[1]+'">'+h[0]+'</span>'+(l.kind==='other' && r.how!=='dup' ? '<div class="q-date" style="margin-top:3px;">Not marked “Payment Received” by the bank — tick only if it is a customer payment</div>' : '')+'</td></tr>';
       }).join('');
       var ticked = bi.rows.filter(function(r){ return r.include && r.orderId && r.how!=='dup'; });
       var tot = round2(ticked.reduce(function(s,r){ return s + r.line.amount; }, 0));
       var dup = bi.rows.filter(function(r){ return r.how==='dup'; }).length;
       body = '<div class="hint" style="margin-bottom:10px;">'+bi.rows.length+' money-in line'+(bi.rows.length===1?'':'s')+' in '+escapeHtml(bi.name)+
+          (bi.capitec ? ' (Capitec Business statement, converted with the DsignX EFT converter rules)' : '') +
+          (bi.card ? ' &middot; '+bi.card+' card machine settlement'+(bi.card===1?'':'s')+' left out' : '') +
           (bi.skippedOut ? ' &middot; '+bi.skippedOut+' money-out line'+(bi.skippedOut===1?'':'s')+' ignored' : '') +
           (bi.bad ? ' &middot; <span style="color:var(--critical);">'+bi.bad+' line'+(bi.bad===1?'':'s')+' without a valid date or amount ignored</span>' : '') +
           (dup ? ' &middot; '+dup+' already imported' : '') + '. Check each match, change it if needed, and untick anything that isn’t a customer payment.</div>' +
@@ -7121,10 +7174,10 @@ import './platform.js?v=2026-11-06.37';
       '</tbody></table></div>' : '<div class="empty-note">No EFT payments imported yet.</div>';
     return '<div class="topline"><div><h1>Bank import</h1><div class="sub">Import EFT payments from your bank statement and record them as receipts</div></div></div>' +
       '<div class="panel">' +
-        '<div class="section-label">1. Fill in the template</div>' +
-        '<p class="hint" style="margin-top:0;">Copy the money-in lines from your bank statement into the template: <strong>Date</strong> (DD/MM/YYYY), <strong>Amount</strong>, <strong>Reference</strong>, and optionally <strong>Description</strong> and <strong>Payer</strong>. Money-out (negative) lines are ignored, so you can paste the whole statement. A bank CSV with Date and Amount (or Credit) columns also works. <a href="#" data-action="bi-template">Download the template</a>.</p>' +
-        '<div class="section-label">2. Upload it</div>' +
+        '<div class="section-label">Upload your bank statement</div>' +
+        '<p class="hint" style="margin-top:0;">Download the statement from Capitec Business as a <strong>CSV</strong> and upload it here as it is. The DsignX EFT converter rules are applied for you: only lines marked <strong>Payment Received</strong> (incl. Immediate and External Immediate) are taken; card machine settlements (PosSettle) and all money out, including fees, are left out; bank prefixes and PayShap codes are removed from the reference.</p>' +
         '<label class="btn btn-sm'+(bi && bi.status==='review' ? '' : ' btn-primary')+'" style="cursor:pointer;">Choose statement file…<input type="file" id="bankFile" accept=".csv,.txt,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" style="display:none"></label>' +
+        '<div class="hint" style="margin-top:8px;">Other banks: fill in the <a href="#" data-action="bi-template">DsignX bank import template</a> (Date, Amount, Reference, Description, Payer) and upload that instead. Files made with the stand-alone DsignX EFT Statement Converter can also be uploaded.</div>' +
         '<div style="margin-top:12px;">'+body+'</div>' +
         '<div class="hint" style="margin-top:12px;">Matching: the invoice number (e.g. DSX-INV0012, “INV 12”), job number or quote number in the reference is used first; then a customer’s name with the exact amount owed; then a single invoice owing exactly that amount. EFT receipts don’t affect the daily cash-up and are left out of the cash and speedpoint exports (the bank already has them).</div>' +
       '</div>' +
