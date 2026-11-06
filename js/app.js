@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-06.38';
+import './platform.js?v=2026-11-06.39';
 
 (function(){
   "use strict";
@@ -93,7 +93,7 @@ import './platform.js?v=2026-11-06.38';
   // Who can open what. Owner = the account that completed first-time setup; everyone else must be
   // a team member who redeemed an invite code. The same rules are enforced in firestore.rules.
   var ROLE_TABS = {
-    owner:      ['dashboard','board','messages','whatsapp','customers','team','quotes','products','cashup','bankimport','reports','exports','settings'],
+    owner:      ['dashboard','board','messages','whatsapp','customers','team','quotes','products','cashup','bankimport','overpayments','reports','exports','settings'],
     designer:   ['dashboard','board','messages','whatsapp','customers','team','quotes','products','cashup','reports'],
     technician: ['board','messages']
   };
@@ -1781,7 +1781,8 @@ import './platform.js?v=2026-11-06.38';
       (STATE.invoiceModalOrderId && canAccess('quotes') ? renderInvoiceModal() : '') +
       (STATE.receiptForm && !isTechnician() ? renderReceiptModal() : '') +
       (STATE.creditForm && isOwnerRole() ? renderCreditModal() : '') +
-      (STATE.msgForm ? renderMsgForm() : '');
+      (STATE.msgForm ? renderMsgForm() : '') +
+      (STATE.allocForm && isOwnerRole() ? renderAllocModal() : '');
     bindEvents();
   }
 
@@ -1797,6 +1798,7 @@ import './platform.js?v=2026-11-06.38';
     {key:'cashup', label:'Cash-ups'},
     {key:'reports', label:'Reports'},
     {key:'bankimport', label:'Bank import'},
+    {key:'overpayments', label:'Overpayments'},
     {key:'exports', label:'Exports'},
     {key:'settings', label:'Settings'}
   ];
@@ -1828,6 +1830,7 @@ import './platform.js?v=2026-11-06.38';
     cashup:'<rect x="2.5" y="6" width="19" height="12" rx="1.5"/><circle cx="12" cy="12" r="2.5"/><path d="M6 9.5v5M18 9.5v5"/>',
     reports:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
     exports:'<path d="M12 3v12M7 10l5 5 5-5M4 21h16"/>',
+    overpayments:'<circle cx="12" cy="12" r="9"/><path d="M12 7v10M9 9.5c0-1.2 1.3-2 3-2s3 .8 3 2-1.3 1.8-3 2.3-3 1.1-3 2.4 1.3 2 3 2 3-.8 3-2"/>',
     bankimport:'<path d="M3 10l9-6 9 6M5 10v8M9.5 10v8M14.5 10v8M19 10v8M3 21h18"/>',
     messages:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3.5 6.5l8.5 6.5 8.5-6.5"/>',
     settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>'
@@ -1853,7 +1856,7 @@ import './platform.js?v=2026-11-06.38';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-06.38</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-06.39</span></div>' +
       '</div>'
     );
   }
@@ -1872,6 +1875,7 @@ import './platform.js?v=2026-11-06.38';
       case 'reports': return renderReportsTab();
       case 'exports': return renderExportsTab();
       case 'bankimport': return isOwnerRole() ? renderBankImportTab() : '';
+      case 'overpayments': return isOwnerRole() ? renderOverpaymentsTab() : '';
       default: return renderDashboardTab();
     }
   }
@@ -2805,6 +2809,7 @@ import './platform.js?v=2026-11-06.38';
               (addrHasData(customerDeliveryAddress(c))?('<dt>Delivery</dt><dd class="addr">'+(c.deliverySame===false?escapeHtml(formatAddress(c.deliveryAddress)):'Same as postal')+'</dd>'):'') +
               ((c.contacts||[]).length?('<dt>Contacts</dt><dd>'+(c.contacts||[]).map(function(p){ return escapeHtml([personName(p), p.phone, p.email].filter(Boolean).join(' · ')); }).join('<br>')+'</dd>'):'') +
               (c.notes?('<dt>Notes</dt><dd>'+escapeHtml(c.notes)+'</dd>'):'') +
+              (isOwnerRole() && customerCredit(c.id) > 0.004 ? ('<dt>Overpayment</dt><dd><strong>'+money(customerCredit(c.id))+'</strong> on account &middot; <a href="#" data-action="tab" data-tab="overpayments">Allocate</a></dd>') : '') +
             '</dl>' +
             '<div class="tbl-wrap"><table><thead><tr><th>Job</th><th>Status</th><th>Quote</th><th>Logged</th></tr></thead><tbody>'+hist+'</tbody></table></div>' +
           '</div>';
@@ -3443,6 +3448,12 @@ import './platform.js?v=2026-11-06.38';
       else if(action==='prof-edit'){ var pcid = el.getAttribute('data-id'); if(canAccess('customers')){ STATE.tab = 'customers'; STATE.viewCustomerId = pcid; openCustomerForm(pcid); } }
       else if(action==='prof-send'){ sendProfileTasksNow(); }
       else if(action==='prof-mine'){ STATE.profMine = el.getAttribute('data-v')==='1'; render(); }
+      else if(action==='alloc-open'){ openAllocForm(el.getAttribute('data-src'), el.getAttribute('data-order')||''); }
+      else if(action==='alloc-close'){ STATE.allocForm = null; render(); }
+      else if(action==='alloc-save'){ saveAllocation(); }
+      else if(action==='alloc-undo'){ undoAllocation(el.getAttribute('data-id')); }
+      else if(action==='op-show'){ STATE.opShow = el.getAttribute('data-v'); render(); }
+      else if(action==='op-customer'){ var opc = el.getAttribute('data-id'); if(opc){ STATE.tab = 'customers'; STATE.viewCustomerId = opc; render(); } }
       else if(action==='bi-template'){ e.preventDefault(); downloadBankTemplate(); }
       else if(action==='bi-confirm'){ confirmBankImport(); }
       else if(action==='bi-reset'){ STATE.bankImport = null; render(); }
@@ -3515,7 +3526,7 @@ import './platform.js?v=2026-11-06.38';
         render();
       }
       else if(action==='close-order'){ STATE.openOrderId = null; render(); }
-      else if(action==='close-modal-bg'){ if(e.target===el && STATE.newQuoteOpen){ STATE.newQuoteOpen = false; render(); } else if(e.target===el && STATE.receiptForm){ STATE.receiptForm = null; render(); } else if(e.target===el && STATE.creditForm){ STATE.creditForm = null; render(); } else if(e.target===el && STATE.msgForm){ STATE.msgForm = null; render(); } else if(e.target===el){ STATE.openOrderId=null; STATE.newOrderOpen=false; STATE.newOrderPrefill=null; STATE.newTeamOpen=false; STATE.quoteModalOrderId=null; STATE.quoteDraft=null; STATE.invoiceModalOrderId=null; STATE.invoiceDraft=null; render(); } }
+      else if(action==='close-modal-bg'){ if(e.target===el && STATE.newQuoteOpen){ STATE.newQuoteOpen = false; render(); } else if(e.target===el && STATE.receiptForm){ STATE.receiptForm = null; render(); } else if(e.target===el && STATE.creditForm){ STATE.creditForm = null; render(); } else if(e.target===el && STATE.msgForm){ STATE.msgForm = null; render(); } else if(e.target===el && STATE.allocForm){ STATE.allocForm = null; render(); } else if(e.target===el){ STATE.openOrderId=null; STATE.newOrderOpen=false; STATE.newOrderPrefill=null; STATE.newTeamOpen=false; STATE.quoteModalOrderId=null; STATE.quoteDraft=null; STATE.invoiceModalOrderId=null; STATE.invoiceDraft=null; render(); } }
       else if(action==='open-add-team'){ if(isOwnerRole()){ STATE.newTeamOpen = true; render(); } }
       else if(action==='close-new-team'){ STATE.newTeamOpen = false; render(); }
       else if(action==='submit-new-team'){ submitNewTeamMember(); }
@@ -3671,6 +3682,7 @@ import './platform.js?v=2026-11-06.38';
       if(e.target.id==='cfDelSame' && STATE.customerForm){ STATE.customerForm.draft.deliverySame = e.target.checked; render(); return; }
       if(e.target.id==='boardSearch' && STATE.boardQuery!==e.target.value){ STATE.boardQuery = e.target.value; render(); focusEl('boardSearch'); }
       if(e.target.id==='customerSearch' && STATE.customerQuery!==e.target.value){ STATE.customerQuery = e.target.value; render(); focusEl('customerSearch'); }
+      if(e.target.id==='opSearch' && STATE.opQuery!==e.target.value){ STATE.opQuery = e.target.value; render(); focusEl('opSearch'); }
       if(e.target.id==='ofAttach'){ handleAttach(e.target.files[0]); }
       if(e.target.id==='chatAttach'){ attachFromDevice(e.target.getAttribute('data-phone'), e.target.files[0]); e.target.value=''; }
       if(e.target.id==='importFile'){ importBackupFile(e.target.files[0]); e.target.value=''; }
@@ -3678,9 +3690,16 @@ import './platform.js?v=2026-11-06.38';
       if(e.target.id==='bankFile'){ bankImportFile(e.target.files[0]); e.target.value=''; return; }
       if(e.target.hasAttribute && e.target.hasAttribute('data-bi-row') && STATE.bankImport && STATE.bankImport.rows){
         var bir = STATE.bankImport.rows[Number(e.target.getAttribute('data-bi-row'))];
-        if(bir){ bir.orderId = e.target.value; bir.how = e.target.value ? 'manual' : 'none'; bir.include = !!e.target.value; render(); }
+        if(bir){ bir.orderId = e.target.value; bir.how = !e.target.value ? 'none' : (e.target.value.indexOf('acct:')===0 ? 'acct' : 'manual'); bir.include = !!e.target.value; render(); }
         return;
       }
+      if(e.target.hasAttribute && e.target.hasAttribute('data-bi-op') && STATE.bankImport && STATE.bankImport.rows){
+        var bio = STATE.bankImport.rows[Number(e.target.getAttribute('data-bi-op'))];
+        if(bio){ bio.opExcess = e.target.checked; render(); }
+        return;
+      }
+      if(e.target.id==='alOrder'){ onAllocOrderChange(e.target.value); return; }
+      if(e.target.id==='alShowAll' && STATE.allocForm){ var aa = document.getElementById('alAmount'); if(aa) STATE.allocForm.amount = aa.value; STATE.allocForm.showAll = e.target.checked; render(); return; }
       if(e.target.hasAttribute && e.target.hasAttribute('data-bi-inc') && STATE.bankImport && STATE.bankImport.rows){
         var bic = STATE.bankImport.rows[Number(e.target.getAttribute('data-bi-inc'))];
         if(bic){ bic.include = e.target.checked && !!bic.orderId; render(); }
@@ -3714,6 +3733,7 @@ import './platform.js?v=2026-11-06.38';
       if(cfp && STATE.customerForm){ setDraftPath(cfp, e.target.value); if(cfp==='name' && STATE.customerForm.errors && STATE.customerForm.errors.name){ STATE.customerForm.errors.name = null; e.target.classList.remove('invalid'); } return; }
       if(e.target.id==='boardSearch' && STATE.boardQuery!==e.target.value){ STATE.boardQuery = e.target.value; render(); focusEl('boardSearch'); }
       if(e.target.id==='customerSearch' && STATE.customerQuery!==e.target.value){ STATE.customerQuery = e.target.value; render(); focusEl('customerSearch'); }
+      if(e.target.id==='opSearch' && STATE.opQuery!==e.target.value){ STATE.opQuery = e.target.value; render(); focusEl('opSearch'); }
       if(e.target.id==='msgText'){ STATE.msgDraft = e.target.value; }
       if(e.target.id==='quoteSearch' && STATE.quoteQuery!==e.target.value){ STATE.quoteQuery = e.target.value; render(); focusEl('quoteSearch'); return; }
       if(e.target.id==='chatCompose'){ var p = currentChatPhone(); if(p){ STATE.chatDraft[p] = e.target.value; } }
@@ -4484,7 +4504,7 @@ import './platform.js?v=2026-11-06.38';
   }
 
   /* ============================ receipts ============================ */
-  function methodLabel(m, lower){ var t = m==='card' ? 'Card' : (m==='eft' ? 'EFT' : 'Cash'); return lower && m!=='eft' ? t.toLowerCase() : t; }
+  function methodLabel(m, lower){ var t = m==='card' ? 'Card' : (m==='eft' ? 'EFT' : (m==='alloc' ? 'Overpayment' : 'Cash')); return lower && m!=='eft' ? t.toLowerCase() : t; }
   function orderReceipts(orderId){
     return STATE.receipts.filter(function(r){ return r.orderId===orderId && !r.voided; })
       .sort(function(a,b){ return String(a.createdAt).localeCompare(String(b.createdAt)); });
@@ -4544,6 +4564,8 @@ import './platform.js?v=2026-11-06.38';
   }
   function voidReceipt(id){
     var r = STATE.receipts.find(function(x){ return x.id===id; }); if(!r || !isOwnerRole()) return;
+    if(r.method==='alloc'){ undoAllocation(id); return; }
+    if(r.kind==='onaccount' && allocationsOf(r.id).length){ toast('Part of this overpayment is allocated — undo those allocations under Overpayments first'); return; }
     if(r.cashupDate){ toast('This receipt is in a completed cash-up — reopen that cash-up first'); return; }
     var why = prompt('Void receipt '+r.number+'? Type a reason (it stays on record, marked VOID):');
     if(why===null) return;
@@ -4638,15 +4660,22 @@ import './platform.js?v=2026-11-06.38';
     render();
   }
 
+  function renderCreditOffer(o, st){
+    if(!isOwnerRole() || !o.customerId || !(st.balance > 0.004)) return '';
+    var srcs = creditSourcesFor(o.customerId); if(!srcs.length) return '';
+    var cr = customerCredit(o.customerId);
+    return '<div class="op-offer"><span>'+escapeHtml(o.customerName||'This customer')+' has <strong>'+money(cr)+'</strong> overpayment on account</span>' +
+      '<button class="btn btn-sm" data-action="alloc-open" data-src="'+srcs[0].id+'" data-order="'+o.id+'">Allocate to this job</button></div>';
+  }
   function renderPaymentsSection(o){
     var st = payStatus(o);
     var list = STATE.receipts.filter(function(r){ return r.orderId===o.id; }).sort(function(a,b){ return String(a.createdAt).localeCompare(String(b.createdAt)); });
     var rows = list.map(function(r){
-      return '<div class="pay-row'+(r.voided?' voided':'')+'"><span class="mono">'+escapeHtml(r.number)+'</span><span>'+shortDate(r.date)+'</span><span>'+methodLabel(r.method)+(r.kind==='prepayment'?' · pre-payment':'')+'</span><span class="num">'+money(r.amount)+'</span>' +
+      return '<div class="pay-row'+(r.voided?' voided':'')+'"><span class="mono">'+escapeHtml(r.number)+'</span><span>'+shortDate(r.date)+'</span><span>'+(r.method==='alloc' ? 'Overpayment '+escapeHtml(r.sourceNumber||'') : methodLabel(r.method))+(r.kind==='prepayment'?' · pre-payment':'')+'</span><span class="num">'+money(r.amount)+'</span>' +
         '<span class="pay-actions">' + (r.voided ? '<em>VOID</em>' :
           '<button class="btn btn-ghost btn-sm" data-action="receipt-pdf" data-id="'+r.id+'">PDF</button>' +
           (waPhone(r.phone) && STATE.mcp ? '<button class="btn btn-ghost btn-sm" data-action="receipt-wa" data-id="'+r.id+'">WhatsApp</button>' : '') +
-          (isOwnerRole() && !r.cashupDate ? '<button class="btn btn-ghost btn-sm" data-action="receipt-void" data-id="'+r.id+'">Void</button>' : '')) +
+          (isOwnerRole() && !r.cashupDate ? (r.method==='alloc' ? '<button class="btn btn-ghost btn-sm" data-action="alloc-undo" data-id="'+r.id+'">Undo</button>' : '<button class="btn btn-ghost btn-sm" data-action="receipt-void" data-id="'+r.id+'">Void</button>') : '')) +
         '</span></div>';
     }).join('');
     var chip = '<span class="pay-chip pay-'+st.key+'">'+st.label+'</span>';
@@ -4660,7 +4689,7 @@ import './platform.js?v=2026-11-06.38';
           '</span>' +
         '</div>' +
         '<div style="font-size:12.5px; color:var(--ink-soft); margin-bottom:'+(rows||st.credited?'8px':'0')+';">'+(hasInvoiceDoc(o)?'Invoice total ':'Quoted ')+money(round2(st.due + (st.credited||0)))+(st.credited?(' &middot; Credited '+money(st.credited)):'')+' &middot; Paid '+money(st.paid)+' &middot; <strong style="color:var(--ink);">Balance '+money(Math.max(0,st.balance))+'</strong></div>' +
-        rows + renderCreditRows(o) +
+        rows + renderCreditRows(o) + renderCreditOffer(o, st) +
       '</div>'
     );
   }
@@ -4696,7 +4725,7 @@ import './platform.js?v=2026-11-06.38';
   }
 
   /* ============================ cash-ups ============================ */
-  function receiptsOn(date){ return STATE.receipts.filter(function(r){ return r.date===date && !r.voided && r.method!=='eft'; }).sort(function(a,b){ return String(a.createdAt).localeCompare(String(b.createdAt)); }); }
+  function receiptsOn(date){ return STATE.receipts.filter(function(r){ return r.date===date && !r.voided && isTillReceipt(r); }).sort(function(a,b){ return String(a.createdAt).localeCompare(String(b.createdAt)); }); }
   function defaultFloat(){ var f = Number(STATE.config.cashFloat); return isNaN(f) || STATE.config.cashFloat==null || STATE.config.cashFloat==='' ? 350 : f; }
   function cashupFormFor(date){
     var c = STATE.cashups[date];
@@ -4817,7 +4846,7 @@ import './platform.js?v=2026-11-06.38';
   }
   function receiptsBetween(from, to, method){
     return STATE.receipts.filter(function(r){
-      return !r.voided && r.date>=from && r.date<=to && (method==='all' ? r.method!=='eft' : r.method===method);
+      return !r.voided && r.date>=from && r.date<=to && (method==='all' ? isTillReceipt(r) : r.method===method);
     }).sort(function(a,b){ return String(a.date+a.createdAt).localeCompare(String(b.date+b.createdAt)); });
   }
   function ddmmyyyy(iso){ var p = String(iso||'').split('-'); return p.length===3 ? p[2]+'/'+p[1]+'/'+p[0] : ''; }
@@ -5298,7 +5327,7 @@ import './platform.js?v=2026-11-06.38';
   function cashupReportRows(from, to){
     var days = {};
     Object.keys(STATE.cashups).forEach(function(d){ if((!from || d>=from) && (!to || d<=to)) days[d] = true; });
-    STATE.receipts.forEach(function(r){ if(!r.voided && r.method!=='eft' && r.date && (!from || r.date>=from) && (!to || r.date<=to)) days[r.date] = true; });
+    STATE.receipts.forEach(function(r){ if(!r.voided && isTillReceipt(r) && r.date && (!from || r.date>=from) && (!to || r.date<=to)) days[r.date] = true; });
     return Object.keys(days).sort().map(function(d){
       var c = STATE.cashups[d] || null, recs = receiptsOn(d);
       var cashRec = round2(recs.filter(function(r){ return r.method==='cash'; }).reduce(function(s,r){ return s+Number(r.amount||0); },0));
@@ -5311,7 +5340,7 @@ import './platform.js?v=2026-11-06.38';
     });
   }
   function receiptsInRange(from, to, includeVoid){
-    return STATE.receipts.filter(function(r){ return r.date && r.method!=='eft' && (includeVoid || !r.voided) && (!from || r.date>=from) && (!to || r.date<=to); })
+    return STATE.receipts.filter(function(r){ return r.date && isTillReceipt(r) && (includeVoid || !r.voided) && (!from || r.date>=from) && (!to || r.date<=to); })
       .sort(function(a,b){ return String(a.date+a.createdAt).localeCompare(String(b.date+b.createdAt)); });
   }
   function receiptStatus(r){ return r.voided ? 'VOID' : (r.cashupDate ? 'Cashed up' : 'Open'); }
@@ -6987,6 +7016,10 @@ import './platform.js?v=2026-11-06.38';
     return hits.filter(function(x, i){ return hits.indexOf(x)===i; });
   }
   function bankCustomerHit(text, items){
+    var ids = bankCustomerIds(text);
+    return items.filter(function(x){ return x.o.customerId && ids[x.o.customerId]; });
+  }
+  function bankCustomerIds(text){
     var t = ' ' + String(text||'').toUpperCase().replace(/[^A-Z0-9]+/g,' ') + ' ';
     var ids = {};
     STATE.customers.forEach(function(c){
@@ -6997,7 +7030,7 @@ import './platform.js?v=2026-11-06.38';
         if(k.length >= 4 && t.indexOf(' '+k+' ') >= 0) ids[c.id] = true;
       });
     });
-    return items.filter(function(x){ return x.o.customerId && ids[x.o.customerId]; });
+    return ids;
   }
   function matchBankLines(lines){
     var items = bankOpenItems();
@@ -7024,6 +7057,10 @@ import './platform.js?v=2026-11-06.38';
         var same = items.filter(function(x){ return Math.abs(left[x.o.id] - l.amount) < 0.01; });
         if(same.length===1){ pick = same[0]; how = 'amount'; }
       }
+      if(!pick){
+        var cids = Object.keys(bankCustomerIds(text));
+        if(cids.length===1){ row.orderId = 'acct:'+cids[0]; row.how = 'acct-suggest'; row.include = false; return row; }
+      }
       if(pick){
         row.orderId = pick.o.id; row.how = how;
         row.include = (how==='number' || how==='customer') && l.kind!=='other';
@@ -7035,7 +7072,8 @@ import './platform.js?v=2026-11-06.38';
   var BI_HOW = {
     number:['Invoice/job no. in reference','bi-good'], customer:['Customer name + exact amount','bi-good'],
     'customer-only':['Customer name — amount differs','bi-check'], amount:['Amount only — please check','bi-check'],
-    none:['No match — choose the invoice','bi-none'], manual:['Chosen by you','bi-good'], dup:['Skipped','bi-dup']
+    none:['No match — choose the invoice','bi-none'], manual:['Chosen by you','bi-good'], dup:['Skipped','bi-dup'],
+    'acct-suggest':['No invoice open — on account?','bi-check'], acct:['Overpayment on account','bi-good']
   };
 
   function bankImportFile(file){
@@ -7060,30 +7098,55 @@ import './platform.js?v=2026-11-06.38';
     }).catch(function(e){ STATE.bankImport = {status:'error', name:file.name, error:(e && e.message) || 'Could not read that file.'}; render(); });
   }
 
+  // What each ticked line becomes: a receipt against the job/invoice, and/or an overpayment on the customer's account.
+  function bankImportPlan(bi){
+    var left = {};
+    return bi.rows.map(function(r){
+      if(!(r.include && r.orderId && r.how!=='dup')) return {row:r, parts:[]};
+      var amt = r.line.amount;
+      if(r.orderId.indexOf('acct:')===0) return {row:r, parts:[{acct:true, customerId:r.orderId.slice(5), amount:amt}]};
+      var o = STATE.orders.find(function(x){ return x.id===r.orderId; });
+      if(!o) return {row:r, parts:[]};
+      if(left[o.id]===undefined) left[o.id] = Math.max(0, round2(payStatus(o).balance));
+      var toOrder = amt, excess = 0;
+      if(r.opExcess!==false && amt - left[o.id] > 0.004 && o.customerId){ toOrder = round2(left[o.id]); excess = round2(amt - toOrder); }
+      left[o.id] = Math.max(0, round2(left[o.id] - toOrder));
+      var parts = [];
+      if(toOrder > 0.004) parts.push({orderId:o.id, amount:toOrder});
+      if(excess > 0.004) parts.push({acct:true, customerId:o.customerId, amount:excess, excess:true});
+      return {row:r, parts:parts, over: round2(amt - (left[o.id]+toOrder) ), excess:excess, owed:round2(left[o.id]+toOrder)};
+    });
+  }
   function confirmBankImport(){
     var bi = STATE.bankImport; if(!bi || bi.status!=='review' || !isOwnerRole()) return;
-    var todo = bi.rows.filter(function(r){ return r.include && r.orderId && r.how!=='dup'; });
+    var plan = bankImportPlan(bi), todo = [];
+    plan.forEach(function(p){ p.parts.forEach(function(pt){ todo.push({row:p.row, part:pt}); }); });
     if(!todo.length){ toast('Tick at least one matched line to import'); return; }
     bi.status = 'saving'; render();
     var batch = 'bank-'+new Date().toISOString().replace(/[^0-9]/g,'').slice(0,14);
     reserveNumbers('nextReceiptNumber', todo.length).then(function(start){
-      return Promise.all(todo.map(function(r, i){
-        var o = STATE.orders.find(function(x){ return x.id===r.orderId; }) || {};
-        var l = r.line;
+      return Promise.all(todo.map(function(t, i){
+        var r = t.row, pt = t.part, l = r.line;
+        var o = pt.orderId ? (STATE.orders.find(function(x){ return x.id===pt.orderId; }) || {}) : {};
+        var c = pt.acct ? (STATE.customers.find(function(x){ return x.id===pt.customerId; }) || {}) : null;
         var rec = {
-          number:'DSX-R'+pad4(start+i), date:l.date, createdAt:new Date().toISOString(), amount:l.amount, method:'eft',
-          orderId:o.id, jobNumber:o.jobNumber||jobNo(o.id), jobTitle:o.title||'', invoiceNumber: hasInvoiceDoc(o) ? o.invoiceNumber : '',
-          kind: hasInvoiceDoc(o) ? 'payment' : 'prepayment', customerId:o.customerId||null, customerName:o.customerName||'', phone:o.phone||'',
-          note:('EFT — bank statement: '+[l.reference, l.description, l.payer].filter(Boolean).join(' / ')).slice(0, 300),
+          number:'DSX-R'+pad4(start+i), date:l.date, createdAt:new Date().toISOString(), amount:pt.amount, method:'eft',
+          orderId: pt.acct ? '' : o.id, jobNumber: pt.acct ? '' : (o.jobNumber||jobNo(o.id)), jobTitle: pt.acct ? '' : (o.title||''),
+          invoiceNumber: !pt.acct && hasInvoiceDoc(o) ? o.invoiceNumber : '',
+          kind: pt.acct ? 'onaccount' : (hasInvoiceDoc(o) ? 'payment' : 'prepayment'),
+          customerId: pt.acct ? pt.customerId : (o.customerId||null), customerName: pt.acct ? (c.name||'') : (o.customerName||''), phone: pt.acct ? (c.phone||'') : (o.phone||''),
+          note:((pt.excess ? 'Overpayment on '+bankItemLabel(STATE.orders.find(function(x){ return x.id===r.orderId; })||{})+' — ' : (pt.acct ? 'Overpayment on account — ' : ''))+'EFT — bank statement: '+[l.reference, l.description, l.payer].filter(Boolean).join(' / ')).slice(0, 300),
           receivedBy:'Owner (bank import)', receivedById:'owner', voided:false, cashupDate:null,
           bankReference:l.reference||'', bankDescription:l.description||'', bankPayer:l.payer||'', importKey:r.key, importBatch:batch, importFile:bi.name||''
         };
+        if(pt.acct) rec.bankAmount = l.amount;
         if(STATE.isLive && STATE.db) return STATE.db.collection('receipts').add(rec).then(function(ref){ return Object.assign({id:ref.id}, rec); });
         var x = Object.assign({id:uid()}, rec); STATE.receipts.push(x); return Promise.resolve(x);
       }));
     }).then(function(list){
       var total = round2(list.reduce(function(s,r){ return s + r.amount; }, 0));
-      STATE.bankImport = {status:'done', name:bi.name, count:list.length, total:total, numbers:list.map(function(r){ return r.number; })};
+      var acct = list.filter(function(r){ return r.kind==='onaccount'; });
+      STATE.bankImport = {status:'done', name:bi.name, count:list.length, total:total, numbers:list.map(function(r){ return r.number; }), acctCount:acct.length, acctTotal:round2(acct.reduce(function(s,r){ return s+r.amount; }, 0))};
       render(); toast(list.length+' EFT receipt'+(list.length===1?'':'s')+' created');
     }).catch(function(){ bi.status = 'review'; render(); toast('Import stopped — check your connection and try again'); });
   }
@@ -7132,19 +7195,32 @@ import './platform.js?v=2026-11-06.38';
     if(bi && bi.status==='reading') body = '<div class="hint">Reading '+escapeHtml(bi.name)+'…</div>';
     else if(bi && bi.status==='error') body = '<div class="hint" style="color:var(--critical);">'+escapeHtml(bi.error)+'</div>';
     else if(bi && bi.status==='saving') body = '<div class="hint">Creating EFT receipts…</div>';
-    else if(bi && bi.status==='done') body = '<div class="bi-done"><strong>'+bi.count+' EFT receipt'+(bi.count===1?'':'s')+' created ('+money(bi.total)+')</strong> from '+escapeHtml(bi.name)+': '+escapeHtml(bi.numbers.join(', '))+'.<div style="margin-top:8px;"><button class="btn btn-sm" data-action="bi-reset">Import another statement</button></div></div>';
+    else if(bi && bi.status==='done') body = '<div class="bi-done"><strong>'+bi.count+' EFT receipt'+(bi.count===1?'':'s')+' created ('+money(bi.total)+')</strong> from '+escapeHtml(bi.name)+': '+escapeHtml(bi.numbers.join(', '))+'.'+(bi.acctCount ? '<div style="margin-top:6px;">'+bi.acctCount+' of them ('+money(bi.acctTotal)+') recorded as <strong>overpayments</strong> on the customer’s account — allocate them under <a href="#" data-action="tab" data-tab="overpayments">Overpayments</a>.</div>' : '')+'<div style="margin-top:8px;"><button class="btn btn-sm" data-action="bi-reset">Import another statement</button></div></div>';
     else if(bi && bi.status==='review'){
-      var items = bankOpenItems();
+      var items = bankOpenItems(), plan = bankImportPlan(bi);
+      var custOpts = STATE.customers.slice().sort(function(a,b){ return String(a.name).localeCompare(String(b.name)); });
       var rows = bi.rows.map(function(r){
+        var pl = plan[r.i] || {parts:[]};
         var l = r.line, h = BI_HOW[r.how] || BI_HOW.none;
         var o = r.orderId ? STATE.orders.find(function(x){ return x.id===r.orderId; }) : null;
         var opts = '<option value="">— Not a customer payment / skip —</option>';
         var list = items.slice();
         if(o && !list.some(function(x){ return x.o.id===o.id; })) list.unshift({o:o, balance:round2(payStatus(o).balance)});
         list.sort(function(a,b){ return String(a.o.customerName||'').localeCompare(String(b.o.customerName||'')); });
-        opts += list.map(function(x){ return '<option value="'+x.o.id+'"'+(x.o.id===r.orderId?' selected':'')+'>'+escapeHtml(bankItemLabel(x.o, x.balance))+'</option>'; }).join('');
-        var diff = o ? round2(payStatus(o).balance - l.amount) : 0;
-        var warn = o && diff < -0.004 ? '<div class="q-date" style="color:var(--warning);">More than owed by '+money(-diff)+'</div>' : (o && diff > 0.004 ? '<div class="q-date">Leaves '+money(diff)+' owing</div>' : '');
+        opts += '<optgroup label="Pay against an invoice / job">' + list.map(function(x){ return '<option value="'+x.o.id+'"'+(x.o.id===r.orderId?' selected':'')+'>'+escapeHtml(bankItemLabel(x.o, x.balance))+'</option>'; }).join('') + '</optgroup>';
+        opts += '<optgroup label="Overpayment on the customer’s account (no invoice yet)">' + custOpts.map(function(c){ var v = 'acct:'+c.id; return '<option value="'+v+'"'+(v===r.orderId?' selected':'')+'>'+escapeHtml(c.name)+' — on account</option>'; }).join('') + '</optgroup>';
+        var warn = '';
+        if(o){
+          var owed = o ? Math.max(0, round2(payStatus(o).balance)) : 0;
+          var extra = round2(l.amount - owed);
+          if(extra > 0.004 && o.customerId){
+            warn = '<label class="q-date bi-op"><input type="checkbox" data-bi-op="'+r.i+'"'+(r.opExcess!==false?' checked':'')+'> Record the extra '+money(extra)+' as an overpayment on '+escapeHtml(o.customerName||'the customer')+'’s account</label>' +
+              (r.opExcess===false ? '<div class="q-date" style="color:var(--warning);">The invoice will show as overpaid by '+money(extra)+'</div>' : '');
+          } else if(extra > 0.004) warn = '<div class="q-date" style="color:var(--warning);">More than owed by '+money(extra)+'</div>';
+          else if(extra < -0.004) warn = '<div class="q-date">Leaves '+money(-extra)+' owing</div>';
+        } else if(r.orderId && r.orderId.indexOf('acct:')===0){
+          warn = '<div class="q-date">Kept as credit on the customer’s account — allocate it later under Overpayments</div>';
+        }
         return '<tr class="'+(r.how==='dup'?'bi-row-dup':'')+'">' +
           '<td style="text-align:center;">'+(r.how==='dup' ? '' : '<input type="checkbox" data-bi-inc="'+r.i+'"'+(r.include?' checked':'')+(r.orderId?'':' disabled')+' aria-label="Import this line">')+'</td>' +
           '<td style="white-space:nowrap;">'+shortDate(l.date)+'</td>' +
@@ -7154,6 +7230,7 @@ import './platform.js?v=2026-11-06.38';
           '<td><span class="bi-chip '+h[1]+'">'+h[0]+'</span>'+(l.kind==='other' && r.how!=='dup' ? '<div class="q-date" style="margin-top:3px;">Not marked “Payment Received” by the bank — tick only if it is a customer payment</div>' : '')+'</td></tr>';
       }).join('');
       var ticked = bi.rows.filter(function(r){ return r.include && r.orderId && r.how!=='dup'; });
+      var nRec = plan.reduce(function(s,p){ return s + p.parts.length; }, 0);
       var tot = round2(ticked.reduce(function(s,r){ return s + r.line.amount; }, 0));
       var dup = bi.rows.filter(function(r){ return r.how==='dup'; }).length;
       body = '<div class="hint" style="margin-bottom:10px;">'+bi.rows.length+' money-in line'+(bi.rows.length===1?'':'s')+' in '+escapeHtml(bi.name)+
@@ -7164,7 +7241,7 @@ import './platform.js?v=2026-11-06.38';
           (dup ? ' &middot; '+dup+' already imported' : '') + '. Check each match, change it if needed, and untick anything that isn’t a customer payment.</div>' +
         '<div class="tbl-wrap"><table class="bi-table"><thead><tr><th style="width:34px;">Import</th><th>Date</th><th>Bank reference</th><th class="num">Amount</th><th>Pay against</th><th>Match</th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
         '<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:12px;">' +
-          '<button class="btn btn-primary" data-action="bi-confirm"'+(ticked.length?'':' disabled')+'>Create '+ticked.length+' EFT receipt'+(ticked.length===1?'':'s')+' ('+money(tot)+')</button>' +
+          '<button class="btn btn-primary" data-action="bi-confirm"'+(ticked.length?'':' disabled')+'>Create '+nRec+' EFT receipt'+(nRec===1?'':'s')+' ('+money(tot)+')</button>' +
           '<button class="btn btn-ghost" data-action="bi-reset">Cancel</button></div>';
     }
     var recent = STATE.receipts.filter(function(r){ return r.method==='eft' && !r.voided; })
@@ -7182,6 +7259,152 @@ import './platform.js?v=2026-11-06.38';
         '<div class="hint" style="margin-top:12px;">Matching: the invoice number (e.g. DSX-INV0012, “INV 12”), job number or quote number in the reference is used first; then a customer’s name with the exact amount owed; then a single invoice owing exactly that amount. EFT receipts don’t affect the daily cash-up and are left out of the cash and speedpoint exports (the bank already has them).</div>' +
       '</div>' +
       '<div class="panel"><div class="section-label">Recent EFT receipts</div>'+recentHtml+'</div>';
+  }
+
+  /* ============================ overpayments on account (update 39) ============================ */
+  // An overpayment is an EFT receipt with kind 'onaccount' and no job: money the customer paid that is
+  // not (yet) against an invoice — e.g. a deposit before the job/invoice exists, or the extra on an invoice.
+  // Allocating creates an allocation record in receipts/ (method 'alloc', sourceReceiptId) against the job,
+  // so every balance in the app (payments, age analysis, reminders) picks it up. Undo = void the allocation.
+  function isTillReceipt(r){ return !r.method || r.method==='cash' || r.method==='card'; }
+  function onAccountReceipts(){ return STATE.receipts.filter(function(r){ return r.kind==='onaccount' && !r.voided; }); }
+  function allocationsOf(srcId, withVoid){ return STATE.receipts.filter(function(r){ return r.method==='alloc' && r.sourceReceiptId===srcId && (withVoid || !r.voided); }); }
+  function overpayRemaining(src){ return round2((Number(src.amount)||0) - allocationsOf(src.id).reduce(function(s,a){ return s + (Number(a.amount)||0); }, 0)); }
+  function customerCredit(customerId){
+    if(!customerId) return 0;
+    return round2(onAccountReceipts().filter(function(r){ return r.customerId===customerId; }).reduce(function(s,r){ return s + Math.max(0, overpayRemaining(r)); }, 0));
+  }
+  function creditSourcesFor(customerId){
+    return onAccountReceipts().filter(function(r){ return r.customerId===customerId && overpayRemaining(r) > 0.004; })
+      .sort(function(a,b){ return String(a.date+a.createdAt).localeCompare(String(b.date+b.createdAt)); });
+  }
+
+  function openAllocForm(srcId, orderId){
+    if(!isOwnerRole()) return;
+    var src = STATE.receipts.find(function(r){ return r.id===srcId; }); if(!src) return;
+    var rem = overpayRemaining(src);
+    var o = orderId ? STATE.orders.find(function(x){ return x.id===orderId; }) : null;
+    if(!o){ var mine = bankOpenItems().filter(function(x){ return x.o.customerId===src.customerId; }); if(mine.length===1) o = mine[0].o; }
+    var amt = o ? Math.min(rem, Math.max(0, round2(payStatus(o).balance))) : rem;
+    STATE.openOrderId = null;
+    STATE.allocForm = {srcId:srcId, orderId:o ? o.id : '', amount: amt>0 ? amt.toFixed(2) : '', date:todayIso(), showAll:false, error:'', busy:false};
+    render();
+  }
+  function renderAllocModal(){
+    var f = STATE.allocForm; if(!f) return '';
+    var src = STATE.receipts.find(function(r){ return r.id===f.srcId; }); if(!src) return '';
+    var rem = overpayRemaining(src);
+    var items = bankOpenItems();
+    var mine = items.filter(function(x){ return x.o.customerId===src.customerId; });
+    var list = f.showAll ? items : mine;
+    var sel = f.orderId ? STATE.orders.find(function(x){ return x.id===f.orderId; }) : null;
+    if(sel && !list.some(function(x){ return x.o.id===sel.id; })) list = [{o:sel, balance:round2(payStatus(sel).balance)}].concat(list);
+    list = list.slice().sort(function(a,b){ return String(a.o.customerName||'').localeCompare(String(b.o.customerName||'')) || String(a.o.createdAt||'').localeCompare(String(b.o.createdAt||'')); });
+    var opts = '<option value="">— Choose the invoice or job —</option>' + list.map(function(x){
+      return '<option value="'+x.o.id+'"'+(x.o.id===f.orderId?' selected':'')+'>'+escapeHtml(bankItemLabel(x.o, x.balance))+(hasInvoiceDoc(x.o)?'':' (no invoice yet — deposit)')+'</option>';
+    }).join('');
+    return '<div class="overlay" data-action="close-modal-bg"><div class="modal" role="dialog" aria-modal="true" aria-label="Allocate overpayment" style="max-width:520px;">' +
+      '<div class="modal-head"><div><div class="jobno mono">'+escapeHtml(src.number)+'</div><h2>Allocate overpayment</h2></div><button class="modal-close" data-action="alloc-close" aria-label="Close">&times;</button></div>' +
+      '<p class="hint" style="margin-top:0;"><strong>'+escapeHtml(src.customerName||'')+'</strong> paid '+money(src.amount)+' on '+fullDate(src.date)+(src.bankReference?(' (ref “'+escapeHtml(src.bankReference)+'”)'):'')+'. <strong>'+money(rem)+'</strong> is still unallocated.</p>' +
+      (f.error ? '<div class="field-error" style="margin-bottom:8px;">'+escapeHtml(f.error)+'</div>' : '') +
+      '<div class="field"><label for="alOrder">Allocate to</label><select id="alOrder">'+opts+'</select>' +
+        (mine.length ? '' : '<div class="hint">'+escapeHtml(src.customerName||'This customer')+' has nothing open yet. Create the job or invoice first, or show other customers’ jobs.</div>') +
+        '<label class="hint" style="display:flex; gap:6px; align-items:center; margin-top:6px; cursor:pointer;"><input type="checkbox" id="alShowAll" style="width:auto;"'+(f.showAll?' checked':'')+'> Show other customers’ jobs too</label></div>' +
+      '<div class="field-row">' +
+        '<div class="field"><label for="alAmount">Amount</label><input type="number" step="0.01" min="0" id="alAmount" value="'+escapeHtml(String(f.amount))+'"></div>' +
+        '<div class="field"><label for="alDate">Allocation date</label><input type="date" id="alDate" value="'+escapeHtml(f.date)+'"></div>' +
+      '</div>' +
+      '<div class="modal-foot"><button class="btn btn-ghost" data-action="alloc-close">Cancel</button><button class="btn btn-primary" data-action="alloc-save"'+(f.busy?' disabled':'')+'>'+(f.busy?'Saving…':'Allocate')+'</button></div>' +
+    '</div></div>';
+  }
+  function onAllocOrderChange(v){
+    var f = STATE.allocForm; if(!f) return;
+    f.orderId = v; f.error = '';
+    var src = STATE.receipts.find(function(r){ return r.id===f.srcId; });
+    var o = STATE.orders.find(function(x){ return x.id===v; });
+    if(src && o){ var a = Math.min(overpayRemaining(src), Math.max(0, round2(payStatus(o).balance))); f.amount = a > 0 ? a.toFixed(2) : ''; }
+    render();
+  }
+  function saveAllocation(){
+    var f = STATE.allocForm; if(!f || f.busy || !isOwnerRole()) return;
+    var src = STATE.receipts.find(function(r){ return r.id===f.srcId; }); if(!src) return;
+    var am = document.getElementById('alAmount'), dt = document.getElementById('alDate');
+    if(am) f.amount = am.value; if(dt) f.date = dt.value;
+    var o = STATE.orders.find(function(x){ return x.id===f.orderId; });
+    var amount = round2(String(f.amount).replace(/[^0-9.\-]/g,''));
+    var rem = overpayRemaining(src);
+    if(!o){ f.error = 'Choose the invoice or job to allocate to.'; render(); return; }
+    var bal = Math.max(0, round2(payStatus(o).balance));
+    if(!(amount > 0)){ f.error = 'Enter the amount to allocate.'; render(); return; }
+    if(amount - rem > 0.004){ f.error = 'Only '+money(rem)+' of this overpayment is still unallocated.'; render(); return; }
+    if(amount - bal > 0.004){ f.error = 'That job only owes '+money(bal)+'. Allocate '+money(bal)+' or less — the rest stays on account.'; render(); return; }
+    if(!f.date){ f.error = 'Choose the allocation date.'; render(); return; }
+    f.busy = true; f.error = ''; render();
+    var n = allocationsOf(src.id, true).length + 1;
+    var rec = {
+      number: src.number+'-A'+n, date:f.date, createdAt:new Date().toISOString(), amount:amount, method:'alloc',
+      orderId:o.id, jobNumber:o.jobNumber||jobNo(o.id), jobTitle:o.title||'', invoiceNumber: hasInvoiceDoc(o) ? o.invoiceNumber : '',
+      kind: hasInvoiceDoc(o) ? 'payment' : 'prepayment', customerId:o.customerId||null, customerName:o.customerName||'', phone:o.phone||'',
+      note:'Allocated from overpayment '+src.number+' (EFT '+fullDate(src.date)+')', sourceReceiptId:src.id, sourceNumber:src.number,
+      receivedBy:'Owner (allocation)', receivedById:'owner', voided:false, cashupDate:null
+    };
+    var p = (STATE.isLive && STATE.db) ? STATE.db.collection('receipts').add(rec).then(function(ref){ return Object.assign({id:ref.id}, rec); })
+      : Promise.resolve((function(){ var x = Object.assign({id:uid()}, rec); STATE.receipts.push(x); return x; })());
+    p.then(function(x){ STATE.allocForm = null; render(); toast(money(amount)+' allocated to '+(rec.invoiceNumber||rec.jobNumber)+' ('+x.number+')'); })
+     .catch(function(){ f.busy = false; f.error = 'Couldn’t save — check your connection and try again.'; render(); });
+  }
+  function undoAllocation(id){
+    var a = STATE.receipts.find(function(x){ return x.id===id; }); if(!a || a.method!=='alloc' || !isOwnerRole()) return;
+    if(!confirm('Undo allocation '+a.number+'? '+money(a.amount)+' goes back to the customer’s overpayment balance.')) return;
+    var patch = {voided:true, voidReason:'Allocation undone', voidedAt:new Date().toISOString()};
+    if(STATE.isLive && STATE.db){ STATE.db.doc('receipts/'+id).update(patch).then(function(){ toast('Allocation undone'); }).catch(function(){ toast('Could not undo — try again'); }); }
+    else { Object.assign(a, patch); render(); toast('Allocation undone'); }
+  }
+
+  function renderOverpaymentsTab(){
+    var all = onAccountReceipts().slice().sort(function(a,b){ return String(b.date+b.createdAt).localeCompare(String(a.date+a.createdAt)); });
+    var showAll = STATE.opShow==='all';
+    var q = String(STATE.opQuery||'').trim().toLowerCase();
+    var list = all.filter(function(r){ return showAll || overpayRemaining(r) > 0.004; })
+      .filter(function(r){ return !q || [r.customerName, r.number, r.bankReference, r.bankPayer, Number(r.amount).toFixed(2)].join(' ').toLowerCase().indexOf(q) >= 0; });
+    var unalloc = round2(all.reduce(function(s,r){ return s + Math.max(0, overpayRemaining(r)); }, 0));
+    var custs = {}; all.forEach(function(r){ if(overpayRemaining(r) > 0.004) custs[r.customerId] = true; });
+    var allocs = STATE.receipts.filter(function(r){ return r.method==='alloc'; }).sort(function(a,b){ return String(b.createdAt).localeCompare(String(a.createdAt)); });
+    var month = todayIso().slice(0,7);
+    var allocMonth = round2(allocs.filter(function(a){ return !a.voided && String(a.date).slice(0,7)===month; }).reduce(function(s,a){ return s + (Number(a.amount)||0); }, 0));
+    var rows = list.length ? list.map(function(r){
+      var rem = overpayRemaining(r), used = round2(r.amount - rem);
+      var open = bankOpenItems().filter(function(x){ return x.o.customerId===r.customerId; }).length;
+      return '<tr><td style="white-space:nowrap;">'+shortDate(r.date)+'</td><td class="mono">'+escapeHtml(r.number)+'</td>' +
+        '<td class="row-btn" data-action="op-customer" data-id="'+escapeHtml(r.customerId||'')+'"><strong>'+escapeHtml(r.customerName||'')+'</strong>'+(open?'<div class="q-date">'+open+' open job'+(open===1?'':'s')+'/invoice'+(open===1?'':'s')+'</div>':'<div class="q-date">Nothing open yet</div>')+'</td>' +
+        '<td>'+escapeHtml(r.bankReference||'')+'<div class="q-date">'+escapeHtml(r.note||'').slice(0,90)+'</div></td>' +
+        '<td class="num">'+money(r.amount)+'</td><td class="num">'+(used>0.004?money(used):'—')+'</td>' +
+        '<td class="num"><strong>'+money(Math.max(0,rem))+'</strong></td>' +
+        '<td style="white-space:nowrap; text-align:right;">'+(rem>0.004 ? '<button class="btn btn-primary btn-sm" data-action="alloc-open" data-src="'+r.id+'">Allocate</button> ' : '<span class="pay-chip pay-paid">Allocated</span> ')+'<button class="btn btn-ghost btn-sm" data-action="receipt-pdf" data-id="'+r.id+'">PDF</button></td></tr>';
+    }).join('') : '<tr><td colspan="8" class="empty-note">'+(all.length ? 'Nothing left to allocate.' : 'No overpayments yet. Record one from Bank import: choose “… on account” for a payment with no invoice yet, or keep the extra when a customer pays more than the invoice.')+'</td></tr>';
+    var hist = allocs.length ? allocs.slice(0, 40).map(function(a){
+      return '<tr class="'+(a.voided?'bi-row-dup':'')+'"><td style="white-space:nowrap;">'+shortDate(a.date)+'</td><td class="mono">'+escapeHtml(a.number)+'</td><td>'+escapeHtml(a.customerName||'')+'</td>' +
+        '<td class="row-btn mono" data-action="open-order" data-id="'+a.orderId+'">'+escapeHtml(a.invoiceNumber||a.jobNumber||'')+(a.kind==='prepayment'?' <span class="q-date">deposit</span>':'')+'</td>' +
+        '<td class="num">'+money(a.amount)+'</td><td style="text-align:right;">'+(a.voided ? '<em class="q-date">Undone</em>' : '<button class="btn btn-ghost btn-sm" data-action="alloc-undo" data-id="'+a.id+'">Undo</button>')+'</td></tr>';
+    }).join('') : '<tr><td colspan="6" class="empty-note">No allocations yet.</td></tr>';
+    return '<div class="topline"><div><h1>Overpayments</h1><div class="sub">Money customers paid that isn’t against an invoice yet — allocate it once the job or invoice exists</div></div></div>' +
+      '<div class="tiles">' +
+        tile('Unallocated', money(unalloc), 'Credit held for customers') +
+        tile('Customers with credit', String(Object.keys(custs).length), Object.keys(custs).length ? 'Allocate when invoiced' : 'Nothing waiting') +
+        tile('Allocated this month', money(allocMonth), 'Moved onto invoices / jobs') +
+      '</div>' +
+      '<div class="panel">' +
+        '<div class="filterbar" style="margin-bottom:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">' +
+          '<button class="chip-toggle'+(showAll?'':' active')+'" data-action="op-show" data-v="open">Still to allocate</button>' +
+          '<button class="chip-toggle'+(showAll?' active':'')+'" data-action="op-show" data-v="all">All overpayments</button>' +
+          '<div class="search" style="margin-left:auto; min-width:220px;"><input type="text" id="opSearch" placeholder="Search customer, reference, amount…" value="'+escapeHtml(STATE.opQuery||'')+'"></div>' +
+        '</div>' +
+        '<div class="tbl-wrap"><table><thead><tr><th>Date</th><th>Receipt</th><th>Customer</th><th>Bank reference</th><th class="num">Paid</th><th class="num">Allocated</th><th class="num">Remaining</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
+      '</div>' +
+      '<div class="panel"><div class="section-label">Allocations</div>' +
+        '<div class="tbl-wrap"><table><thead><tr><th>Date</th><th>Allocation</th><th>Customer</th><th>Invoice / job</th><th class="num">Amount</th><th></th></tr></thead><tbody>'+hist+'</tbody></table></div>' +
+        '<div class="hint" style="margin-top:8px;">An allocation shows on the job’s payments as “Overpayment” and reduces what the customer owes (also in the age analysis and payment reminders). Undo puts the amount back on the customer’s account.</div>' +
+      '</div>';
   }
 
   /* ============================ boot ============================ */

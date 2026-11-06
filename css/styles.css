@@ -678,3 +678,8 @@ img{max-width:100%}
 .bi-row-dup td{opacity:.55;}
 .bi-table select{font-size:12.5px; padding:5px 6px;}
 .bi-done{background:#E4F1E6; border-radius:var(--radius-s); padding:12px 14px; font-size:13.5px;}
+
+/* overpayments (update 39) */
+.bi-op{display:flex; gap:6px; align-items:flex-start; margin-top:4px; cursor:pointer; color:var(--ink-soft);}
+.bi-op input{width:auto; margin-top:2px;}
+.op-offer{display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-top:8px; padding:8px 10px; border-radius:var(--radius-s); background:#E4F1E6; color:#2E6B3A; font-size:12.5px;}
