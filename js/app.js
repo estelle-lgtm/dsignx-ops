@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-06.33';
+import './platform.js?v=2026-11-06.34';
 
 (function(){
   "use strict";
@@ -1850,7 +1850,7 @@ import './platform.js?v=2026-11-06.33';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-06.33</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-06.34</span></div>' +
       '</div>'
     );
   }
@@ -2290,6 +2290,39 @@ import './platform.js?v=2026-11-06.33';
   /* ============================ invoice export (Xero "Sales invoices" template) ============================ */
   var XERO_INVOICE_COLUMNS = ['ContactName','EmailAddress','POAddressLine1','POAddressLine2','POAddressLine3','POAddressLine4','POCity','PORegion','POPostalCode','POCountry','SAAddressLine1','SAAddressLine2','SAAddressLine3','SAAddressLine4','SACity','SARegion','SAPostalCode','SACountry','InvoiceNumber','Reference','InvoiceDate','DueDate','PlannedDate','Total','TaxTotal','InvoiceAmountPaid','InvoiceAmountDue','InventoryItemCode','Description','Quantity','UnitAmount','Discount','LineAmount','AccountCode','TaxType','TaxAmount','TrackingName1','TrackingOption1','TrackingName2','TrackingOption2','Currency','Type','Sent','Status'];
 
+  /* ---- DsignX templates (update 34) ---- */
+  var XERO_TEMPLATE_COLUMNS = ['*ContactName','EmailAddress','POAddressLine1','POAddressLine2','POAddressLine3','POAddressLine4','POCity','PORegion','POPostalCode','POCountry','*InvoiceNumber','Reference','*InvoiceDate','*DueDate','InventoryItemCode','*Description','*Quantity','*UnitAmount','Discount','*AccountCode','*TaxType','TaxAmount','TrackingName1','TrackingOption1','TrackingName2','TrackingOption2','Currency','BrandingTheme'];
+  function tplNum(v, dp){ var n = Number(v)||0; var t = n.toFixed(dp); return t.indexOf('.')>=0 ? t.replace(/0+$/,'').replace(/\.$/,'') : t; }
+  // One line from xeroRowsFor/xeroCreditRows → a row of the DsignX Xero import template. sign -1 = credit note.
+  function xeroTemplateRow(r, sign){
+    sign = sign || 1;
+    var t = {};
+    XERO_TEMPLATE_COLUMNS.forEach(function(k){ t[k] = ''; });
+    t['*ContactName'] = r.ContactName; t.EmailAddress = r.EmailAddress;
+    ['POAddressLine1','POAddressLine2','POAddressLine3','POAddressLine4','POCity','PORegion','POPostalCode','POCountry'].forEach(function(k){ t[k] = r[k]||''; });
+    t['*InvoiceNumber'] = r.InvoiceNumber; t.Reference = r.Reference;
+    t['*InvoiceDate'] = r.InvoiceDate; t['*DueDate'] = r.DueDate;
+    t['*Description'] = r.Description;
+    t['*Quantity'] = tplNum(r.Quantity, 4);
+    t['*UnitAmount'] = tplNum(sign * (Number(r.UnitAmount)||0), 4);
+    t.Discount = r.Discount ? tplNum(r.Discount, 2) : '';
+    t['*AccountCode'] = r.AccountCode; t['*TaxType'] = r.TaxType;
+    t.TaxAmount = (sign * (Number(r.TaxAmount)||0)).toFixed(2);
+    t.TrackingName1 = r.TrackingName1; t.TrackingOption1 = r.TrackingOption1;
+    t.Currency = r.Currency;
+    return t;
+  }
+  function tplCsv(rows){ return [XERO_TEMPLATE_COLUMNS.join(',')].concat(rows.map(function(t){ return XERO_TEMPLATE_COLUMNS.map(function(k){ return csvCell(t[k]); }).join(','); })).join('\r\n') + '\r\n'; }
+  // "15Oct-05Nov2026" — the date range in DsignX's file names.
+  function fileRangeTag(from, to){
+    var M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    var f = function(iso, withYear){ var p = String(iso).slice(0,10).split('-'); return p[2]+M[Number(p[1])-1]+(withYear?p[0]:''); };
+    if(!from && !to) return todayIso().replace(/-/g,'');
+    from = from || to; to = to || todayIso();
+    if(from===to) return f(from, true);
+    return f(from, from.slice(0,4)!==to.slice(0,4)) + '-' + f(to, true);
+  }
+
   function issuedInvoices(){
     return STATE.orders.filter(function(o){ return isSale(o) || (o.invoiceNumber && o.invoiceGeneratedAt); });
   }
@@ -2362,14 +2395,13 @@ import './platform.js?v=2026-11-06.33';
   function exportInvoicesXero(){
     var list = invoicesInRange();
     if(!list.length){ toast('No invoices in that date range'); return; }
-    var out = [XERO_INVOICE_COLUMNS.join(',')];
-    list.forEach(function(o){
-      xeroRowsFor(o).forEach(function(r){ out.push(XERO_INVOICE_COLUMNS.map(function(c){ return csvCell(r[c]); }).join(',')); });
-    });
-    var csv = out.join('\r\n') + '\r\n';
+    var trows = [];
+    list.forEach(function(o){ xeroRowsFor(o).forEach(function(r){ trows.push(xeroTemplateRow(r, 1)); }); });
+    var csv = tplCsv(trows);
     var stamp = new Date();
     var rangeTag = (STATE.invExportFrom||STATE.invExportTo) ? ((STATE.invExportFrom||'start')+'_to_'+(STATE.invExportTo||todayIso())+'_') : '';
-    var filename = 'SalesInvoices_DsignX_'+rangeTag+todayIso()+'_'+String(stamp.getHours()).padStart(2,'0')+String(stamp.getMinutes()).padStart(2,'0')+'.csv';
+    var dts = list.map(invoiceDateOf).sort();
+    var filename = 'DsignX_SalesInvoices_Xero_Import_'+fileRangeTag(STATE.invExportFrom||dts[0], STATE.invExportTo||dts[dts.length-1])+'.csv';
     var done = function(){ toast('Exported '+list.length+' invoice'+(list.length===1?'':'s')); };
     if(STATE.downloads){
       STATE.downloads.save({filename:filename, data:csv}).then(done).catch(function(e){
@@ -2537,7 +2569,7 @@ import './platform.js?v=2026-11-06.33';
     return (
       '<div class="panel">' +
         '<div class="section-label">Export invoices (Xero sales invoice template)</div>' +
-        '<div class="hint" style="margin:-4px 0 12px;">Every invoice issued in the app, one row per line item, in the same 44 columns as your Xero “SalesInvoices” file. Amounts are excl. VAT per line with VAT in TaxAmount; designer &amp; technician go in the Sales Rep tracking column.</div>' +
+        '<div class="hint" style="margin:-4px 0 12px;">Every invoice issued in the app, one row per line item, in the same 28 columns as your <strong>DsignX_SalesInvoices_Xero_Import</strong> file. Amounts are excl. VAT per line with VAT in TaxAmount; designer &amp; technician go in the Sales Rep tracking column. Xero asks for the invoice status when you import.</div>' +
         '<div class="section-label" style="margin-bottom:6px;">Invoice dates to export</div>' +
         '<div class="filterbar" style="margin-bottom:10px;">' + invExportPresets().map(function(p){
           var on = STATE.invExportFrom===p.from && STATE.invExportTo===p.to;
@@ -2547,7 +2579,7 @@ import './platform.js?v=2026-11-06.33';
           '<div class="field"><label for="invExFrom">From</label><input type="date" id="invExFrom" value="'+escapeHtml(STATE.invExportFrom)+'"></div>' +
           '<div class="field"><label for="invExTo">To</label><input type="date" id="invExTo" value="'+escapeHtml(STATE.invExportTo)+'"></div>' +
         '</div>' +
-        '<div class="field"><label for="invExStatus">Import into Xero as</label><select id="invExStatus" style="max-width:220px;">'+statusOpts+'</select></div>' +
+
         '<div class="field-row">' +
           '<div class="field"><label for="cfgXeroTaxVat">Tax type (with VAT)</label><input type="text" id="cfgXeroTaxVat" value="'+escapeHtml(STATE.config.xeroTaxVat||'Standard Rate Sales')+'"></div>' +
           '<div class="field"><label for="cfgXeroTaxNoVat">Tax type (no VAT)</label><input type="text" id="cfgXeroTaxNoVat" value="'+escapeHtml(STATE.config.xeroTaxNoVat||'No VAT')+'"></div>' +
@@ -3304,26 +3336,11 @@ import './platform.js?v=2026-11-06.33';
     var ids = Object.keys(STATE.selectedForExport).filter(function(k){ return STATE.selectedForExport[k]; });
     var rows = ids.map(function(id){ return STATE.orders.find(function(o){ return o.id===id; }); }).filter(Boolean);
     if(!rows.length){ toast('Select at least one job first'); return; }
-    var header = ['ContactName','InvoiceNumber','InvoiceDate','DueDate','Description','Quantity','UnitAmount','AccountCode','TaxType','Currency','Reference'];
-    var lines = [header.join(',')];
-    rows.forEach(function(o){
-      var invNo = o.invoiceNumber || jobNo(o.id);
-      lines.push([
-        csvCell(o.customerName),
-        csvCell(invNo),
-        csvCell(todayIso()),
-        csvCell(o.dueDate || todayIso()),
-        csvCell(o.title + (o.description ? (' — '+o.description) : '')),
-        csvCell(o.qty||1),
-        csvCell(Number(o.quoteAmount||0).toFixed(2)),
-        csvCell(STATE.config.accountCode||''),
-        csvCell(STATE.config.taxType||''),
-        csvCell(STATE.config.currency||'ZAR'),
-        csvCell(o.poNumber ? ('PO '+o.poNumber) : jobNo(o.id))
-      ].join(','));
-    });
-    var csv = lines.join('\r\n');
-    var filename = 'dsignx-xero-invoices-'+todayIso()+'.csv';
+    var trows = [];
+    rows.forEach(function(o){ xeroRowsFor(o).forEach(function(r){ trows.push(xeroTemplateRow(r, 1)); }); });
+    var csv = tplCsv(trows);
+    var rds = rows.map(invoiceDateOf).sort();
+    var filename = 'DsignX_SalesInvoices_Xero_Import_'+fileRangeTag(rds[0], rds[rds.length-1])+'.csv';
 
     function markInvoicedAndReset(){
       rows.forEach(function(o){
@@ -4772,12 +4789,20 @@ import './platform.js?v=2026-11-06.33';
     if(from > to){ toast('The From date is after the To date.'); return; }
     var recs = receiptsBetween(from, to, method);
     if(!recs.length){ toast('No receipts in that period.'); return; }
-    var lines = [['*Date','*Amount','Payee','Description','Reference','Check Number']].concat(receiptExportRows(recs));
-    var csv = lines.map(function(l){ return l.map(csvCell).join(','); }).join('\r\n') + '\r\n';
-    var blob = new Blob([csv], {type:'text/csv'});
-    var name = 'DsignX-receipts-'+from+'-to-'+to+(method==='all'?'':'-'+method)+'.csv';
-    if(STATE.downloads){ STATE.downloads.save({filename:name, data:blob}).catch(function(){ fallbackDownload(blob, name); }); } else fallbackDownload(blob, name);
-    toast(recs.length+' receipt'+(recs.length===1?'':'s')+' downloaded');
+    // Cash and card (speedpoint) go to different bank accounts, so each gets its own file.
+    var files = 0;
+    [['card','SPEEDPOINT'],['cash','CASH']].forEach(function(m){
+      if(method!=='all' && method!==m[0]) return;
+      var part = recs.filter(function(r){ return r.method===m[0]; });
+      if(!part.length) return;
+      var lines = [['*Date','*Amount','Payee','Description','Reference','Check Number']].concat(receiptExportRows(part));
+      var csv = lines.map(function(l){ return l.map(csvCell).join(','); }).join('\r\n') + '\r\n';
+      var blob = new Blob([csv], {type:'text/csv'});
+      var name = 'DsignX_Receipts_'+m[1]+'_'+fileRangeTag(from, to)+'.csv';
+      files++;
+      setTimeout(function(){ if(STATE.downloads){ STATE.downloads.save({filename:name, data:blob}).catch(function(){ fallbackDownload(blob, name); }); } else fallbackDownload(blob, name); }, (files-1)*700);
+    });
+    toast(recs.length+' receipt'+(recs.length===1?'':'s')+' downloaded'+(files>1?' in 2 files (speedpoint and cash)':''));
   }
   function renderReceiptExportPanel(){
     receiptExportDefaults();
@@ -4793,7 +4818,7 @@ import './platform.js?v=2026-11-06.33';
         '<div class="field"><button class="btn btn-primary btn-sm" data-action="receipts-export">Download CSV</button></div>' +
       '</div>' +
       '<div class="hint" id="rxSummary">'+(STATE.rxFrom > STATE.rxTo ? 'The From date is after the To date.' : recs.length+' receipt'+(recs.length===1?'':'s')+' &middot; '+money(total)+' (voided receipts are left out)')+'</div>' +
-      '<div class="hint">Columns: *Date, *Amount, Payee, Description, Reference, Check Number &mdash; ready for bank statement import.</div>' +
+      '<div class="hint">Columns: *Date, *Amount, Payee, Description, Reference, Check Number &mdash; ready for bank statement import. Card and cash download as separate files (<strong>DsignX_Receipts_SPEEDPOINT_…</strong> and <strong>DsignX_Receipts_CASH_…</strong>).</div>' +
     '</div>';
   }
 
@@ -5896,11 +5921,12 @@ import './platform.js?v=2026-11-06.33';
     if(!isOwnerRole()) return;
     var list = cnInRange();
     if(!list.length){ toast('No credit notes in that date range'); return; }
-    var out = [XERO_INVOICE_COLUMNS.join(',')];
-    list.forEach(function(c){ xeroCreditRows(c).forEach(function(r){ out.push(XERO_INVOICE_COLUMNS.map(function(k){ return csvCell(r[k]); }).join(',')); }); });
-    var csv = out.join('\r\n') + '\r\n';
+    var trows = [];
+    list.forEach(function(c){ xeroCreditRows(c).forEach(function(r){ trows.push(xeroTemplateRow(r, -1)); }); });
+    var csv = tplCsv(trows);
     var tag = (STATE.cnExFrom||STATE.cnExTo) ? ((STATE.cnExFrom||'start')+'_to_'+(STATE.cnExTo||todayIso())+'_') : '';
-    var filename = 'SalesCreditNotes_DsignX_'+tag+todayIso()+'.csv';
+    var cds = list.map(function(c){ return c.date; }).sort();
+    var filename = 'DsignX_SalesCreditNotes_Xero_Import_'+fileRangeTag(STATE.cnExFrom||cds[0], STATE.cnExTo||cds[cds.length-1])+'.csv';
     var done = function(){ toast('Exported '+list.length+' credit note'+(list.length===1?'':'s')); };
     if(STATE.downloads){
       STATE.downloads.save({filename:filename, data:csv}).then(done).catch(function(e){
@@ -5915,7 +5941,7 @@ import './platform.js?v=2026-11-06.33';
     var statusOpts = ['Draft','Awaiting Approval','Awaiting Payment'].map(function(v){ return '<option'+((STATE.cnExStatus||'Draft')===v?' selected':'')+'>'+v+'</option>'; }).join('');
     return '<div class="panel">' +
       '<div class="section-label">Export credit notes (Xero sales invoice template)</div>' +
-      '<div class="hint" style="margin:-4px 0 12px;">Same 44 columns as the invoice export, one row per line, with Type “Sales credit note”. The credit note number goes in InvoiceNumber and the invoice it credits in Reference. Voided credit notes are left out.</div>' +
+      '<div class="hint" style="margin:-4px 0 12px;">Same 28 columns as the invoice import file, one row per line. Amounts are negative, so Xero imports each one as a credit note; the credit note number goes in InvoiceNumber and the invoice it credits in Reference. Voided credit notes are left out.</div>' +
       '<div class="section-label" style="margin-bottom:6px;">Credit note dates to export</div>' +
       '<div class="filterbar" style="margin-bottom:10px;">' + invExportPresets().map(function(p){
         var on = (STATE.cnExFrom||'')===p.from && (STATE.cnExTo||'')===p.to;
@@ -5925,7 +5951,7 @@ import './platform.js?v=2026-11-06.33';
         '<div class="field"><label for="cnExFrom">From</label><input type="date" id="cnExFrom" value="'+escapeHtml(STATE.cnExFrom||'')+'"></div>' +
         '<div class="field"><label for="cnExTo">To</label><input type="date" id="cnExTo" value="'+escapeHtml(STATE.cnExTo||'')+'"></div>' +
       '</div>' +
-      '<div class="field"><label for="cnExStatus">Import into Xero as</label><select id="cnExStatus" style="max-width:220px;">'+statusOpts+'</select><div class="hint">Tax types and tracking name are the same as for invoices.</div></div>' +
+      '<div class="hint" style="margin-bottom:10px;">Tax types and tracking name are the same as for invoices.</div>' +
       '<div style="background:var(--surface-2); border-radius:var(--radius-s); padding:10px 12px; font-size:12.5px; color:var(--ink-soft); margin-bottom:12px;">' +
         (list.length ? ('<strong style="color:var(--ink);">'+list.length+' credit note'+(list.length===1?'':'s')+'</strong> &middot; '+lineCount+' line'+(lineCount===1?'':'s')+' &middot; '+money(round2(grand))+' incl. VAT') : 'No credit notes in these dates.') +
       '</div>' +
