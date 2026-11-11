@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-06.39';
+import './platform.js?v=2026-11-11.40';
 
 (function(){
   "use strict";
@@ -30,7 +30,7 @@ import './platform.js?v=2026-11-06.39';
   function normStatus(st){ return LEGACY_STATUS[st] || st; }
   var DONE_STATUSES = ['ready','collected'];        // work finished — not overdue
   var AFTER_INVOICE = ['invoiced','ready','collected'];
-  var COLLECTED_SHOW_DAYS = 14;
+  var COLLECTED_SHOW_DAYS = 7;
   var SOURCES = ['WhatsApp','Phone call','Instagram DM','Walk-in','Email','Other'];
   var TEAM_ROLES = [
     {key:'designer', label:'Designer', plural:'Designers'},
@@ -1856,7 +1856,7 @@ import './platform.js?v=2026-11-06.39';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-06.39</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-11.40</span></div>' +
       '</div>'
     );
   }
@@ -1941,7 +1941,7 @@ import './platform.js?v=2026-11-06.39';
     var cols = STATUSES.map(function(s){
       var items = STATE.orders.filter(function(o){ return o.status===s.key; });
       var hiddenOld = 0;
-      if(s.key==='collected' && !STATE.showAllCollected && !q){
+      if(s.key==='collected'){
         var cutoff = addDays(todayIso(), -COLLECTED_SHOW_DAYS);
         var recent = items.filter(function(o){ return String(o.collectedAt || o.updatedAt || o.createdAt || '').slice(0,10) >= cutoff; });
         hiddenOld = items.length - recent.length; items = recent;
@@ -1954,7 +1954,7 @@ import './platform.js?v=2026-11-06.39';
         '<div class="col" data-status="'+s.key+'">' +
           '<div class="col-head"><span class="t">'+s.label+'</span><span class="n">'+items.length+'</span></div>' +
           '<div class="col-cards">'+cards+'</div>' +
-          (s.key==='collected' && (hiddenOld || STATE.showAllCollected) ? '<button type="button" class="btn btn-ghost btn-sm col-more" data-action="toggle-collected">'+(STATE.showAllCollected ? 'Show the last '+COLLECTED_SHOW_DAYS+' days only' : '+ '+hiddenOld+' collected earlier')+'</button>' : '') +
+          (s.key==='collected' && hiddenOld ? '<div class="col-more hint" style="text-align:center;">Only jobs collected in the last '+COLLECTED_SHOW_DAYS+' days are shown. Older ones are in Quotes &amp; invoicing.</div>' : '') +
         '</div>'
       );
     }).join('');
@@ -3644,11 +3644,13 @@ import './platform.js?v=2026-11-06.39';
       else if(action==='cashup-reopen'){ reopenCashup(el.getAttribute('data-date')); }
       else if(action==='cashup-csv'){ exportCashupCsv(el.getAttribute('data-date')); }
       else if(action==='receipts-export'){ exportReceiptsCsv(); }
+      else if(action==='product-stock-all'){ setShownStockItems(el.checked); }
       else if(action==='product-stock-toggle'){ toggleStockItem(el.getAttribute('data-id'), el.checked); }
       else if(action==='stock-tick-all'){ e.preventDefault(); setAllStockItems(true); }
       else if(action==='stock-untick-all'){ e.preventDefault(); setAllStockItems(false); }
       else if(action==='stock-start'){ startStocktake(); }
-      else if(action==='stock-sheet'){ saveStockCounts(el.getAttribute('data-id')); downloadCountSheet(el.getAttribute('data-id')); }
+      else if(action==='stock-sheet'){ if(isOwnerRole()) saveStockCounts(el.getAttribute('data-id')); downloadCountSheet(el.getAttribute('data-id')); }
+      else if(action==='stock-presheet'){ downloadPrecountSheet(); }
       else if(action==='stock-finalise'){ var sid = el.getAttribute('data-id'); clearTimeout(_stockSaveTimer); saveStockCounts(sid).then(function(){ finaliseStocktake(sid); }); }
       else if(action==='stock-cancel'){ cancelStocktake(el.getAttribute('data-id')); }
       else if(action==='stock-variance-pdf'){ var vs = STATE.stocktakes.find(function(x){ return x.id===el.getAttribute('data-id'); }); if(vs) downloadVariancePdf(vs); }
@@ -4496,7 +4498,7 @@ import './platform.js?v=2026-11-06.39';
       '</div>' +
       '<div class="panel">' +
         '<div class="search" style="margin-bottom:10px;"><input type="text" id="productSearch" placeholder="Search products…" value="'+escapeHtml(STATE.productQuery||'')+'"></div>' +
-        '<div class="tbl-wrap"><table><thead><tr><th title="Tick to include in stock takes" style="text-align:center;">Count</th><th>Code</th><th>Description</th><th>Unit</th><th>Price excl VAT</th><th class="num">In stock</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
+        '<div class="tbl-wrap"><table><thead><tr><th title="Tick to include in stock takes" style="text-align:center; white-space:nowrap;"><label class="count-all"><input type="checkbox" data-action="product-stock-all"'+(list.length && list.every(function(p){ return p.stockItem; })?' checked':'')+(list.length?'':' disabled')+' aria-label="Tick all products shown for stock takes"> Count</label></th><th>Code</th><th>Description</th><th>Unit</th><th>Price excl VAT</th><th class="num">In stock</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
         '<div class="hint" style="margin-top:8px;">'+STATE.products.length+' products in the catalogue &middot; '+STATE.products.filter(function(p){ return p.stockItem; }).length+' ticked for stock takes &middot; <a href="#" data-action="stock-tick-all">Tick all</a> &middot; <a href="#" data-action="stock-untick-all">Untick all</a></div>' +
       '</div>' +
       renderStocktakePanel()
@@ -5131,12 +5133,23 @@ import './platform.js?v=2026-11-06.39';
   }
   function downloadCountSheet(stId){
     var st = STATE.stocktakes.find(function(s){ return s.id===stId; }); if(!st) return;
+    countSheetPdf(st, false);
+  }
+  function downloadPrecountSheet(){
+    var ticked = STATE.products.filter(function(p){ return p.stockItem; });
+    if(!ticked.length){ toast('Tick “Count” on the products you want to count first'); return; }
+    var items = ticked.slice().sort(function(a,b){ return String(a.description).localeCompare(String(b.description)); }).map(function(p){
+      return {pid:p.id, code:p.code||'', description:p.description||'', unit:p.unit||''};
+    });
+    countSheetPdf({number:'', date:localIso(new Date()), items:items}, true);
+  }
+  function countSheetPdf(st, pre){
     if(!window.jspdf || !window.jspdf.jsPDF){ toast('PDF tools are still loading — try again in a moment'); return; }
     var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
     var L = 15, R = 195, rowH = 9, box = 6.2;
     var cols = {no:L, prod:L+9, counted:122, system:146, checked:170, w:22};
     var head = function(first){
-      var y = stockPdfHeader(doc, 'STOCK TAKE — COUNT SHEET', stocktakeNo(st)+'   ·   Date: '+fullDate(st.date||localIso(new Date())));
+      var y = stockPdfHeader(doc, 'STOCK TAKE — COUNT SHEET', (pre ? 'Printed before the stock take is started' : stocktakeNo(st))+'   ·   Date: '+fullDate(st.date||localIso(new Date())));
       if(first){
         doc.setFontSize(9); doc.setTextColor(43,43,43);
         doc.text('Counted by: ______________________________', L, y+2); doc.text('Checked by: ______________________________', 108, y+2);
@@ -5166,7 +5179,7 @@ import './platform.js?v=2026-11-06.39';
     doc.text((st.items||[]).length+' products. Write the quantity you count in COUNTED. SYSTEM and CHECKED are completed afterwards.', L, y);
     var n = doc.getNumberOfPages();
     for(var i=1;i<=n;i++){ doc.setPage(i); doc.setFontSize(7.5); doc.setTextColor(140,140,132); doc.text('Page '+i+' of '+n, R, 290, {align:'right'}); }
-    stockPdfSave(doc, 'DsignX-count-sheet-'+stocktakeNo(st)+'.pdf');
+    stockPdfSave(doc, 'DsignX-count-sheet-'+(pre ? st.date : stocktakeNo(st))+'.pdf');
   }
   function downloadVariancePdf(st){
     if(!window.jspdf || !window.jspdf.jsPDF){ toast('PDF tools are still loading — try again in a moment'); return; }
@@ -5230,13 +5243,16 @@ import './platform.js?v=2026-11-06.39';
         '<td style="white-space:nowrap;"><button class="btn btn-ghost btn-sm" data-action="stock-variance-pdf" data-id="'+h.id+'">Variance PDF</button><button class="btn btn-ghost btn-sm" data-action="stock-variance-csv" data-id="'+h.id+'">CSV</button></td></tr>'; }).join('') +
       '</tbody></table></div>' : '';
     if(!isOwnerRole()){
-      return '<div class="panel"><div class="section-label">Stock take</div><p class="hint" style="margin:0;">'+(st ? 'Stock take '+escapeHtml(stocktakeNo(st))+' is in progress.' : 'Stock takes are done by the owner.')+'</p>'+histHtml+'</div>';
+      return '<div class="panel"><div class="section-label">Stock take</div><p class="hint" style="margin-top:0;">'+(st ? 'Stock take '+escapeHtml(stocktakeNo(st))+' is in progress.' : 'Stock takes are done by the owner.')+'</p>' +
+        (st ? '<button class="btn btn-sm" data-action="stock-sheet" data-id="'+st.id+'">Print count sheet (PDF)</button>' : (STATE.products.some(function(p){ return p.stockItem; }) ? '<button class="btn btn-sm" data-action="stock-presheet">Print count sheet (PDF)</button>' : '')) + histHtml+'</div>';
     }
     if(!st){
       return '<div class="panel"><div class="section-label">Stock take</div>' +
         '<p class="hint" style="margin-top:0;">Starting a stock take freezes the current system quantities. Print the count sheet, count the stock, enter the counts here and finalise — you get a variance report and the product quantities are updated to what was counted.</p>' +
         '<p class="hint">'+STATE.products.filter(function(p){ return p.stockItem; }).length+' of '+STATE.products.length+' products are ticked to be counted (the <strong>Count</strong> column below).</p>' +
-        '<button class="btn btn-primary btn-sm" data-action="stock-start"'+(STATE.products.some(function(p){ return p.stockItem; })?'':' disabled')+'>Start stock take</button>' + histHtml + '</div>';
+        '<div style="display:flex; gap:8px; flex-wrap:wrap;"><button class="btn btn-sm" data-action="stock-presheet"'+(STATE.products.some(function(p){ return p.stockItem; })?'':' disabled')+'>Print count sheet (PDF)</button>' +
+        '<button class="btn btn-primary btn-sm" data-action="stock-start"'+(STATE.products.some(function(p){ return p.stockItem; })?'':' disabled')+'>Start stock take</button></div>' +
+        '<p class="hint" style="margin-bottom:0;">You can print the count sheet now to hand out before counting starts. Start the stock take just before counting begins, so the system quantities are frozen at that moment.</p>' + histHtml + '</div>';
     }
     var counts = stocktakeCountsFor(st);
     var q = (STATE.stockQuery||'').trim().toLowerCase();
@@ -5266,6 +5282,18 @@ import './platform.js?v=2026-11-06.39';
     p.stockItem = !!on;
     if(STATE.isLive && STATE.db){ STATE.db.doc('products/'+id).update({stockItem:!!on}).catch(function(){ toast('Could not save — try again'); render(); }); }
     render();
+  }
+  function shownProducts(){
+    var q = (STATE.productQuery||'').trim().toLowerCase();
+    return STATE.products.filter(function(p){ return !q || (p.code+' '+p.description+' '+p.unit).toLowerCase().indexOf(q)>=0; });
+  }
+  function setShownStockItems(on){
+    var shown = shownProducts(), list = shown.filter(function(p){ return !!p.stockItem !== !!on; });
+    if(!list.length){ render(); return; }
+    list.forEach(function(p){ p.stockItem = !!on; });
+    updateDocs(list.map(function(p){ return {path:'products/'+p.id, data:{stockItem:!!on}}; })).catch(function(){ toast('Could not save — try again'); });
+    render();
+    toast((on ? 'Ticked ' : 'Unticked ')+list.length+' product'+(list.length===1?'':'s')+(shown.length < STATE.products.length ? ' (search results only)' : '')+' for stock takes');
   }
   function setAllStockItems(on){
     var list = STATE.products.filter(function(p){ return !!p.stockItem !== !!on; });

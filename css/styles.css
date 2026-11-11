@@ -683,3 +683,7 @@ img{max-width:100%}
 .bi-op{display:flex; gap:6px; align-items:flex-start; margin-top:4px; cursor:pointer; color:var(--ink-soft);}
 .bi-op input{width:auto; margin-top:2px;}
 .op-offer{display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-top:8px; padding:8px 10px; border-radius:var(--radius-s); background:#E4F1E6; color:#2E6B3A; font-size:12.5px;}
+
+/* update 40 */
+.count-all{display:inline-flex; align-items:center; gap:5px; cursor:pointer; font:inherit;}
+.count-all input{width:auto; margin:0;}
