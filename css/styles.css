@@ -687,3 +687,6 @@ img{max-width:100%}
 /* update 40 */
 .count-all{display:inline-flex; align-items:center; gap:5px; cursor:pointer; font:inherit;}
 .count-all input{width:auto; margin:0;}
+
+/* update 41 */
+.bi-current td{background:var(--accent-soft);}

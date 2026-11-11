@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-11.40';
+import './platform.js?v=2026-11-11.41';
 
 (function(){
   "use strict";
@@ -84,7 +84,7 @@ import './platform.js?v=2026-11-11.40';
     custExportFrom:'', custExportTo:'', custExportMode:'added',
     customerForm:null,
     products:[], productForm:null, productImport:null, productQuery:'',
-    receipts:[], receiptForm:null, commAdj:[], adjForm:null, messages:[], msgForm:null, msgOpenId:null, msgBox:'inbox', msgShow:'open', msgDraft:'', creditNotes:[], creditForm:null, cnExFrom:'', cnExTo:'', cnExStatus:'Draft', ageAsAt:'', ageOpen:null, stocktakes:[], stockDraft:{}, stockQuery:'', cashups:{}, cashupDate:'', cashupForm:null, rxFrom:'', rxTo:'', rxMethod:'all',
+    receipts:[], receiptForm:null, commAdj:[], adjForm:null, messages:[], msgForm:null, msgOpenId:null, msgBox:'inbox', msgShow:'open', msgDraft:'', creditNotes:[], creditForm:null, bankStatements:[], cnExFrom:'', cnExTo:'', cnExStatus:'Draft', ageAsAt:'', ageOpen:null, stocktakes:[], stockDraft:{}, stockQuery:'', cashups:{}, cashupDate:'', cashupForm:null, rxFrom:'', rxTo:'', rxMethod:'all',
     user:null, links:{},
     auth:{phase:'checking', uid:null, isOwner:false, memberId:null, role:null, error:'', busy:false, myAuth:null, myLink:null, teamLoaded:false, fails:0, lockUntil:0}
   };
@@ -1338,6 +1338,10 @@ import './platform.js?v=2026-11-11.40';
       STATE.commAdj = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
       render();
     }, function(){});
+    if(A.role==='owner') db.collection('bankStatements').onSnapshot(function(qs){
+      STATE.bankStatements = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+      render();
+    }, function(){});
     db.collection('creditNotes').onSnapshot(function(qs){
       STATE.creditNotes = qs.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
       render();
@@ -1856,7 +1860,7 @@ import './platform.js?v=2026-11-11.40';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-11.40</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-11.41</span></div>' +
       '</div>'
     );
   }
@@ -3456,7 +3460,10 @@ import './platform.js?v=2026-11-11.40';
       else if(action==='op-customer'){ var opc = el.getAttribute('data-id'); if(opc){ STATE.tab = 'customers'; STATE.viewCustomerId = opc; render(); } }
       else if(action==='bi-template'){ e.preventDefault(); downloadBankTemplate(); }
       else if(action==='bi-confirm'){ confirmBankImport(); }
-      else if(action==='bi-reset'){ STATE.bankImport = null; render(); }
+      else if(action==='bi-reset'){ closeBankImport(); }
+      else if(action==='bi-save'){ saveBankStatement(); }
+      else if(action==='bi-resume'){ resumeBankStatement(el.getAttribute('data-id')); }
+      else if(action==='bi-discard'){ discardBankStatement(el.getAttribute('data-id')); }
       else if(action==='toggle-nav'){ toggleNav(); }
       else if(action==='toggle-collected'){ STATE.showAllCollected = !STATE.showAllCollected; render(); }
       else if(action==='cn-new'){ openCreditForm(el.getAttribute('data-id')); }
@@ -3692,19 +3699,19 @@ import './platform.js?v=2026-11-11.40';
       if(e.target.id==='bankFile'){ bankImportFile(e.target.files[0]); e.target.value=''; return; }
       if(e.target.hasAttribute && e.target.hasAttribute('data-bi-row') && STATE.bankImport && STATE.bankImport.rows){
         var bir = STATE.bankImport.rows[Number(e.target.getAttribute('data-bi-row'))];
-        if(bir){ bir.orderId = e.target.value; bir.how = !e.target.value ? 'none' : (e.target.value.indexOf('acct:')===0 ? 'acct' : 'manual'); bir.include = !!e.target.value; render(); }
+        if(bir){ STATE.bankImport.dirty = true; bir.orderId = e.target.value; bir.how = !e.target.value ? 'none' : (e.target.value.indexOf('acct:')===0 ? 'acct' : 'manual'); bir.include = !!e.target.value; render(); }
         return;
       }
       if(e.target.hasAttribute && e.target.hasAttribute('data-bi-op') && STATE.bankImport && STATE.bankImport.rows){
         var bio = STATE.bankImport.rows[Number(e.target.getAttribute('data-bi-op'))];
-        if(bio){ bio.opExcess = e.target.checked; render(); }
+        if(bio){ STATE.bankImport.dirty = true; bio.opExcess = e.target.checked; render(); }
         return;
       }
       if(e.target.id==='alOrder'){ onAllocOrderChange(e.target.value); return; }
       if(e.target.id==='alShowAll' && STATE.allocForm){ var aa = document.getElementById('alAmount'); if(aa) STATE.allocForm.amount = aa.value; STATE.allocForm.showAll = e.target.checked; render(); return; }
       if(e.target.hasAttribute && e.target.hasAttribute('data-bi-inc') && STATE.bankImport && STATE.bankImport.rows){
         var bic = STATE.bankImport.rows[Number(e.target.getAttribute('data-bi-inc'))];
-        if(bic){ bic.include = e.target.checked && !!bic.orderId; render(); }
+        if(bic){ STATE.bankImport.dirty = true; bic.include = e.target.checked && !!bic.orderId; render(); }
         return;
       }
       if(e.target.id==='cuDate' && e.target.value){ STATE.cashupDate = e.target.value; STATE.cashupForm = null; render(); }
@@ -7121,9 +7128,94 @@ import './platform.js?v=2026-11-11.40';
       var res = parseBankRows(rows);
       if(res.error){ STATE.bankImport = {status:'error', name:file.name, error:res.error}; render(); return; }
       if(!res.lines.length){ STATE.bankImport = {status:'error', name:file.name, error:(res.capitec ? 'No EFT payments (Payment Received) were found in that statement.' : 'No money-in lines were found in that file.')+(res.card?' '+res.card+' card machine settlements left out.':'')+(res.skippedOut?' ('+res.skippedOut+' money-out lines ignored.)':'')}; render(); return; }
-      STATE.bankImport = {status:'review', name:file.name, rows:matchBankLines(res.lines), skippedOut:res.skippedOut, bad:res.bad, card:res.card||0, capitec:!!res.capitec};
+      STATE.bankImport = {status:'review', dirty:true, name:file.name, rows:matchBankLines(res.lines), skippedOut:res.skippedOut, bad:res.bad, card:res.card||0, capitec:!!res.capitec};
       render();
     }).catch(function(e){ STATE.bankImport = {status:'error', name:file.name, error:(e && e.message) || 'Could not read that file.'}; render(); });
+  }
+
+  /* ---- saved statements (update 41): save the review to continue later, then post it ---- */
+  // bankStatements/{id}: {name, status:'draft'|'posted', rows:[{line,key,orderId,how,include,opExcess,note}], …}. Owner only.
+  function biWhen(iso){ if(!iso) return ''; var d = new Date(iso); if(isNaN(d)) return ''; return shortDate(localIso(d))+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+  function bankStatementsList(status){
+    return (STATE.bankStatements||[]).filter(function(d){ return d.status===status; })
+      .sort(function(a,b){ return String(b.savedAt||b.postedAt||'').localeCompare(String(a.savedAt||a.postedAt||'')); });
+  }
+  function biCompactRows(rows){
+    return rows.map(function(r){ return {i:r.i, line:r.line, key:r.key, orderId:r.orderId||'', how:r.how, include:!!r.include, opExcess:r.opExcess!==false, note:r.note||''}; });
+  }
+  function biSummary(bi){
+    var plan = bankImportPlan(bi), ticked = bi.rows.filter(function(r){ return r.include && r.orderId && r.how!=='dup'; });
+    return {lineCount:bi.rows.length, tickedCount:ticked.length, tickedTotal:round2(ticked.reduce(function(s,r){ return s + r.line.amount; }, 0)),
+            unmatched:bi.rows.filter(function(r){ return r.how!=='dup' && !r.orderId; }).length, receiptsPlanned:plan.reduce(function(s,p){ return s + p.parts.length; }, 0)};
+  }
+  function saveBankStatement(){
+    var bi = STATE.bankImport; if(!bi || bi.status!=='review' || !isOwnerRole() || bi.saving) return;
+    var now = new Date().toISOString();
+    var id = bi.draftId || ('bs-' + now.replace(/[^0-9]/g,'').slice(0,14));
+    var data = Object.assign({name:bi.name||'Statement', status:'draft', createdAt:bi.createdAt||now, savedAt:now,
+      rows:biCompactRows(bi.rows), skippedOut:bi.skippedOut||0, bad:bi.bad||0, card:bi.card||0, capitec:!!bi.capitec}, biSummary(bi));
+    bi.saving = true; render();
+    var done = function(){ bi.saving = false; bi.draftId = id; bi.createdAt = data.createdAt; bi.savedAt = now; bi.dirty = false; render(); toast('Statement saved — continue it any time under Bank import'); };
+    if(STATE.isLive && STATE.db){ STATE.db.doc('bankStatements/'+id).set(data).then(done).catch(function(){ bi.saving = false; render(); toast('Could not save — check your connection and try again'); }); }
+    else { STATE.bankStatements = (STATE.bankStatements||[]).filter(function(d){ return d.id!==id; }).concat([Object.assign({id:id}, data)]); done(); }
+  }
+  function resumeBankStatement(id){
+    var d = (STATE.bankStatements||[]).find(function(x){ return x.id===id; }); if(!d || !isOwnerRole()) return;
+    if(STATE.bankImport && STATE.bankImport.dirty && !confirm('You have unsaved changes on the statement that is open. Discard them and open “'+(d.name||'')+'”?')) return;
+    var posted = {}; STATE.receipts.forEach(function(r){ if(r.importKey && !r.voided) posted[r.importKey] = r; });
+    var changed = 0;
+    var rows = (d.rows||[]).map(function(r, i){
+      var x = Object.assign({}, r, {i:i});
+      if(x.how!=='dup' && posted[x.key]){ x.how = 'dup'; x.include = false; x.note = 'Already imported as '+posted[x.key].number; changed++; }
+      if(x.orderId && x.orderId.indexOf('acct:')!==0 && !STATE.orders.some(function(o){ return o.id===x.orderId; })){ x.orderId = ''; x.how = 'none'; x.include = false; changed++; }
+      if(x.orderId && x.orderId.indexOf('acct:')===0 && !STATE.customers.some(function(c){ return 'acct:'+c.id===x.orderId; })){ x.orderId = ''; x.how = 'none'; x.include = false; changed++; }
+      return x;
+    });
+    STATE.bankImport = {status:'review', name:d.name, rows:rows, skippedOut:d.skippedOut||0, bad:d.bad||0, card:d.card||0, capitec:!!d.capitec,
+      draftId:d.id, createdAt:d.createdAt, savedAt:d.savedAt, dirty:changed>0, resumedNote: changed ? changed+' line'+(changed===1?' has':'s have')+' changed since it was saved (already imported, or the job/customer no longer exists) — check them before posting.' : ''};
+    render();
+    var el = document.querySelector('.bi-table'); if(el) el.scrollIntoView({behavior:'smooth', block:'start'});
+  }
+  function discardBankStatement(id){
+    var d = (STATE.bankStatements||[]).find(function(x){ return x.id===id; }); if(!d || !isOwnerRole()) return;
+    if(!confirm('Discard the saved statement “'+(d.name||'')+'”? Nothing has been posted from it; your matches will be lost.')) return;
+    if(STATE.bankImport && STATE.bankImport.draftId===id) STATE.bankImport = null;
+    if(STATE.isLive && STATE.db){ STATE.db.doc('bankStatements/'+id).delete().then(function(){ toast('Saved statement discarded'); }).catch(function(){ toast('Could not discard — try again'); }); }
+    else { STATE.bankStatements = STATE.bankStatements.filter(function(x){ return x.id!==id; }); render(); toast('Saved statement discarded'); }
+  }
+  function closeBankImport(){
+    var bi = STATE.bankImport;
+    if(bi && bi.status==='review' && bi.dirty && !confirm(bi.draftId ? 'Close without saving your latest changes? The statement stays saved as it was.' : 'Close without saving? Your matches will be lost — use “Save for later” to keep them.')) return;
+    STATE.bankImport = null; render();
+  }
+  // After posting: keep a record of the statement (the draft becomes 'posted').
+  function recordPostedStatement(bi, list){
+    var now = new Date().toISOString();
+    var id = bi.draftId || ('bs-' + now.replace(/[^0-9]/g,'').slice(0,14));
+    var notPosted = bi.rows.filter(function(r){ return r.how!=='dup' && !(r.include && r.orderId); });
+    var data = Object.assign({name:bi.name||'Statement', status:'posted', createdAt:bi.createdAt||now, savedAt:now, postedAt:now,
+      rows:biCompactRows(bi.rows), skippedOut:bi.skippedOut||0, bad:bi.bad||0, card:bi.card||0, capitec:!!bi.capitec,
+      receiptNumbers:list.map(function(r){ return r.number; }), postedCount:list.length, postedTotal:round2(list.reduce(function(s,r){ return s + r.amount; }, 0)),
+      notPostedCount:notPosted.length, notPostedTotal:round2(notPosted.reduce(function(s,r){ return s + r.line.amount; }, 0))}, biSummary(bi));
+    if(STATE.isLive && STATE.db) return STATE.db.doc('bankStatements/'+id).set(data).catch(function(){});
+    STATE.bankStatements = (STATE.bankStatements||[]).filter(function(d){ return d.id!==id; }).concat([Object.assign({id:id}, data)]);
+    return Promise.resolve();
+  }
+  function renderSavedStatements(){
+    var drafts = bankStatementsList('draft'), posted = bankStatementsList('posted').slice(0, 10);
+    if(!drafts.length && !posted.length) return '';
+    var cur = STATE.bankImport && STATE.bankImport.draftId;
+    var dHtml = drafts.length ? '<div class="section-label">Saved statements — not posted yet</div><div class="tbl-wrap"><table><thead><tr><th>Statement</th><th>Saved</th><th class="num">Lines</th><th class="num">Ticked</th><th class="num">Unmatched</th><th class="num">Ticked total</th><th></th></tr></thead><tbody>' +
+      drafts.map(function(d){
+        return '<tr'+(d.id===cur?' class="bi-current"':'')+'><td><strong>'+escapeHtml(d.name||'')+'</strong>'+(d.capitec?'<div class="q-date">Capitec Business</div>':'')+'</td><td style="white-space:nowrap;">'+biWhen(d.savedAt)+'</td>' +
+          '<td class="num">'+(d.lineCount||0)+'</td><td class="num">'+(d.tickedCount||0)+'</td><td class="num">'+(d.unmatched||0)+'</td><td class="num">'+money(d.tickedTotal||0)+'</td>' +
+          '<td style="white-space:nowrap; text-align:right;">'+(d.id===cur ? '<span class="q-date">Open below</span>' : '<button class="btn btn-primary btn-sm" data-action="bi-resume" data-id="'+d.id+'">Continue</button>')+' <button class="btn btn-ghost btn-sm" data-action="bi-discard" data-id="'+d.id+'">Discard</button></td></tr>';
+      }).join('') + '</tbody></table></div>' : '';
+    var pHtml = posted.length ? '<div class="section-label" style="margin-top:'+(drafts.length?'16px':'0')+';">Posted statements</div><div class="tbl-wrap"><table><thead><tr><th>Statement</th><th>Posted</th><th class="num">Receipts</th><th class="num">Posted total</th><th class="num">Not posted</th></tr></thead><tbody>' +
+      posted.map(function(d){
+        return '<tr><td>'+escapeHtml(d.name||'')+'</td><td style="white-space:nowrap;">'+biWhen(d.postedAt)+'</td><td class="num" title="'+escapeHtml((d.receiptNumbers||[]).join(', '))+'">'+(d.postedCount||0)+'</td><td class="num">'+money(d.postedTotal||0)+'</td><td class="num">'+(d.notPostedCount ? d.notPostedCount+' ('+money(d.notPostedTotal||0)+')' : '—')+'</td></tr>';
+      }).join('') + '</tbody></table></div>' : '';
+    return '<div class="panel">'+dHtml+pHtml+'</div>';
   }
 
   // What each ticked line becomes: a receipt against the job/invoice, and/or an overpayment on the customer's account.
@@ -7149,7 +7241,9 @@ import './platform.js?v=2026-11-11.40';
     var bi = STATE.bankImport; if(!bi || bi.status!=='review' || !isOwnerRole()) return;
     var plan = bankImportPlan(bi), todo = [];
     plan.forEach(function(p){ p.parts.forEach(function(pt){ todo.push({row:p.row, part:pt}); }); });
-    if(!todo.length){ toast('Tick at least one matched line to import'); return; }
+    if(!todo.length){ toast('Tick at least one matched line to post'); return; }
+    var unticked = bi.rows.filter(function(r){ return r.how!=='dup' && !(r.include && r.orderId); }).length;
+    if(!confirm('Post this statement? '+todo.length+' EFT receipt'+(todo.length===1?'':'s')+' will be created.'+(unticked ? '\n\n'+unticked+' line'+(unticked===1?' is':'s are')+' not ticked and will NOT be posted. To finish those later, press Cancel and use “Save for later” instead.' : ''))) return;
     bi.status = 'saving'; render();
     var batch = 'bank-'+new Date().toISOString().replace(/[^0-9]/g,'').slice(0,14);
     reserveNumbers('nextReceiptNumber', todo.length).then(function(start){
@@ -7174,8 +7268,9 @@ import './platform.js?v=2026-11-11.40';
     }).then(function(list){
       var total = round2(list.reduce(function(s,r){ return s + r.amount; }, 0));
       var acct = list.filter(function(r){ return r.kind==='onaccount'; });
+      recordPostedStatement(bi, list);
       STATE.bankImport = {status:'done', name:bi.name, count:list.length, total:total, numbers:list.map(function(r){ return r.number; }), acctCount:acct.length, acctTotal:round2(acct.reduce(function(s,r){ return s+r.amount; }, 0))};
-      render(); toast(list.length+' EFT receipt'+(list.length===1?'':'s')+' created');
+      render(); toast('Statement posted — '+list.length+' EFT receipt'+(list.length===1?'':'s')+' created');
     }).catch(function(){ bi.status = 'review'; render(); toast('Import stopped — check your connection and try again'); });
   }
 
@@ -7222,8 +7317,8 @@ import './platform.js?v=2026-11-11.40';
     var bi = STATE.bankImport, body = '';
     if(bi && bi.status==='reading') body = '<div class="hint">Reading '+escapeHtml(bi.name)+'…</div>';
     else if(bi && bi.status==='error') body = '<div class="hint" style="color:var(--critical);">'+escapeHtml(bi.error)+'</div>';
-    else if(bi && bi.status==='saving') body = '<div class="hint">Creating EFT receipts…</div>';
-    else if(bi && bi.status==='done') body = '<div class="bi-done"><strong>'+bi.count+' EFT receipt'+(bi.count===1?'':'s')+' created ('+money(bi.total)+')</strong> from '+escapeHtml(bi.name)+': '+escapeHtml(bi.numbers.join(', '))+'.'+(bi.acctCount ? '<div style="margin-top:6px;">'+bi.acctCount+' of them ('+money(bi.acctTotal)+') recorded as <strong>overpayments</strong> on the customer’s account — allocate them under <a href="#" data-action="tab" data-tab="overpayments">Overpayments</a>.</div>' : '')+'<div style="margin-top:8px;"><button class="btn btn-sm" data-action="bi-reset">Import another statement</button></div></div>';
+    else if(bi && bi.status==='saving') body = '<div class="hint">Posting the statement — creating EFT receipts…</div>';
+    else if(bi && bi.status==='done') body = '<div class="bi-done"><strong>Statement posted: '+bi.count+' EFT receipt'+(bi.count===1?'':'s')+' created ('+money(bi.total)+')</strong> from '+escapeHtml(bi.name)+': '+escapeHtml(bi.numbers.join(', '))+'.'+(bi.acctCount ? '<div style="margin-top:6px;">'+bi.acctCount+' of them ('+money(bi.acctTotal)+') recorded as <strong>overpayments</strong> on the customer’s account — allocate them under <a href="#" data-action="tab" data-tab="overpayments">Overpayments</a>.</div>' : '')+'<div style="margin-top:8px;"><button class="btn btn-sm" data-action="bi-reset">Import another statement</button></div></div>';
     else if(bi && bi.status==='review'){
       var items = bankOpenItems(), plan = bankImportPlan(bi);
       var custOpts = STATE.customers.slice().sort(function(a,b){ return String(a.name).localeCompare(String(b.name)); });
@@ -7267,10 +7362,16 @@ import './platform.js?v=2026-11-11.40';
           (bi.skippedOut ? ' &middot; '+bi.skippedOut+' money-out line'+(bi.skippedOut===1?'':'s')+' ignored' : '') +
           (bi.bad ? ' &middot; <span style="color:var(--critical);">'+bi.bad+' line'+(bi.bad===1?'':'s')+' without a valid date or amount ignored</span>' : '') +
           (dup ? ' &middot; '+dup+' already imported' : '') + '. Check each match, change it if needed, and untick anything that isn’t a customer payment.</div>' +
+        (bi.resumedNote ? '<div class="hint" style="color:var(--warning); margin-bottom:8px;">'+escapeHtml(bi.resumedNote)+'</div>' : '') +
+        (function(){ var same = !bi.draftId && bankStatementsList('draft').find(function(d){ return d.name===bi.name; });
+          return same ? '<div class="op-offer" style="margin:0 0 10px;"><span>You have a saved, unposted copy of <strong>'+escapeHtml(bi.name)+'</strong> from '+biWhen(same.savedAt)+'.</span><button class="btn btn-sm" data-action="bi-resume" data-id="'+same.id+'">Continue the saved one</button></div>' : ''; })() +
         '<div class="tbl-wrap"><table class="bi-table"><thead><tr><th style="width:34px;">Import</th><th>Date</th><th>Bank reference</th><th class="num">Amount</th><th>Pay against</th><th>Match</th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
         '<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:12px;">' +
-          '<button class="btn btn-primary" data-action="bi-confirm"'+(ticked.length?'':' disabled')+'>Create '+nRec+' EFT receipt'+(nRec===1?'':'s')+' ('+money(tot)+')</button>' +
-          '<button class="btn btn-ghost" data-action="bi-reset">Cancel</button></div>';
+          '<button class="btn btn-primary" data-action="bi-confirm"'+(ticked.length?'':' disabled')+'>Post statement — '+nRec+' EFT receipt'+(nRec===1?'':'s')+' ('+money(tot)+')</button>' +
+          '<button class="btn" data-action="bi-save"'+(bi.saving?' disabled':'')+'>'+(bi.saving?'Saving…':'Save for later')+'</button>' +
+          '<button class="btn btn-ghost" data-action="bi-reset">Close</button>' +
+          '<span class="q-date">'+(bi.dirty ? '<span style="color:var(--warning); font-weight:600;">Unsaved changes</span>' : (bi.savedAt ? 'Saved '+biWhen(bi.savedAt) : 'Not saved yet'))+'</span></div>' +
+        '<div class="hint" style="margin-top:6px;"><strong>Save for later</strong> keeps your matches so you can continue another time — nothing is posted. <strong>Post statement</strong> creates the receipts for the ticked lines.</div>';
     }
     var recent = STATE.receipts.filter(function(r){ return r.method==='eft' && !r.voided; })
       .sort(function(a,b){ return String(b.date+b.createdAt).localeCompare(String(a.date+a.createdAt)); }).slice(0, 15);
@@ -7278,6 +7379,7 @@ import './platform.js?v=2026-11-11.40';
         recent.map(function(r){ return '<tr><td class="mono">'+escapeHtml(r.number)+'</td><td>'+shortDate(r.date)+'</td><td class="row-btn" data-action="open-order" data-id="'+r.orderId+'">'+escapeHtml(r.customerName||'')+'</td><td class="mono">'+escapeHtml(r.invoiceNumber||r.jobNumber||'')+'</td><td>'+escapeHtml(r.bankReference||'')+'</td><td class="num">'+money(r.amount)+'</td></tr>'; }).join('') +
       '</tbody></table></div>' : '<div class="empty-note">No EFT payments imported yet.</div>';
     return '<div class="topline"><div><h1>Bank import</h1><div class="sub">Import EFT payments from your bank statement and record them as receipts</div></div></div>' +
+      renderSavedStatements() +
       '<div class="panel">' +
         '<div class="section-label">Upload your bank statement</div>' +
         '<p class="hint" style="margin-top:0;">Download the statement from Capitec Business as a <strong>CSV</strong> and upload it here as it is. The DsignX EFT converter rules are applied for you: only lines marked <strong>Payment Received</strong> (incl. Immediate and External Immediate) are taken; card machine settlements (PosSettle) and all money out, including fees, are left out; bank prefixes and PayShap codes are removed from the reference.</p>' +

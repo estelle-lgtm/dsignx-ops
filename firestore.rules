@@ -161,6 +161,12 @@ service cloud.firestore {
       allow delete: if isOwner();
     }
 
+    // Bank statements saved during the EFT import (draft = continue later, posted = record). Owner only.
+    match /bankStatements/{id} {
+      allow read, create, update: if isOwner();
+      allow delete: if isOwner() && resource.data.status == 'draft';
+    }
+
     // Everything else (including the functions' rate-limit records) is closed.
     match /{document=**} {
       allow read, write: if false;
