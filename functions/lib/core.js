@@ -37,7 +37,8 @@ function birdHost(apiKey) {
   return `https://${m ? m[1] : 'us1'}.platform.bird.com`;
 }
 
-const BIRD_TOOLS = ['whatsapp_list', 'whatsapp_send', 'whatsapp_get', 'whatsapp_mark_read', 'whatsapp_media'];
+const BIRD_TOOLS = ['whatsapp_list', 'whatsapp_send', 'whatsapp_get', 'whatsapp_mark_read', 'whatsapp_media', 'email_send'];
+const EMAIL_RE = /^[^\s@<>",;]+@[^\s@<>",;]+\.[A-Za-z]{2,}$/;
 
 // Turns an app tool call into an HTTP request for the Bird API.
 function birdRequest(tool, input, opts) {
@@ -79,6 +80,41 @@ function birdRequest(tool, input, opts) {
     const h = Object.assign({ 'Content-Type': 'application/json' }, headers);
     if (input.idempotency_key) h['Idempotency-Key'] = String(input.idempotency_key).slice(0, 255);
     return { method: 'POST', url: `${host}/v1/whatsapp/messages`, headers: h, body: JSON.stringify(body) };
+  }
+  if (tool === 'email_send') {
+    // Customer statements (PDF) by email. One recipient, PDF attachments only, sent from the
+    // DsignX address configured on the server (EMAIL_FROM) — the app cannot choose the sender.
+    if (!opts.emailFrom) throw badInput('EMAIL_FROM is not set on the server');
+    const to = String(input.to || '').trim();
+    if (!EMAIL_RE.test(to)) throw badInput('A valid email address is required');
+    const subject = String(input.subject || '').trim().slice(0, 200);
+    if (!subject) throw badInput('subject is required');
+    const html = String(input.html || '');
+    const text = String(input.text || '');
+    if (!html && !text) throw badInput('html or text is required');
+    if (html.length > 100000 || text.length > 50000) throw badInput('Message too long');
+    const atts = Array.isArray(input.attachments) ? input.attachments : [];
+    if (atts.length > 3) throw badInput('At most 3 attachments');
+    const attachments = atts.map((a) => {
+      const filename = String((a && a.filename) || '').replace(/[\r\n\\/]/g, '').slice(0, 120);
+      const content = String((a && a.content) || '');
+      if (!/\.pdf$/i.test(filename)) throw badInput('Only PDF attachments can be sent');
+      if (!/^[A-Za-z0-9+/=]+$/.test(content) || content.length > 10 * 1024 * 1024) throw badInput('Attachment is invalid or too large');
+      return { filename, content, content_type: 'application/pdf' };
+    });
+    const body = {
+      from: { email: opts.emailFrom, name: opts.emailName || 'DsignX' },
+      to: [to], subject, category: 'transactional', track_opens: false, track_clicks: false,
+      tags: [{ name: 'source', value: 'dsignx-statement' }],
+    };
+    if (html) body.html = html;
+    if (text) body.text = text;
+    const replyTo = String(input.reply_to || '').trim();
+    if (EMAIL_RE.test(replyTo)) body.reply_to = [replyTo];
+    if (attachments.length) body.attachments = attachments;
+    const h = Object.assign({ 'Content-Type': 'application/json' }, headers);
+    if (input.idempotency_key) h['Idempotency-Key'] = String(input.idempotency_key).replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, 255);
+    return { method: 'POST', url: `${host}/v1/email/messages`, headers: h, body: JSON.stringify(body) };
   }
   throw badInput(`Unknown Bird tool: ${tool}`);
 }

@@ -690,3 +690,22 @@ img{max-width:100%}
 
 /* update 41 */
 .bi-current td{background:var(--accent-soft);}
+
+/* statements (update 42) */
+.stmt-bar{display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;}
+.stmt-table > tbody > tr.stmt-cust > td{border-top:2px solid var(--line); vertical-align:top; padding-top:10px;}
+.stmt-table tr.stmt-off td{opacity:.55;}
+.stmt-tx-row > td{padding-top:0;}
+.stmt-tx{width:100%; font-size:12.5px; background:var(--surface-2); border-radius:var(--radius-s); margin:2px 0 10px;}
+.stmt-tx th{font-size:10.5px; padding:6px 8px;}
+.stmt-tx td{padding:5px 8px;}
+.stmt-credit td{color:#2E6B3A;}
+.stmt-total td{font-weight:600; border-top:1px solid var(--line-strong);}
+.linklike{background:none; border:none; padding:0; font:inherit; color:var(--ink); cursor:pointer; text-align:left;}
+
+
+/* update 43 */
+.msg-reassign-row{display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:10px; padding-top:10px; border-top:1px dashed var(--line);}
+.msg-reassign-row label{font-size:12.5px; font-weight:600; color:var(--ink-soft);}
+.msg-reassign-row select{width:auto; min-width:180px;}
+.msg-entry.msg-reassign{border-left-color:#5B3E8F;}

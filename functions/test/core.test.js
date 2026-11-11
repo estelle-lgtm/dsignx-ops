@@ -143,3 +143,19 @@ test('customer profiles: gaps and who fixes them', () => {
   assert.deepStrictEqual(plan2.map((p) => [p.customer.id, p.toId]), [['c1', 't2'], ['c4', 'owner'], ['c5', 'owner']]);
   assert.match(prof.profileText(plan[0]).body, /Missing: first and last name, cellphone number/);
 });
+
+test('email_send: statements by email go out from the server address, PDF only', () => {
+  const opts = { apiKey: 'bk_eu1_abc123', from: '+27600000000', emailFrom: 'accounts@dsignx.co.za', emailName: 'DsignX' };
+  const r = core.birdRequest('email_send', { to: 'jan@kroon.co.za', subject: 'Statement', html: '<p>x</p>', reply_to: 'info@dsignx.co.za',
+    attachments: [{ filename: 'DsignX-Statement.pdf', content: 'JVBERi0xLjQK' }], idempotency_key: 'stmt-c1-2026-11-11' }, opts);
+  assert.strictEqual(r.url, 'https://eu1.platform.bird.com/v1/email/messages');
+  const b = JSON.parse(r.body);
+  assert.deepStrictEqual(b.from, { email: 'accounts@dsignx.co.za', name: 'DsignX' });
+  assert.deepStrictEqual(b.to, ['jan@kroon.co.za']);
+  assert.strictEqual(b.category, 'transactional');
+  assert.strictEqual(b.attachments[0].content_type, 'application/pdf');
+  assert.strictEqual(r.headers['Idempotency-Key'], 'stmt-c1-2026-11-11');
+  assert.throws(() => core.birdRequest('email_send', { to: 'not-an-email', subject: 's', text: 't' }, opts));
+  assert.throws(() => core.birdRequest('email_send', { to: 'a@b.co', subject: 's', text: 't', attachments: [{ filename: 'x.exe', content: 'AA==' }] }, opts));
+  assert.throws(() => core.birdRequest('email_send', { to: 'a@b.co', subject: 's', text: 't' }, Object.assign({}, opts, { emailFrom: '' })));
+});

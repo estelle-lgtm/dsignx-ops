@@ -10,8 +10,9 @@
  * Secrets (set once with the Firebase CLI, see SETUP_GUIDE.md):
  *   BIRD_API_KEY     Bird workspace API key with WhatsApp read + write.
  *   CLOUDINARY_URL   cloudinary://API_KEY:API_SECRET@CLOUD_NAME
- * Parameter:
+ * Parameters:
  *   WA_FROM          The WhatsApp business number messages are sent from (E.164).
+ *   EMAIL_FROM       The address customer statements are emailed from (domain verified in Bird).
  */
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { setGlobalOptions } = require('firebase-functions/v2');
@@ -29,6 +30,8 @@ setGlobalOptions({ region: 'europe-west1', maxInstances: 5 });
 const BIRD_API_KEY = defineSecret('BIRD_API_KEY');
 const CLOUDINARY_URL = defineSecret('CLOUDINARY_URL');
 const WA_FROM = defineString('WA_FROM', { default: '+27604934689' });
+// Customer statements are emailed from this address. Its domain must be verified in Bird (Email → Domains).
+const EMAIL_FROM = defineString('EMAIL_FROM', { default: 'accounts@dsignx.co.za' });
 
 const MAX_TRIES = 5;           // wrong invite codes allowed …
 const TRY_WINDOW_MS = 10 * 60 * 1000; // … per 10 minutes, per account
@@ -128,7 +131,7 @@ exports.connector = onCall(
       if (!core.BIRD_TOOLS.includes(tool)) throw new HttpsError('invalid-argument', `Unknown tool ${tool}`, { code: 'tool_error', server });
       if (!birdKey) throw new HttpsError('failed-precondition', 'BIRD_API_KEY is not set on the server.', { code: 'server_not_connected', server });
       try {
-        const r = core.birdRequest(tool, input, { apiKey: birdKey, from: WA_FROM.value() });
+        const r = core.birdRequest(tool, input, { apiKey: birdKey, from: WA_FROM.value(), emailFrom: EMAIL_FROM.value(), emailName: 'DsignX' });
         if (r.media) return await core.fetchMedia(fetch, r);
         return await core.send(fetch, r);
       } catch (e) {
@@ -176,8 +179,10 @@ async function runPaymentReminders(trigger) {
     const t = rem.reminderText(p), now = new Date().toISOString();
     let msgId = p.prev && p.prev.messageId, msg = null;
     if (msgId) { const s = await db.doc(`messages/${msgId}`).get(); msg = s.exists ? s.data() : null; }
-    const attnKey = `attn.${p.toId}`;
-    if (msg && msg.status !== 'finished' && msg.toId === p.toId) {
+    // An open reminder the owner re-assigned to a designer stays with that designer.
+    const toId = (msg && msg.reassignedBy) ? msg.toId : p.toId;
+    const attnKey = `attn.${toId}`;
+    if (msg && msg.status !== 'finished' && (msg.toId === p.toId || msg.reassignedBy)) {
       await db.doc(`messages/${msgId}`).update({
         log: admin.firestore.FieldValue.arrayUnion({ at: now, byId: 'system', byName: 'DsignX Ops', type: 'system', text: t.again }),
         [attnKey]: true, updatedAt: now,
@@ -227,10 +232,10 @@ async function runProfileTasks(trigger) {
     const t = prof.profileText(p), now = new Date().toISOString();
     let msgId = p.prev && p.prev.messageId, msg = null;
     if (msgId) { const s = await db.doc(`messages/${msgId}`).get(); msg = s.exists ? s.data() : null; }
-    if (msg && msg.status !== 'finished' && msg.toId === p.toId) {
+    if (msg && msg.status !== 'finished' && (msg.toId === p.toId || msg.reassignedBy)) {
       await db.doc(`messages/${msgId}`).update({
         log: admin.firestore.FieldValue.arrayUnion({ at: now, byId: 'system', byName: 'DsignX Ops', type: 'system', text: t.again }),
-        [`attn.${p.toId}`]: true, updatedAt: now,
+        [`attn.${msg.toId}`]: true, updatedAt: now,
       });
       updated++;
     } else {

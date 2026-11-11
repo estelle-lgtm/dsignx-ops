@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-11.41';
+import './platform.js?v=2026-11-11.43';
 
 (function(){
   "use strict";
@@ -1860,7 +1860,7 @@ import './platform.js?v=2026-11-11.41';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-11.41</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-11.43</span></div>' +
       '</div>'
     );
   }
@@ -2777,6 +2777,7 @@ import './platform.js?v=2026-11-11.41';
     return a.filter(Boolean).join(' ');
   }
   function renderCustomersTab(){
+    if(STATE.stmtOpen) return renderStatementsView();
     var q = STATE.customerQuery.trim().toLowerCase();
     var list = STATE.customers.filter(function(c){ return !q || searchMatch(q, customerSearchText(c), [c.phone].concat((c.contacts||[]).map(function(p){ return p.phone; }))); });
 
@@ -2822,7 +2823,8 @@ import './platform.js?v=2026-11-11.41';
 
     return (
       '<div class="topline"><div><h1>Customers</h1><div class="sub">'+STATE.customers.length+' on file</div></div>' + exampleBadge() +
-        '<button class="btn btn-primary" data-action="open-add-customer">+ Add customer</button>' +
+        '<div style="display:flex; gap:8px; flex-wrap:wrap;"><button class="btn" data-action="stmt-open">Send statements</button>' +
+        '<button class="btn btn-primary" data-action="open-add-customer">+ Add customer</button></div>' +
       '</div>' +
       '<div class="two-col">' +
         '<div>' +
@@ -3393,7 +3395,7 @@ import './platform.js?v=2026-11-11.41';
       if(!el) return;
       var action = el.getAttribute('data-action');
 
-      if(action==='tab'){ if(el.getAttribute('data-tab')!=='whatsapp') STATE.inboxReply = null; var tt = el.getAttribute('data-tab'); if(canAccess(tt)){ STATE.tab = tt; } STATE.viewCustomerId=null; render(); }
+      if(action==='tab'){ STATE.stmtOpen = false; if(el.getAttribute('data-tab')!=='whatsapp') STATE.inboxReply = null; var tt = el.getAttribute('data-tab'); if(canAccess(tt)){ STATE.tab = tt; } STATE.viewCustomerId=null; render(); }
       else if(action==='lock-app'){ lockApp(''); }
       else if(action==='cust-ex-preset'){ STATE.custExportFrom = el.getAttribute('data-from'); STATE.custExportTo = el.getAttribute('data-to'); render(); }
       else if(action==='export-customers-xero'){ if(isOwnerRole()) exportCustomersXero(); }
@@ -3442,6 +3444,7 @@ import './platform.js?v=2026-11-11.41';
       else if(action==='msg-open'){ var mid = el.getAttribute('data-id'); if(STATE.msgOpenId!==mid){ STATE.msgDraft = ''; STATE.msgFiles = []; } STATE.msgOpenId = mid; var mm = (STATE.messages||[]).find(function(x){ return x.id===mid; }); if(mm) clearMsgAttn(mm); render(); var ml = document.querySelector('.msg-detail'); if(ml && window.innerWidth < 900) ml.scrollIntoView({behavior:'smooth'}); }
       else if(action==='msg-close'){ STATE.msgOpenId = null; STATE.msgDraft = ''; render(); }
       else if(action==='msg-act'){ msgAction(el.getAttribute('data-type')); }
+      else if(action==='msg-reassign'){ msgReassign(); }
       else if(action==='msg-file-remove'){ removeMsgFile(el.getAttribute('data-which'), Number(el.getAttribute('data-i'))); }
       else if(action==='msg-file-save'){ saveMsgFileToJob(el.getAttribute('data-url'), el.getAttribute('data-order')); }
       else if(action==='save-reminders'){ saveReminderSettings(); }
@@ -3458,6 +3461,17 @@ import './platform.js?v=2026-11-11.41';
       else if(action==='alloc-undo'){ undoAllocation(el.getAttribute('data-id')); }
       else if(action==='op-show'){ STATE.opShow = el.getAttribute('data-v'); render(); }
       else if(action==='op-customer'){ var opc = el.getAttribute('data-id'); if(opc){ STATE.tab = 'customers'; STATE.viewCustomerId = opc; render(); } }
+      else if(action==='stmt-open'){ openStatements(); }
+      else if(action==='stmt-close'){ STATE.stmtOpen = false; render(); }
+      else if(action==='stmt-toggle'){ var sk = el.getAttribute('data-key'); if(STATE.stmtCollapsed[sk]) delete STATE.stmtCollapsed[sk]; else STATE.stmtCollapsed[sk] = true; render(); }
+      else if(action==='stmt-expand'){ if(el.getAttribute('data-v')==='1') STATE.stmtCollapsed = {}; else statementData(STATE.stmtAsAt).forEach(function(a){ STATE.stmtCollapsed[a.key] = true; }); render(); }
+      else if(action==='stmt-all'){ var on = el.checked; STATE.stmtSel = {}; if(on) statementData(STATE.stmtAsAt).forEach(function(a){ if(a.balance > STMT_MIN) STATE.stmtSel[a.key] = true; }); render(); }
+      else if(action==='stmt-pdf'){ downloadStatement(el.getAttribute('data-key')); }
+      else if(action==='stmt-email'){ var se = stmtFind(el.getAttribute('data-key')); if(se) emailStatement(se); }
+      else if(action==='stmt-wa'){ var sw = stmtFind(el.getAttribute('data-key')); if(sw) whatsappStatement(sw); }
+      else if(action==='stmt-dl'){ downloadSelectedStatements(); }
+      else if(action==='stmt-send-email'){ sendSelectedStatements('email'); }
+      else if(action==='stmt-send-wa'){ sendSelectedStatements('wa'); }
       else if(action==='bi-template'){ e.preventDefault(); downloadBankTemplate(); }
       else if(action==='bi-confirm'){ confirmBankImport(); }
       else if(action==='bi-reset'){ closeBankImport(); }
@@ -3696,6 +3710,7 @@ import './platform.js?v=2026-11-11.41';
       if(e.target.id==='chatAttach'){ attachFromDevice(e.target.getAttribute('data-phone'), e.target.files[0]); e.target.value=''; }
       if(e.target.id==='importFile'){ importBackupFile(e.target.files[0]); e.target.value=''; }
       if(e.target.id==='productFile'){ importProductsFile(e.target.files[0]); e.target.value=''; }
+      if(e.target.hasAttribute && e.target.hasAttribute('data-stmt-sel')){ var sk2 = e.target.getAttribute('data-stmt-sel'); if(e.target.checked) STATE.stmtSel[sk2] = true; else delete STATE.stmtSel[sk2]; render(); return; }
       if(e.target.id==='bankFile'){ bankImportFile(e.target.files[0]); e.target.value=''; return; }
       if(e.target.hasAttribute && e.target.hasAttribute('data-bi-row') && STATE.bankImport && STATE.bankImport.rows){
         var bir = STATE.bankImport.rows[Number(e.target.getAttribute('data-bi-row'))];
@@ -4985,6 +5000,10 @@ import './platform.js?v=2026-11-11.41';
     {slug:'dsignx_order_ready', label:'Order ready for collection',
       text:'Hi {{customer_name}}, good news! Your order {{order_ref}} is ready for collection at DsignX, Corcomm Building, 36 Reitz Street, Kroonstad.',
       params:function(o){ return {customer_name:custFirstName(o), order_ref:(o.jobNumber||jobNo(o.id))+(o.title?(' ('+o.title+')'):'')}; }},
+    {slug:'dsignx_statement', label:'Statement ready',
+      text:'Hi {{customer_name}}, your DsignX statement as at {{statement_date}} is ready. The amount due is {{amount}}. Please reply to this message and we will send the statement to you here.',
+      needs:function(o){ return o.customerId ? '' : 'This job has no customer record.'; },
+      params:function(o){ var a = statementData(todayIso()).find(function(x){ return x.key===stmtKeyOfOrder(o); }); return {customer_name:custFirstName(o), statement_date:fullDate(todayIso()), amount:money(a ? Math.max(0,a.balance) : 0)}; }},
     {slug:'dsignx_payment_reminder', label:'Payment reminder',
       text:'Hi {{customer_name}}, this is a friendly reminder that invoice {{invoice_number}} for {{amount}} is due on {{due_date}}. Please use the invoice number as your payment reference. Thank you!',
       needs:function(o){ if (!hasInvoiceDoc(o)) return 'Generate the invoice first.'; return payStatus(o).balance > 0.004 ? '' : 'This invoice is fully paid.'; },
@@ -6519,6 +6538,7 @@ import './platform.js?v=2026-11-11.41';
     if(type==='reply'){ attn[other] = true; patch.needsAnswer = isTo; }
     if(type==='finish'){ patch.status = 'finished'; patch.finishedAt = entry.at; patch.needsAnswer = false; attn[other] = true; }
     if(m.fromId==='system'){ delete attn.system; if(type!=='note' && me!=='owner') attn.owner = true; } // the owner hears how reminders are followed up
+    if(m.reassignedBy && m.reassignedBy!==me && type!=='note') attn[m.reassignedBy] = true;
     attn[me] = false;
     patch.attn = attn;
     STATE.msgDraft = '';
@@ -6541,7 +6561,7 @@ import './platform.js?v=2026-11-11.41';
     var me = myMsgId(), box = STATE.msgBox || 'inbox', open = STATE.msgShow || 'open';
     return (STATE.messages||[]).filter(function(m){
       if(box==='inbox' && m.toId!==me) return false;
-      if(box==='sent' && m.fromId!==me) return false;
+      if(box==='sent' && m.fromId!==me && m.reassignedBy!==me) return false;
       if(box==='mine' && m.toId!==me && m.fromId!==me) return false;
       if(open==='open' && m.status==='finished' && !(m.attn && m.attn[me])) return false;
       if(open==='finished' && m.status!=='finished') return false;
@@ -6551,11 +6571,11 @@ import './platform.js?v=2026-11-11.41';
   function renderMessagesTab(){
     var me = myMsgId(), list = msgList(), box = STATE.msgBox || 'inbox', show = STATE.msgShow || 'open';
     var cnt = function(fn){ return (STATE.messages||[]).filter(fn).length; };
-    var inboxN = cnt(function(m){ return m.toId===me && m.attn && m.attn[me]; }), sentN = cnt(function(m){ return m.fromId===me && m.attn && m.attn[me]; });
+    var inboxN = cnt(function(m){ return m.toId===me && m.attn && m.attn[me]; }), sentN = cnt(function(m){ return (m.fromId===me || m.reassignedBy===me) && m.attn && m.attn[me]; });
     var chip = function(k, label, n){ return '<button type="button" class="chip-toggle'+(box===k?' active':'')+'" data-action="msg-box" data-box="'+k+'">'+label+(n?' <span class="msg-dot">'+n+'</span>':'')+'</button>'; };
     var items = list.length ? list.map(function(m){
       var unread = m.attn && m.attn[me];
-      var who = m.fromId===me ? ('To '+escapeHtml(m.toName)) : ('From '+escapeHtml(m.fromName));
+      var who = (m.fromId===me || (m.reassignedBy===me && m.toId!==me)) ? ('To '+escapeHtml(m.toName)+(m.reassignedBy===me && m.fromId!==me ? ' (re-assigned)' : '')) : ('From '+escapeHtml(m.fromName));
       var last = (m.log||[]).length ? m.log[m.log.length-1] : null;
       return '<button type="button" class="msg-item'+(STATE.msgOpenId===m.id?' active':'')+(unread?' unread':'')+'" data-action="msg-open" data-id="'+m.id+'">' +
         '<div class="msg-item-top">'+msgKindChip(m)+'<span class="msg-who">'+who+'</span><span class="msg-when">'+relTime(m.updatedAt||m.createdAt)+'</span></div>' +
@@ -6577,10 +6597,40 @@ import './platform.js?v=2026-11-11.41';
         '<div class="msg-detail">'+(openMsg ? renderMsgDetail(openMsg) : '<div class="panel"><div class="empty-note">Choose a message on the left, or send a new enquiry or task.</div></div>')+'</div>' +
       '</div>';
   }
+  function reassignPeople(){
+    return STATE.team.filter(function(t){ return t.active!==false && t.role==='designer'; })
+      .sort(function(a,b){ return String(a.name).localeCompare(String(b.name)); });
+  }
+  function renderReassignRow(m){
+    var ppl = reassignPeople();
+    if(!ppl.length) return '';
+    var o = m.orderId ? STATE.orders.find(function(x){ return x.id===m.orderId; }) : null;
+    var pre = (o && o.designerId && ppl.some(function(t){ return t.id===o.designerId; })) ? o.designerId : '';
+    return '<div class="msg-reassign-row"><label for="msgReassignTo">Re-assign to</label>' +
+      '<select id="msgReassignTo"><option value="">Choose a designer…</option>'+ppl.map(function(t){ return '<option value="'+escapeHtml(t.id)+'"'+(t.id===pre?' selected':'')+'>'+escapeHtml(t.name)+(t.id===pre?' (designer on this job)':'')+'</option>'; }).join('')+'</select>' +
+      '<button class="btn btn-sm" data-action="msg-reassign">Re-assign</button>' +
+      '<span class="hint" style="margin:0;">Anything typed in the box above goes with it as your instruction.</span></div>';
+  }
+  function msgReassign(){
+    if(!isOwnerRole()) return;
+    var m = (STATE.messages||[]).find(function(x){ return x.id===STATE.msgOpenId; }); if(!m || m.toId!=='owner' || m.status==='finished') return;
+    var sel = document.getElementById('msgReassignTo'), toId = sel ? sel.value : '';
+    var t = STATE.team.find(function(x){ return x.id===toId; });
+    if(!t){ toast('Choose the designer to re-assign it to'); if(sel) sel.focus(); return; }
+    var el = document.getElementById('msgText'), note = String(el ? el.value : (STATE.msgDraft||'')).trim();
+    var now = new Date().toISOString();
+    var entry = {at:now, byId:'owner', byName:myMsgName(), type:'reassign', text:'Re-assigned to '+t.name+(note ? '. '+note : '')};
+    var attn = Object.assign({}, m.attn||{}); attn.owner = false; delete attn.system; attn[t.id] = true;
+    var patch = {toId:t.id, toName:t.name, status:'pending', acceptedAt:'', needsAnswer:false, log:(m.log||[]).concat([entry]), attn:attn,
+                 reassignedBy:'owner', reassignedFrom:'owner', reassignedAt:now};
+    STATE.msgDraft = '';
+    msgSave(m, patch).then(function(){ toast('Re-assigned to '+t.name+' — they have been notified'); });
+    render();
+  }
   function renderMsgDetail(m){
     var me = myMsgId(), isTo = m.toId===me, isFrom = m.fromId===me, part = isTo || isFrom;
     var o = m.orderId ? STATE.orders.find(function(x){ return x.id===m.orderId; }) : null;
-    var LOG_LABEL = {accept:'accepted', note:'note', reply:'reply', finish:'finished', system:'reminder'};
+    var LOG_LABEL = {accept:'accepted', note:'note', reply:'reply', finish:'finished', system:'reminder', reassign:'re-assigned'};
     var log = (m.log||[]).map(function(e){
       var mine = e.byId===me;
       return '<div class="msg-entry msg-'+e.type+(mine?' mine':'')+'">' +
@@ -6603,7 +6653,7 @@ import './platform.js?v=2026-11-11.41';
           '<button class="btn btn-sm" data-action="msg-act" data-type="note" title="Saved on this '+(m.kind==='task'?'task':'enquiry')+' — no notification">Save note</button>' +
           (m.fromId==='system' ? '' : '<button class="btn btn-sm" data-action="msg-act" data-type="reply">'+(isTo ? 'Reply to '+escapeHtml(m.fromName) : 'Send reply to '+escapeHtml(m.toName))+'</button>') +
           (isTo && m.status==='accepted' ? '<button class="btn btn-primary btn-sm" data-action="msg-act" data-type="finish">Finish</button>' : '') +
-        '</div>' +
+        '</div>' + (isOwnerRole() && m.toId==='owner' ? renderReassignRow(m) : '') +
         '<div class="hint">'+(m.kind==='profile' ? 'Accept it, add the missing details on the customer (Open customer), and press Finish. The owner sees when you accept and finish.' : m.fromId==='system' ? 'Accept it, keep notes on your follow-up, and press Finish once the customer has paid or it is sorted. The owner sees when you accept and finish.' : isTo ? (m.status==='pending' ? 'You need to accept this before you can finish it.' : '“Finish” closes it and lets '+escapeHtml(m.fromName)+' know. Anything typed in the box is sent with it.') : 'Replies notify '+escapeHtml(m.toName)+'. Notes are saved without a notification.')+'</div>' +
       '</div>';
     } else if(m.status==='finished'){
@@ -7534,6 +7584,315 @@ import './platform.js?v=2026-11-11.41';
       '<div class="panel"><div class="section-label">Allocations</div>' +
         '<div class="tbl-wrap"><table><thead><tr><th>Date</th><th>Allocation</th><th>Customer</th><th>Invoice / job</th><th class="num">Amount</th><th></th></tr></thead><tbody>'+hist+'</tbody></table></div>' +
         '<div class="hint" style="margin-top:8px;">An allocation shows on the job’s payments as “Overpayment” and reduces what the customer owes (also in the age analysis and payment reminders). Undo puts the amount back on the customer’s account.</div>' +
+      '</div>';
+  }
+
+  /* ============================ customer statements (update 42) ============================ */
+  // Customers → Send statements: every customer whose outstanding balance is over R 20.00, with all
+  // open transactions (unpaid invoices, less payments on account and deposits on jobs not invoiced yet).
+  // Statements go out as a PDF by email (Bird email, from the server) and/or WhatsApp.
+  var STMT_MIN = 20;
+  function stmtKeyOfOrder(o){ return o.customerId || ('n:'+String(o.customerName||'').trim().toLowerCase()); }
+  function stmtCustomer(key, fallbackName){
+    if(key.indexOf('n:')!==0){ var c = STATE.customers.find(function(x){ return x.id===key; }); if(c) return c; }
+    var nm = key.indexOf('n:')===0 ? key.slice(2) : '';
+    return STATE.customers.find(function(x){ return String(x.name||'').trim().toLowerCase()===nm; }) || {name:fallbackName||nm};
+  }
+  function stmtEmail(c){ return String(c.email || ((c.contacts||[]).find(function(p){ return p.email; })||{}).email || '').trim(); }
+  function stmtPhone(c){ return c.phone || ((c.contacts||[]).find(function(p){ return p.phone; })||{}).phone || ''; }
+  function statementData(asAt){
+    asAt = asAt || todayIso();
+    var map = {};
+    function acc(key, name){ return map[key] || (map[key] = {key:key, name:name, items:[], credits:[], invTotal:0, creditTotal:0, buckets:{}}); }
+    ageInvoices(asAt).forEach(function(x){
+      var a = acc(stmtKeyOfOrder(x.o), x.o.customerName||'');
+      a.items.push({date:x.date, ref:x.number, job:x.o.jobNumber||'', desc:x.o.title||'', due:x.due, days:x.days, overdue:x.overdue, amount:x.gross, paid:x.paid, credit:x.credit, balance:x.balance, bucket:x.bucket, orderId:x.o.id});
+      a.invTotal = round2(a.invTotal + x.balance);
+      a.buckets[x.bucket] = round2((a.buckets[x.bucket]||0) + x.balance);
+    });
+    // payments on account (overpayments not allocated yet)
+    onAccountReceipts().forEach(function(r){
+      if(String(r.date) > asAt) return;
+      var rem = overpayRemaining(r); if(!(rem > 0.004)) return;
+      var a = acc(r.customerId || ('n:'+String(r.customerName||'').trim().toLowerCase()), r.customerName||'');
+      a.credits.push({date:r.date, ref:r.number, desc:'Payment received — not yet allocated'+(r.bankReference?(' (ref '+r.bankReference+')'):''), amount:rem});
+      a.creditTotal = round2(a.creditTotal + rem);
+    });
+    // deposits on jobs that are not invoiced yet
+    STATE.orders.forEach(function(o){
+      if(hasInvoiceDoc(o) || isSale(o)) return;
+      var paid = round2(STATE.receipts.filter(function(r){ return r.orderId===o.id && !r.voided && String(r.date) <= asAt; }).reduce(function(s,r){ return s + (Number(r.amount)||0); }, 0));
+      if(!(paid > 0.004)) return;
+      var last = STATE.receipts.filter(function(r){ return r.orderId===o.id && !r.voided; }).map(function(r){ return r.date; }).sort().pop() || '';
+      var a = acc(stmtKeyOfOrder(o), o.customerName||'');
+      a.credits.push({date:last, ref:o.jobNumber||jobNo(o.id), desc:'Deposit received — '+(o.title||'job')+' (not invoiced yet)', amount:paid, orderId:o.id});
+      a.creditTotal = round2(a.creditTotal + paid);
+    });
+    return Object.keys(map).map(function(k){
+      var a = map[k];
+      a.items.sort(function(x,y){ return String(x.date).localeCompare(String(y.date)); });
+      a.credits.sort(function(x,y){ return String(x.date).localeCompare(String(y.date)); });
+      a.balance = round2(a.invTotal - a.creditTotal);
+      a.customer = stmtCustomer(k, a.name);
+      a.name = a.customer.name || a.name;
+      a.email = stmtEmail(a.customer); a.phone = stmtPhone(a.customer);
+      a.oldest = a.items.reduce(function(m,x){ return Math.max(m, x.days); }, 0);
+      return a;
+    }).sort(function(x,y){ return y.balance - x.balance; });
+  }
+
+  function openStatements(){
+    STATE.stmtOpen = true; STATE.stmtAsAt = todayIso();
+    var list = statementData(STATE.stmtAsAt).filter(function(a){ return a.balance > STMT_MIN; });
+    STATE.stmtSel = {}; list.forEach(function(a){ STATE.stmtSel[a.key] = true; });
+    STATE.stmtStatus = {}; STATE.stmtCollapsed = {};
+    render(); window.scrollTo(0, 0);
+  }
+
+  /* ---- PDF ---- */
+  function statementPdf(a, doc){
+    if(!window.jspdf || !window.jspdf.jsPDF){ toast('PDF tools are still loading — try again in a moment'); return null; }
+    var own = !doc;
+    if(own) doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'}); else doc.addPage();
+    var cfg = STATE.config, asAt = STATE.stmtAsAt || todayIso();
+    var L = 15, R = 195, W = R - L;
+    var MAROON = [78,9,40], INK = [43,43,43], GREY = [95,99,88], SAGE = [121,128,110], PANEL = [244,245,242], RULE = [222,222,216];
+    function color(c){ doc.setTextColor(c[0],c[1],c[2]); }
+    function font(style, size){ doc.setFont('helvetica', style); doc.setFontSize(size); }
+    var vatNo = String(cfg.businessVatNumber||'').trim();
+    function header(){
+      var logoW = 56, logoH = logoW*(358/800);
+      doc.addImage(LOGO_PDF_DATA_URL, 'PNG', L, 12, logoW, logoH);
+      font('bold', 11.5); color(MAROON); doc.text(lh('docCompanyName'), R, 18.5, {align:'right'});
+      font('normal', 8.3); color(GREY);
+      doc.text(lh('docAddress'), R, 23, {align:'right'});
+      doc.text('Tel '+lh('docTel')+'   |   WhatsApp '+lh('docWhatsapp'), R, 27.2, {align:'right'});
+      doc.text(lh('docEmail')+'   |   '+lh('docWebsite'), R, 31.4, {align:'right'});
+      doc.text('Reg No '+lh('docRegNo')+(vatNo?('   |   VAT No '+vatNo):''), R, 35.6, {align:'right'});
+      doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, 40.5, W, 0.9, 'F');
+    }
+    function footer(){
+      doc.setDrawColor(RULE[0],RULE[1],RULE[2]); doc.setLineWidth(0.25); doc.line(L, 277, R, 277);
+      font('bold', 8.5); color(MAROON); doc.text('Thank you for your business!', 105, 281.5, {align:'center'});
+      font('normal', 6.8); color(GREY);
+      doc.text([lh('docCompanyName'), 'Reg No '+lh('docRegNo')].concat(vatNo?['VAT No '+vatNo]:[]).concat([lh('docAddress')]).join('  ·  '), 105, 285, {align:'center'});
+    }
+    header();
+    var c = a.customer || {};
+    font('bold', 25); color(MAROON); doc.text('STATEMENT', L, 55);
+    font('bold', 7.2); color(SAGE); doc.text('ACCOUNT', L, 62);
+    font('bold', 10.5); color(INK); doc.text(a.name||'Customer', L, 67.5);
+    font('normal', 8.6); color(GREY);
+    var cy = 72;
+    var addr = (typeof formatAddress==='function' && c.postalAddress && addrHasData(c.postalAddress)) ? formatAddress(c.postalAddress) : '';
+    [personName(c)||'', addr, [a.phone, a.email].filter(Boolean).join('   ·   '), c.vatNumber ? 'VAT No '+c.vatNumber : ''].filter(Boolean).forEach(function(t){
+      doc.splitTextToSize(String(t).replace(/\n/g, ', '), 95).forEach(function(line){ doc.text(line, L, cy); cy += 4.2; });
+    });
+    // right info box
+    var bx = 128, by = 58;
+    doc.setFillColor(PANEL[0],PANEL[1],PANEL[2]); doc.rect(bx, by, R-bx, 26, 'F');
+    font('bold', 7.4); color(SAGE); doc.text('STATEMENT DATE', bx+4, by+6); doc.text('AMOUNT DUE', bx+4, by+16);
+    font('bold', 10); color(INK); doc.text(fullDate(asAt), R-4, by+6.3, {align:'right'});
+    font('bold', 14); color(MAROON); doc.text('R '+pdfNum(a.balance), R-4, by+17.5, {align:'right'});
+    font('normal', 7.4); color(GREY); doc.text(a.items.length+' open invoice'+(a.items.length===1?'':'s'), bx+4, by+23);
+
+    var y = Math.max(cy, by+26) + 8;
+    var cols = [L+1.5, L+21, L+42, 117, 145, 169, R-1.5];
+    function thead(){
+      doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, y, W, 7.5, 'F');
+      font('bold', 7.4); doc.setTextColor(255,255,255);
+      doc.text('DATE', cols[0], y+5); doc.text('REFERENCE', cols[1], y+5); doc.text('DESCRIPTION', cols[2], y+5);
+      doc.text('DUE', cols[3], y+5); doc.text('AMOUNT', cols[4], y+5, {align:'right'}); doc.text('PAID / CR', cols[5], y+5, {align:'right'}); doc.text('BALANCE', cols[6], y+5, {align:'right'});
+      y += 7.5;
+    }
+    function ensure(h){ if(y + h > 268){ footer(); doc.addPage(); header(); y = 50; thead(); } }
+    thead();
+    var running = 0, odd = false;
+    function row(vals, opts){
+      ensure(6.6);
+      if(odd){ doc.setFillColor(248,247,244); doc.rect(L, y, W, 6.6, 'F'); } odd = !odd;
+      font('normal', 8.2); color(opts && opts.credit ? SAGE : INK);
+      doc.text(vals[0], cols[0], y+4.5); doc.text(vals[1], cols[1], y+4.5);
+      doc.text(doc.splitTextToSize(vals[2], (vals[3] ? cols[3] : cols[4]-22)-cols[2]-3)[0] || '', cols[2], y+4.5);
+      color(opts && opts.late ? [155,44,44] : INK); doc.text(vals[3], cols[3], y+4.5); color(opts && opts.credit ? SAGE : INK);
+      doc.text(vals[4], cols[4], y+4.5, {align:'right'}); doc.text(vals[5], cols[5], y+4.5, {align:'right'});
+      font('bold', 8.2); doc.text(vals[6], cols[6], y+4.5, {align:'right'});
+      doc.setDrawColor(RULE[0],RULE[1],RULE[2]); doc.setLineWidth(0.12); doc.line(L, y+6.6, R, y+6.6);
+      y += 6.6;
+    }
+    a.items.forEach(function(x){
+      running = round2(running + x.balance);
+      row([shortDateYr(x.date), x.ref, (x.desc||'') + (x.job?(' ('+x.job+')'):''), shortDateYr(x.due), pdfNum(x.amount), pdfNum(round2(x.paid + x.credit)), pdfNum(running)], {late:x.overdue>0});
+    });
+    a.credits.forEach(function(x){
+      running = round2(running - x.amount);
+      row([shortDateYr(x.date), x.ref, x.desc, '', '', '-'+pdfNum(x.amount), pdfNum(running)], {credit:true});
+    });
+    // totals + ageing
+    ensure(40);
+    y += 4;
+    var bw = W / 6, labels = AGE_BUCKETS.map(function(b){ return b.key==='b0' ? 'Current' : b.label; }).concat(['Total due']);
+    var vals = AGE_BUCKETS.map(function(b){ return a.buckets[b.key]||0; }).concat([a.balance]);
+    labels.forEach(function(lb, i){
+      var x = L + i*bw;
+      doc.setFillColor(i===5 ? MAROON[0] : PANEL[0], i===5 ? MAROON[1] : PANEL[1], i===5 ? MAROON[2] : PANEL[2]); doc.rect(x+0.5, y, bw-1, 15, 'F');
+      font('bold', 6.8); if(i===5) doc.setTextColor(255,255,255); else color(SAGE); doc.text(lb.toUpperCase(), x+bw/2, y+5, {align:'center'});
+      font('bold', 9.5); if(i===5) doc.setTextColor(255,255,255); else color(INK); doc.text(pdfNum(vals[i]), x+bw/2, y+11.3, {align:'center'});
+    });
+    y += 18;
+    if(a.creditTotal > 0.004){ font('normal', 7.8); color(GREY); doc.text('Ageing shows unpaid invoices; '+pdfNum(a.creditTotal)+' received (on account / deposits) is deducted in the total due.', L, y); y += 6; }
+    // banking
+    var bank = [['Bank', cfg.bankName||''], ['Account Name', lh('docCompanyName')], ['Account Type', lh('bankAccountType')], ['Account Number', cfg.bankAccountNumber||''], ['Branch Code', cfg.bankBranchCode||'']].filter(function(r){ return r[1]; });
+    var bh = 10 + bank.length*4.3 + 2;
+    ensure(bh + 4);
+    doc.setFillColor(PANEL[0],PANEL[1],PANEL[2]); doc.rect(L, y, 90, bh, 'F');
+    doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, y, 1.2, bh, 'F');
+    font('bold', 7.4); color(MAROON); doc.text('BANKING DETAILS', L+4.5, y+5.5);
+    var ry = y + 10.5;
+    bank.forEach(function(r){ font('bold', 8); color([140,140,132]); doc.text(r[0], L+4.5, ry); font('normal', 8.4); color(INK); doc.text(String(r[1]), L+32, ry); ry += 4.3; });
+    font('normal', 8.2); color(GREY);
+    doc.text(doc.splitTextToSize('Please use the invoice number as the payment reference and send proof of payment to '+lh('docEmail')+'. If you have already paid, thank you — please let us know so we can allocate it.', R - 112), 112, y+6);
+    footer();
+    if(!own) return null;
+    return {doc:doc, blob:doc.output('blob'), filename:'DsignX-Statement-'+String(a.name||'customer').replace(/[^A-Za-z0-9]+/g,'-').replace(/^-|-$/g,'')+'-'+asAt+'.pdf'};
+  }
+  function shortDateYr(iso){ if(!iso) return ''; var p = String(iso).slice(0,10).split('-'); return p.length===3 ? p[2]+'/'+p[1]+'/'+p[0] : ''; }
+  function stmtFind(key){ return statementData(STATE.stmtAsAt).find(function(a){ return a.key===key; }); }
+  function saveBlob(blob, name){ if(STATE.downloads){ STATE.downloads.save({filename:name, data:blob}).catch(function(err){ if(!err||err.code!=='declined') fallbackDownload(blob, name); }); } else fallbackDownload(blob, name); }
+  function downloadStatement(key){ var a = stmtFind(key); if(!a) return; var b = statementPdf(a); if(b) saveBlob(b.blob, b.filename); }
+  function downloadSelectedStatements(){
+    var list = statementData(STATE.stmtAsAt).filter(function(a){ return STATE.stmtSel[a.key]; });
+    if(!list.length){ toast('Select at least one customer'); return; }
+    var first = statementPdf(list[0]); if(!first) return;
+    list.slice(1).forEach(function(a){ statementPdf(a, first.doc); });
+    saveBlob(first.doc.output('blob'), 'DsignX-Statements-'+STATE.stmtAsAt+'.pdf');
+  }
+
+  /* ---- sending ---- */
+  function blobToBase64(blob){ return blobToDataUri(blob, 'application/pdf').then(function(u){ return String(u).slice(String(u).indexOf(',')+1); }); }
+  function setStmtStatus(key, via, val){ var s = STATE.stmtStatus[key] = STATE.stmtStatus[key] || {}; s[via] = val; render(); }
+  function recordStatementSent(a, via){
+    if(!a.customer || !a.customer.id || !(STATE.isLive && STATE.db)) { if(a.customer) { a.customer.lastStatementAt = new Date().toISOString(); a.customer.lastStatementVia = via; } return; }
+    var who = currentTeamMember();
+    STATE.db.doc('customers/'+a.customer.id).update({lastStatementAt:new Date().toISOString(), lastStatementVia:via, lastStatementBalance:a.balance, lastStatementBy: who ? who.name : 'Owner'}).catch(function(){});
+  }
+  function emailStatement(a){
+    if(!a.email){ setStmtStatus(a.key, 'email', {state:'skip', text:'No email address'}); return Promise.resolve(); }
+    if(!STATE.mcp){ setStmtStatus(a.key, 'email', {state:'error', text:'Email needs the live app'}); return Promise.resolve(); }
+    var b = statementPdf(a); if(!b) return Promise.resolve();
+    setStmtStatus(a.key, 'email', {state:'busy', text:'Sending…'});
+    var first = (a.customer && a.customer.firstName) || a.name;
+    var html = '<p>Dear '+escapeHtml(first)+',</p>' +
+      '<p>Please find attached your statement from DsignX as at '+escapeHtml(fullDate(STATE.stmtAsAt))+'.</p>' +
+      '<p><strong>Amount due: '+escapeHtml(money(a.balance))+'</strong> ('+a.items.length+' open invoice'+(a.items.length===1?'':'s')+').</p>' +
+      '<p>Please use the invoice number as your payment reference'+(STATE.config.bankName ? (' — '+escapeHtml(STATE.config.bankName)+', account '+escapeHtml(STATE.config.bankAccountNumber||'')+', branch '+escapeHtml(STATE.config.bankBranchCode||'')) : '')+'. If you have already paid, thank you — please send us the proof of payment.</p>' +
+      '<p>Kind regards,<br>DsignX<br>'+escapeHtml(lh('docTel'))+' &middot; '+escapeHtml(lh('docEmail'))+'</p>';
+    var text = 'Dear '+first+',\n\nPlease find attached your statement from DsignX as at '+fullDate(STATE.stmtAsAt)+'.\nAmount due: '+money(a.balance)+'.\nPlease use the invoice number as your payment reference. If you have already paid, thank you — please send us the proof of payment.\n\nKind regards,\nDsignX';
+    return blobToBase64(b.blob).then(function(b64){
+      return STATE.mcp.callTool(WA_SERVER, 'email_send', {
+        to: a.email, subject: 'Statement of account — DsignX — '+fullDate(STATE.stmtAsAt), html: html, text: text,
+        reply_to: lh('docEmail'), attachments: [{filename: b.filename, content: b64, content_type: 'application/pdf'}],
+        idempotency_key: 'stmt-'+a.key+'-'+STATE.stmtAsAt+'-'+Math.round(a.balance*100)
+      });
+    }).then(function(){ setStmtStatus(a.key, 'email', {state:'ok', text:'Emailed to '+a.email}); recordStatementSent(a, 'email'); })
+      .catch(function(err){ setStmtStatus(a.key, 'email', {state:'error', text: (err && (err.message || (err.details && err.details.message))) || 'Email failed'}); });
+  }
+  function whatsappStatement(a){
+    var phone = a.phone && waPhone(a.phone);
+    if(!phone){ setStmtStatus(a.key, 'wa', {state:'skip', text:'No cellphone number'}); return Promise.resolve(); }
+    if(!STATE.mcp){ setStmtStatus(a.key, 'wa', {state:'error', text:'WhatsApp needs the live app'}); return Promise.resolve(); }
+    var b = statementPdf(a); if(!b) return Promise.resolve();
+    setStmtStatus(a.key, 'wa', {state:'busy', text:'Sending…'});
+    var to = waTo(a.phone), key = 'stmt-'+a.key.replace(/[^A-Za-z0-9]/g,'').slice(0,40)+'-'+STATE.stmtAsAt;
+    var first = (a.customer && a.customer.firstName) || a.name;
+    return STATE.mcp.callTool(WA_SERVER, 'whatsapp_list', {from:to, direction:'inbound', limit:1}).then(function(res){
+      var last = (((res && res.payload) || {}).data || [])[0];
+      var open = last && (Date.now() - new Date(last.created_at).getTime()) < 24*3600*1000;
+      if(!open){
+        // outside WhatsApp's 24-hour window only an approved template is delivered
+        return waSendCall(a.phone, {template:{slug:'dsignx_statement', language:'en', components:[{type:'body', parameters:[
+          {type:'text', name:'customer_name', text:String(first)}, {type:'text', name:'amount', text:money(a.balance)}, {type:'text', name:'statement_date', text:fullDate(STATE.stmtAsAt)}]}]}}, key+'-tpl')
+          .then(function(){ setStmtStatus(a.key, 'wa', {state:'ok', text:'Statement notice sent (template) — send the PDF when they reply'}); recordStatementSent(a, 'whatsapp-template'); });
+      }
+      return blobToDataUri(b.blob, 'application/pdf').then(function(uri){
+        return STATE.mcp.callTool(FILE_SERVER, 'upload-asset', {resource_type:'raw', upload_request:{file:uri, public_id:cloudSlug(b.filename), tags:[FILE_TAG], overwrite:false}});
+      }).then(function(up){
+        var url = ((up && up.payload) || {}).secure_url; if(!url) throw {message:'Could not upload the PDF'};
+        return waSendCall(a.phone, {document:{url:url, filename:b.filename, caption:'Hi '+first+', here is your DsignX statement as at '+fullDate(STATE.stmtAsAt)+'. Amount due: '+money(a.balance)+'. Please use the invoice number as your payment reference.'}}, key);
+      }).then(function(){ setStmtStatus(a.key, 'wa', {state:'ok', text:'Sent on WhatsApp'}); recordStatementSent(a, 'whatsapp'); });
+    }).catch(function(err){ setStmtStatus(a.key, 'wa', {state:'error', text: waErrorNotice ? waErrorNotice(err).text : 'WhatsApp failed'}); });
+  }
+  function sendSelectedStatements(via){
+    var list = statementData(STATE.stmtAsAt).filter(function(a){ return STATE.stmtSel[a.key] && a.balance > STMT_MIN; });
+    if(!list.length){ toast('Select at least one customer'); return; }
+    var n = list.filter(function(a){ return via==='email' ? a.email : (a.phone && waPhone(a.phone)); }).length;
+    if(!n){ toast(via==='email' ? 'None of the selected customers has an email address' : 'None of the selected customers has a cellphone number'); return; }
+    if(!confirm('Send '+n+' statement'+(n===1?'':'s')+' by '+(via==='email'?'email':'WhatsApp')+'?'+(list.length>n ? '\n\n'+(list.length-n)+' selected customer'+(list.length-n===1?' has':'s have')+' no '+(via==='email'?'email address':'cellphone number')+' and will be skipped.' : ''))) return;
+    STATE.stmtBusy = true; render();
+    var i = 0;
+    (function next(){
+      if(i >= list.length){ STATE.stmtBusy = false; render(); toast('Statements sent — check the status column'); return; }
+      var a = list[i++];
+      (via==='email' ? emailStatement(a) : whatsappStatement(a)).then(next, next);
+    })();
+  }
+
+  /* ---- screen ---- */
+  function stmtStatusHtml(s){
+    if(!s) return '';
+    return ['email','wa'].filter(function(k){ return s[k]; }).map(function(k){
+      var v = s[k], cls = v.state==='ok' ? 'pay-paid' : (v.state==='error' ? 'pay-unpaid' : (v.state==='busy' ? 'pay-part' : ''));
+      return '<div class="q-date"><span class="pay-chip '+cls+'">'+(k==='email'?'Email':'WhatsApp')+'</span> '+escapeHtml(v.text)+'</div>';
+    }).join('');
+  }
+  function renderStatementsView(){
+    var all = statementData(STATE.stmtAsAt), list = all.filter(function(a){ return a.balance > STMT_MIN; });
+    var sel = list.filter(function(a){ return STATE.stmtSel[a.key]; });
+    var tot = round2(sel.reduce(function(s,a){ return s + a.balance; }, 0));
+    var noEmail = sel.filter(function(a){ return !a.email; }).length, noPhone = sel.filter(function(a){ return !(a.phone && waPhone(a.phone)); }).length;
+    var allSel = list.length && sel.length===list.length;
+    var rows = list.length ? list.map(function(a){
+      var on = !!STATE.stmtSel[a.key], open = !STATE.stmtCollapsed[a.key];
+      var lastSent = a.customer && a.customer.lastStatementAt ? '<div class="q-date">Last statement '+shortDate(String(a.customer.lastStatementAt).slice(0,10))+' ('+escapeHtml(String(a.customer.lastStatementVia||'').replace('-template',' notice'))+')</div>' : '';
+      var tx = a.items.map(function(x){
+        return '<tr><td>'+shortDate(x.date)+'</td><td class="mono row-btn" data-action="open-order" data-id="'+x.orderId+'">'+escapeHtml(x.ref)+'</td><td>'+escapeHtml(x.desc||'')+(x.job?' <span class="q-date">'+escapeHtml(x.job)+'</span>':'')+'</td>' +
+          '<td'+(x.overdue>0?' style="color:var(--critical);"':'')+'>'+shortDate(x.due)+(x.overdue>0?' <span class="q-date">('+x.overdue+'d late)</span>':'')+'</td>' +
+          '<td class="num">'+money(x.amount)+'</td><td class="num">'+(x.paid+x.credit>0.004?money(round2(x.paid+x.credit)):'—')+'</td><td class="num"><strong>'+money(x.balance)+'</strong></td></tr>';
+      }).concat(a.credits.map(function(x){
+        return '<tr class="stmt-credit"><td>'+shortDate(x.date)+'</td><td class="mono">'+escapeHtml(x.ref)+'</td><td>'+escapeHtml(x.desc)+'</td><td></td><td class="num"></td><td class="num"></td><td class="num">−'+money(x.amount)+'</td></tr>';
+      })).join('');
+      return '<tr class="stmt-cust'+(on?'':' stmt-off')+'">' +
+          '<td style="text-align:center;"><input type="checkbox" data-stmt-sel="'+escapeHtml(a.key)+'"'+(on?' checked':'')+' aria-label="Include '+escapeHtml(a.name)+'"></td>' +
+          '<td><button class="linklike" data-action="stmt-toggle" data-key="'+escapeHtml(a.key)+'">'+(open?'▾':'▸')+' <strong>'+escapeHtml(a.name)+'</strong></button>' +
+            '<div class="q-date">'+(a.email ? escapeHtml(a.email) : '<span style="color:var(--warning);">No email</span>')+' &middot; '+(a.phone ? escapeHtml(a.phone) : '<span style="color:var(--warning);">No cellphone</span>')+'</div>'+lastSent+stmtStatusHtml(STATE.stmtStatus[a.key])+'</td>' +
+          '<td class="num">'+a.items.length+(a.credits.length?' <span class="q-date">+'+a.credits.length+' cr</span>':'')+'</td>' +
+          '<td class="num">'+(a.oldest ? a.oldest+' days' : '—')+'</td>' +
+          '<td class="num"><strong>'+money(a.balance)+'</strong></td>' +
+          '<td style="white-space:nowrap; text-align:right;"><button class="btn btn-ghost btn-sm" data-action="stmt-pdf" data-key="'+escapeHtml(a.key)+'">PDF</button>' +
+            '<button class="btn btn-ghost btn-sm" data-action="stmt-email" data-key="'+escapeHtml(a.key)+'"'+(a.email && !STATE.stmtBusy?'':' disabled')+'>Email</button>' +
+            '<button class="btn btn-ghost btn-sm" data-action="stmt-wa" data-key="'+escapeHtml(a.key)+'"'+(a.phone && !STATE.stmtBusy?'':' disabled')+'>WhatsApp</button></td></tr>' +
+        (open ? '<tr class="stmt-tx-row"><td></td><td colspan="5"><table class="stmt-tx"><thead><tr><th>Date</th><th>Reference</th><th>Description</th><th>Due</th><th class="num">Amount</th><th class="num">Paid / credited</th><th class="num">Balance</th></tr></thead><tbody>'+tx+
+          '<tr class="stmt-total"><td colspan="6">Amount due'+(a.creditTotal>0.004?' (invoices '+money(a.invTotal)+' less '+money(a.creditTotal)+' received)':'')+'</td><td class="num"><strong>'+money(a.balance)+'</strong></td></tr></tbody></table></td></tr>' : '');
+    }).join('') : '<tr><td colspan="6" class="empty-note">No customer owes more than '+money(STMT_MIN)+'.</td></tr>';
+    return '<div class="topline"><div><h1>Send statements</h1><div class="sub">Customers whose outstanding balance is more than '+money(STMT_MIN)+' &middot; all open transactions</div></div>' +
+        '<button class="btn btn-ghost" data-action="stmt-close">&larr; Back to customers</button></div>' +
+      '<div class="tiles">' +
+        tile('Customers selected', sel.length+' of '+list.length, list.length ? 'Balance over '+money(STMT_MIN) : 'Nothing to send') +
+        tile('Total outstanding', money(tot), 'Selected customers') +
+        tile('Statement date', fullDate(STATE.stmtAsAt), 'Balances as at today') +
+      '</div>' +
+      '<div class="panel">' +
+        '<div class="stmt-bar">' +
+          '<label class="count-all"><input type="checkbox" data-action="stmt-all"'+(allSel?' checked':'')+(list.length?'':' disabled')+'> Select all</label>' +
+          '<button class="btn btn-ghost btn-sm" data-action="stmt-expand" data-v="'+(Object.keys(STATE.stmtCollapsed).length ? '1' : '0')+'">'+(Object.keys(STATE.stmtCollapsed).length ? 'Show all transactions' : 'Hide transactions')+'</button>' +
+          '<span style="flex:1;"></span>' +
+          '<button class="btn btn-sm" data-action="stmt-dl"'+(sel.length?'':' disabled')+'>Download PDFs</button>' +
+          '<button class="btn btn-sm" data-action="stmt-send-wa"'+(sel.length && !STATE.stmtBusy?'':' disabled')+'>WhatsApp selected</button>' +
+          '<button class="btn btn-primary btn-sm" data-action="stmt-send-email"'+(sel.length && !STATE.stmtBusy?'':' disabled')+'>'+(STATE.stmtBusy?'Sending…':'Email selected')+'</button>' +
+        '</div>' +
+        ((noEmail || noPhone) && sel.length ? '<div class="hint" style="margin:0 0 8px;">'+(noEmail? noEmail+' selected without an email address':'')+(noEmail&&noPhone?' &middot; ':'')+(noPhone? noPhone+' without a cellphone number':'')+' — they are skipped for that channel. Use Download PDFs for them.</div>' : '') +
+        '<div class="tbl-wrap"><table class="stmt-table"><thead><tr><th style="width:34px;"></th><th>Customer</th><th class="num">Open items</th><th class="num">Oldest</th><th class="num">Balance</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
+        '<div class="hint" style="margin-top:10px;">The balance is unpaid invoices less payments received on account and deposits on jobs not invoiced yet. Emails go out from the DsignX email address set up in Bird; WhatsApp sends the PDF if the customer messaged you in the last 24 hours, otherwise the approved <em>dsignx_statement</em> template asks them to reply first.</div>' +
       '</div>';
   }
 
