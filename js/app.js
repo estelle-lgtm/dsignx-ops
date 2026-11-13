@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-13.50';
+import './platform.js?v=2026-11-13.51';
 
 (function(){
   "use strict";
@@ -1860,7 +1860,7 @@ import './platform.js?v=2026-11-13.50';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-13.50</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-13.51</span></div>' +
       '</div>'
     );
   }
@@ -3004,7 +3004,10 @@ import './platform.js?v=2026-11-13.50';
       return '<div class="hint" style="margin-top:8px; color:var(--critical);">Could not check — '+escapeHtml(waErrorNotice(c.error).text)+'</div>';
     }
     var k = c.key, keyHtml = '';
-    if(k){
+    if(k && k.pending){ keyHtml = '<br><br><strong>Bird key in use:</strong> checking…'; }
+    else if(k && k.old){ keyHtml = '<br><br><strong>Bird key in use:</strong> <span style="color:var(--warning);">the server does not have the key check yet — run <span class="mono">firebase deploy --only functions</span>, wait for “Deploy complete”, then check again.</span>'; }
+    else if(k && k.failed){ keyHtml = '<br><br><strong>Bird key in use:</strong> <span style="color:var(--critical);">could not check — '+escapeHtml(k.msg)+'</span>'; }
+    else if(k){
       var res = function(x){ return !x ? '' : (x.ok ? '<span style="color:var(--success);">accepted</span>' : '<span style="color:var(--critical);">refused'+(x.error?' — '+escapeHtml(x.error):(' (HTTP '+x.status+')'))+'</span>'); };
       keyHtml = '<br><br><strong>Bird key in use:</strong> '+(k.prefix ? '<span class="mono">'+escapeHtml(k.prefix)+'…</span> ('+k.length+' characters'+(k.trimmed ? ', '+k.storedLength+' as saved — extra characters were removed' : '')+')' : '<span style="color:var(--critical);">none found — the saved value does not look like a Bird key (bk_…)</span>') +
         (k.whatsapp ? '<br>WhatsApp: '+res(k.whatsapp) : '') + (k.email ? '<br>Email: '+res(k.email) : '') +
@@ -4383,10 +4386,14 @@ import './platform.js?v=2026-11-13.50';
       STATE.waMediaCheck = {status:'done', rows:rows};
       render();
       // Owner: ask the server whether Bird accepts the key for WhatsApp and for email (update 50).
-      if(isOwnerRole()) STATE.mcp.callTool('_status', 'status', {diagnose:true}).then(function(r){
-        var k = r && r.payload && r.payload.birdKey; if(!k || !STATE.waMediaCheck) return;
-        STATE.waMediaCheck.key = k; render();
-      }).catch(function(){});
+      if(isOwnerRole()){
+        STATE.waMediaCheck.key = {pending:true}; render();
+        STATE.mcp.callTool('_status', 'status', {diagnose:true}).then(function(r){
+          if(!STATE.waMediaCheck) return;
+          var k = r && r.payload && r.payload.birdKey;
+          STATE.waMediaCheck.key = k || {old:true}; render();
+        }).catch(function(e){ if(STATE.waMediaCheck){ STATE.waMediaCheck.key = {failed:true, msg:(e && e.message)||''}; render(); } });
+      }
     }).catch(function(err){
       STATE.waMediaCheck = {status:'error', error:err};
       render();
