@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-13.46';
+import './platform.js?v=2026-11-13.47';
 
 (function(){
   "use strict";
@@ -80,7 +80,7 @@ import './platform.js?v=2026-11-13.46';
     currentUserId:null,
     inviteMemberId:null, inviteDraftText:'', inviteCode:null,
     reportFrom:'', reportTo:'', reportOpenMember:null,
-    invExportFrom:'', invExportTo:'', invExportStatus:'Draft',
+    invExportFrom:'', invExportTo:'', invExportStatus:'Draft', invExportNewOnly:true,
     custExportFrom:'', custExportTo:'', custExportMode:'added',
     customerForm:null,
     products:[], productForm:null, productImport:null, productQuery:'',
@@ -1860,7 +1860,7 @@ import './platform.js?v=2026-11-13.46';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-13.46</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-13.47</span></div>' +
       '</div>'
     );
   }
@@ -2405,9 +2405,32 @@ import './platform.js?v=2026-11-13.46';
     });
   }
 
+  /* ---- Xero export tracking (update 47): Xero refuses an invoice number it already has ("Invoice # must be unique") ---- */
+  function xeroExported(o){ return !!o.xeroExportedAt; }
+  function markXeroExported(list, filename){
+    var now = new Date().toISOString();
+    return updateDocs(list.map(function(o){ return {path:'orders/'+o.id, data:{xeroExportedAt:now, xeroExportFile:filename||''}}; }))
+      .then(function(){ render(); }).catch(function(){ toast('Exported, but could not record it — check your connection'); });
+  }
+  function clearXeroExported(list){
+    return updateDocs(list.map(function(o){ return {path:'orders/'+o.id, data:{xeroExportedAt:'', xeroExportFile:''}}; })).then(function(){ render(); });
+  }
+  // Two different jobs carrying the same invoice number would also be refused by Xero.
+  function duplicateInvoiceNumbers(list){
+    var by = {}, dup = [];
+    issuedInvoices().forEach(function(o){ var n = o.invoiceNumber || jobNo(o.id); (by[n] = by[n] || []).push(o); });
+    list.forEach(function(o){ var n = o.invoiceNumber || jobNo(o.id); if(by[n] && by[n].length > 1 && dup.indexOf(n) < 0) dup.push(n); });
+    return dup;
+  }
+  function invoicesToExport(){
+    var all = invoicesInRange();
+    return STATE.invExportNewOnly === false ? all : all.filter(function(o){ return !xeroExported(o); });
+  }
   function exportInvoicesXero(){
-    var list = invoicesInRange();
-    if(!list.length){ toast('No invoices in that date range'); return; }
+    var list = invoicesToExport();
+    if(!list.length){ toast(invoicesInRange().length ? 'All invoices in that range were exported to Xero before' : 'No invoices in that date range'); return; }
+    var dupN = duplicateInvoiceNumbers(list);
+    if(dupN.length && !confirm('These invoice numbers are used on more than one job, so Xero will refuse the second one: '+dupN.join(', ')+'.\n\nExport anyway?')) return;
     var trows = [];
     list.forEach(function(o){ xeroRowsFor(o).forEach(function(r){ trows.push(xeroTemplateRow(r, 1)); }); });
     var csv = tplCsv(trows);
@@ -2415,7 +2438,7 @@ import './platform.js?v=2026-11-13.46';
     var rangeTag = (STATE.invExportFrom||STATE.invExportTo) ? ((STATE.invExportFrom||'start')+'_to_'+(STATE.invExportTo||todayIso())+'_') : '';
     var dts = list.map(invoiceDateOf).sort();
     var filename = 'DsignX_SalesInvoices_Xero_Import_'+fileRangeTag(STATE.invExportFrom||dts[0], STATE.invExportTo||dts[dts.length-1])+'.csv';
-    var done = function(){ toast('Exported '+list.length+' invoice'+(list.length===1?'':'s')); };
+    var done = function(){ markXeroExported(list, filename); toast('Exported '+list.length+' invoice'+(list.length===1?'':'s')+' — marked as sent to Xero'); };
     if(STATE.downloads){
       STATE.downloads.save({filename:filename, data:csv}).then(done).catch(function(e){
         if(e && e.code==='declined'){ toast('Export cancelled'); } else { fallbackDownload(new Blob([csv],{type:'text/csv'}), filename); done(); }
@@ -2603,7 +2626,9 @@ import './platform.js?v=2026-11-13.46';
   }
 
   function renderInvoiceExportPanel(){
-    var list = invoicesInRange();
+    var inRange = invoicesInRange(), list = invoicesToExport();
+    var before = inRange.filter(xeroExported), notYet = inRange.filter(function(o){ return !xeroExported(o); });
+    var dupN = duplicateInvoiceNumbers(list);
     var lineCount = 0, grand = 0;
     list.forEach(function(o){ var rows = xeroRowsFor(o); lineCount += rows.length; grand += Number(rows[0] ? rows[0].Total : 0); });
     var statusOpts = ['Draft','Awaiting Approval','Awaiting Payment'].map(function(v){ return '<option'+(STATE.invExportStatus===v?' selected':'')+'>'+v+'</option>'; }).join('');
@@ -2627,8 +2652,14 @@ import './platform.js?v=2026-11-13.46';
           '<div class="field"><label for="cfgXeroTaxNoVat">Tax type (no VAT)</label><input type="text" id="cfgXeroTaxNoVat" value="'+escapeHtml(STATE.config.xeroTaxNoVat||'No VAT')+'"></div>' +
         '</div>' +
         '<div class="field"><label for="cfgXeroTracking">Tracking category name</label><input type="text" id="cfgXeroTracking" style="max-width:220px;" value="'+escapeHtml(STATE.config.xeroTrackingName||'Sales Rep')+'"><div class="hint">Account code ('+escapeHtml(STATE.config.accountCode||'200')+') and currency come from Xero export defaults on this page.</div></div>' +
+        '<label style="display:flex; gap:8px; align-items:center; margin:2px 0 6px; cursor:pointer;"><input type="checkbox" id="invExNewOnly" style="width:auto;"'+(STATE.invExportNewOnly!==false?' checked':'')+'> Leave out invoices already exported to Xero</label>' +
+        '<div class="hint" style="margin:0 0 10px;">'+(before.length ? ('<strong>'+before.length+'</strong> invoice'+(before.length===1?' in this range was':'s in this range were')+' exported before'+(STATE.invExportNewOnly!==false ? ' and '+(before.length===1?'is':'are')+' left out' : ' — <span style="color:var(--critical);">Xero will refuse '+(before.length===1?'it':'them')+' (“Invoice # must be unique”)</span>')+'. ') : '') +
+          'Xero refuses an invoice number it already has, so each invoice should only be exported once.' +
+          (notYet.length && isOwnerRole() ? ' Already imported some of these into Xero before this tracking existed? <a href="#" data-action="xero-mark-range">Mark the '+notYet.length+' in this range as already in Xero</a>.' : '') +
+          (before.length && isOwnerRole() ? ' <a href="#" data-action="xero-unmark-range">Clear the mark on the '+before.length+'</a> (only if they are not in Xero).' : '') + '</div>' +
+        (dupN.length ? '<div class="hint" style="color:var(--critical); margin:0 0 10px;">Invoice number'+(dupN.length===1?'':'s')+' used on more than one job: <strong>'+escapeHtml(dupN.join(', '))+'</strong> — Xero will refuse the second one.</div>' : '') +
         '<div style="background:var(--surface-2); border-radius:var(--radius-s); padding:10px 12px; font-size:12.5px; color:var(--ink-soft); margin-bottom:12px;">' +
-          (list.length ? ('<strong style="color:var(--ink);">'+list.length+' invoice'+(list.length===1?'':'s')+'</strong> &middot; '+lineCount+' line'+(lineCount===1?'':'s')+' &middot; '+money(round2(grand))+' incl. VAT &middot; '+shortDate(dates[0])+' – '+shortDate(dates[dates.length-1])) : ((STATE.invExportFrom||STATE.invExportTo) ? ('No invoices dated '+(STATE.invExportFrom?fullDate(STATE.invExportFrom):'the start')+' – '+(STATE.invExportTo?fullDate(STATE.invExportTo):'today')+'.') : 'No invoices issued yet.')) +
+          (list.length ? ('<strong style="color:var(--ink);">'+list.length+' invoice'+(list.length===1?'':'s')+'</strong> &middot; '+lineCount+' line'+(lineCount===1?'':'s')+' &middot; '+money(round2(grand))+' incl. VAT &middot; '+shortDate(dates[0])+' – '+shortDate(dates[dates.length-1])) : (before.length ? ('Nothing new to export — all '+before.length+' invoice'+(before.length===1?'':'s')+' in this range '+(before.length===1?'is':'are')+' already in Xero.') : (STATE.invExportFrom||STATE.invExportTo) ? ('No invoices dated '+(STATE.invExportFrom?fullDate(STATE.invExportFrom):'the start')+' – '+(STATE.invExportTo?fullDate(STATE.invExportTo):'today')+'.') : 'No invoices issued yet.')) +
         '</div>' +
         '<div style="display:flex; gap:8px; flex-wrap:wrap;">' +
           '<button class="btn btn-primary btn-sm" data-action="export-invoices-xero"'+(list.length?'':' disabled')+'>Download CSV</button>' +
@@ -2925,7 +2956,7 @@ import './platform.js?v=2026-11-13.46';
           '<td style="white-space:nowrap;">'+(o.quoteOnly ? '<span style="color:var(--ink-faint);">—</span>' : (orderDateOf(o) ? fullDate(orderDateOf(o)) : ''))+'</td>' +
           '<td class="row-btn" data-action="'+(o.quoteOnly?'open-quote':'open-order')+'" data-id="'+o.id+'">'+escapeHtml(o.title)+(o.quoteOnly ? ' <span class="pay-chip quote-only-chip">Quote only</span>' : (o.jobNumber ? '<div class="mono" style="font-size:11px; color:var(--ink-faint);">'+escapeHtml(o.jobNumber)+'</div>' : ''))+'</td>' +
           '<td class="num">'+money(o.quoteAmount||0)+'</td>' +
-          '<td>'+(o.quoteOnly ? '<button class="btn btn-ghost btn-sm" data-action="quote-convert" data-id="'+o.id+'">Convert to job</button>' : o.invoiced ? ('<span class="status-chip status-invoiced">'+escapeHtml(o.invoiceNumber||'Invoiced')+'</span>'+qDate(o.invoiceGeneratedAt||o.invoicedAt)) : '<button class="btn btn-ghost btn-sm" data-action="open-invoice" data-id="'+o.id+'">Generate</button>')+'</td>' +
+          '<td>'+(o.quoteOnly ? '<button class="btn btn-ghost btn-sm" data-action="quote-convert" data-id="'+o.id+'">Convert to job</button>' : o.invoiced ? ('<span class="status-chip status-invoiced">'+escapeHtml(o.invoiceNumber||'Invoiced')+'</span>'+qDate(o.invoiceGeneratedAt||o.invoicedAt)+(xeroExported(o)?'<div class="q-date" title="'+escapeHtml(o.xeroExportFile||'')+'">In Xero file '+shortDate(String(o.xeroExportedAt).slice(0,10))+'</div>':'')) : '<button class="btn btn-ghost btn-sm" data-action="open-invoice" data-id="'+o.id+'">Generate</button>')+'</td>' +
           '<td>'+shortDate(o.dueDate)+'</td>' +
           '<td>'+(o.quoteNumber ? ('<span class="mono" style="font-size:11.5px;">'+escapeHtml(o.quoteNumber)+'</span>'+qDate(o.quoteGeneratedAt)) : '<button class="btn btn-ghost btn-sm" data-action="open-quote" data-id="'+o.id+'">Generate</button>')+'</td>' +
           '<td>'+(o.quoteOnly ? '<span style="color:var(--ink-faint);">—</span>' : '')+(o.quoteOnly ? '' : (function(){ var st = payStatus(o); return '<span class="pay-chip pay-'+st.key+'">'+st.label+'</span>'+payDatesHtml(o); })())+'</td>' +
@@ -3419,6 +3450,14 @@ import './platform.js?v=2026-11-13.46';
     if(STATE.quoteShownIds) ids = ids.filter(function(k){ return STATE.quoteShownIds.indexOf(k) >= 0; });
     var rows = ids.map(function(id){ return STATE.orders.find(function(o){ return o.id===id; }); }).filter(Boolean);
     if(!rows.length){ toast('Select at least one job first'); return; }
+    var sentBefore = rows.filter(xeroExported);
+    if(sentBefore.length){
+      var leaveOut = confirm(sentBefore.length+' of the selected invoice'+(sentBefore.length===1?' was':'s were')+' exported to Xero before ('+sentBefore.slice(0,8).map(function(o){ return o.invoiceNumber||jobNo(o.id); }).join(', ')+(sentBefore.length>8?'…':'')+'). Xero will refuse '+(sentBefore.length===1?'it':'them')+' (“Invoice # must be unique”).\n\nOK = leave '+(sentBefore.length===1?'it':'them')+' out (recommended)\nCancel = include '+(sentBefore.length===1?'it':'them')+' anyway');
+      if(leaveOut) rows = rows.filter(function(o){ return !xeroExported(o); });
+      if(!rows.length){ toast('Nothing left to export — all selected invoices are already in Xero'); return; }
+    }
+    var dupQ = duplicateInvoiceNumbers(rows);
+    if(dupQ.length && !confirm('These invoice numbers are used on more than one job, so Xero will refuse the second one: '+dupQ.join(', ')+'.\n\nExport anyway?')) return;
     var trows = [];
     rows.forEach(function(o){ xeroRowsFor(o).forEach(function(r){ trows.push(xeroTemplateRow(r, 1)); }); });
     var csv = tplCsv(trows);
@@ -3426,6 +3465,7 @@ import './platform.js?v=2026-11-13.46';
     var filename = 'DsignX_SalesInvoices_Xero_Import_'+fileRangeTag(rds[0], rds[rds.length-1])+'.csv';
 
     function markInvoicedAndReset(){
+      markXeroExported(rows, filename);
       rows.forEach(function(o){
         if(!o.invoiced){ var ip = {invoiced:true, invoiceNumber:o.invoiceNumber||jobNo(o.id)}; if(AFTER_INVOICE.indexOf(o.status)<0) ip.status = 'invoiced'; updateOrder(o.id, ip); }
       });
@@ -3487,6 +3527,8 @@ import './platform.js?v=2026-11-13.46';
         if(sb){ sb.filename = 'Sample-'+sk+'.pdf'; if(STATE.downloads){ STATE.downloads.save({filename:sb.filename, data:sb.blob}).catch(function(err){ if(!err||err.code!=='declined'){ fallbackDownload(sb.blob, sb.filename); } }); } else { fallbackDownload(sb.blob, sb.filename); } }
       }
       else if(action==='export-invoices-xero'){ if(isOwnerRole()) exportInvoicesXero(); }
+      else if(action==='xero-mark-range'){ e.preventDefault(); if(isOwnerRole()){ var nm = invoicesInRange().filter(function(o){ return !xeroExported(o); }); if(nm.length && confirm('Mark '+nm.length+' invoice'+(nm.length===1?'':'s')+' ('+(STATE.invExportFrom?fullDate(STATE.invExportFrom):'all dates')+(STATE.invExportTo?' – '+fullDate(STATE.invExportTo):'')+') as already in Xero? They will be left out of future exports.')) markXeroExported(nm, 'marked by owner').then(function(){ toast(nm.length+' marked as already in Xero'); }); } }
+      else if(action==='xero-unmark-range'){ e.preventDefault(); if(isOwnerRole()){ var um = invoicesInRange().filter(xeroExported); if(um.length && confirm('Clear the “exported to Xero” mark on '+um.length+' invoice'+(um.length===1?'':'s')+'? Only do this if they are NOT in Xero.')) clearXeroExported(um).then(function(){ toast('Mark cleared'); }); } }
       else if(action==='save-xero-export-defaults' && isOwnerRole()){
         updateConfig({
           xeroTaxVat: document.getElementById('cfgXeroTaxVat').value.trim() || 'Standard Rate Sales',
@@ -3810,6 +3852,7 @@ import './platform.js?v=2026-11-13.46';
       if(e.target.id==='custExFrom'){ STATE.custExportFrom = e.target.value; render(); }
       if(e.target.id==='custExTo'){ STATE.custExportTo = e.target.value; render(); }
       if(e.target.id==='custExMode'){ STATE.custExportMode = e.target.value; render(); }
+      if(e.target.id==='invExNewOnly'){ STATE.invExportNewOnly = e.target.checked; render(); return; }
       if(e.target.id==='invExFrom'){ STATE.invExportFrom = e.target.value; render(); }
       if(e.target.id==='cnExFrom'){ STATE.cnExFrom = e.target.value; render(); }
       if(e.target.id==='cnExTo'){ STATE.cnExTo = e.target.value; render(); }
