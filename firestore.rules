@@ -154,8 +154,9 @@ service cloud.firestore {
     match /creditNotes/{id} {
       allow read: if isStaff();
       allow create: if isOwner();
+      // The owner can void one, or record that it was exported to Xero.
       allow update: if isOwner()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['voided', 'voidReason', 'voidedAt']);
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['voided', 'voidReason', 'voidedAt', 'xeroExportedAt', 'xeroExportFile']);
       allow delete: if false;
     }
 

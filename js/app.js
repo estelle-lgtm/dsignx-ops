@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-13.47';
+import './platform.js?v=2026-11-13.48';
 
 (function(){
   "use strict";
@@ -1860,7 +1860,7 @@ import './platform.js?v=2026-11-13.47';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-13.47</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-13.48</span></div>' +
       '</div>'
     );
   }
@@ -3601,6 +3601,8 @@ import './platform.js?v=2026-11-13.47';
       else if(action==='cn-void'){ voidCreditNote(el.getAttribute('data-id')); }
       else if(action==='cn-ex-preset'){ STATE.cnExFrom = el.getAttribute('data-from'); STATE.cnExTo = el.getAttribute('data-to'); render(); }
       else if(action==='export-cn-xero'){ exportCreditNotesXero(); }
+      else if(action==='cn-xero-mark-range'){ e.preventDefault(); if(isOwnerRole()){ var cm = cnInRange().filter(function(c){ return !xeroExported(c); }); if(cm.length && confirm('Mark '+cm.length+' credit note'+(cm.length===1?'':'s')+' ('+(STATE.cnExFrom?fullDate(STATE.cnExFrom):'all dates')+(STATE.cnExTo?' – '+fullDate(STATE.cnExTo):'')+') as already in Xero? They will be left out of future exports.')) markCnXeroExported(cm, 'marked by owner').then(function(){ toast(cm.length+' marked as already in Xero'); }); } }
+      else if(action==='cn-xero-unmark-range'){ e.preventDefault(); if(isOwnerRole()){ var cu = cnInRange().filter(xeroExported); if(cu.length && confirm('Clear the “exported to Xero” mark on '+cu.length+' credit note'+(cu.length===1?'':'s')+'? Only do this if they are NOT in Xero.')) clearCnXeroExported(cu).then(function(){ toast('Mark cleared'); }); } }
       else if(action==='age-toggle'){ var ak = el.getAttribute('data-id'); STATE.ageOpen = STATE.ageOpen===ak ? null : ak; render(); }
       else if(action==='age-today'){ STATE.ageAsAt = todayIso(); render(); }
       else if(action==='age-pdf'){ if(canSeeSalesReports()) ageReportPdf(); }
@@ -3854,6 +3856,7 @@ import './platform.js?v=2026-11-13.47';
       if(e.target.id==='custExMode'){ STATE.custExportMode = e.target.value; render(); }
       if(e.target.id==='invExNewOnly'){ STATE.invExportNewOnly = e.target.checked; render(); return; }
       if(e.target.id==='invExFrom'){ STATE.invExportFrom = e.target.value; render(); }
+      if(e.target.id==='cnExNewOnly'){ STATE.cnExNewOnly = e.target.checked; render(); return; }
       if(e.target.id==='cnExFrom'){ STATE.cnExFrom = e.target.value; render(); }
       if(e.target.id==='cnExTo'){ STATE.cnExTo = e.target.value; render(); }
       if(e.target.id==='cnExStatus'){ STATE.cnExStatus = e.target.value; render(); }
@@ -4409,7 +4412,7 @@ import './platform.js?v=2026-11-13.47';
     if(STATE.isLive && window.DSX && window.DSX.updateDocs) return window.DSX.updateDocs(list);
     list.forEach(function(w){
       var parts = w.path.split('/'), coll = parts[0], id = parts[1];
-      var arr = coll==='orders' ? STATE.orders : coll==='receipts' ? STATE.receipts : null;
+      var arr = coll==='orders' ? STATE.orders : coll==='receipts' ? STATE.receipts : coll==='creditNotes' ? STATE.creditNotes : null;
       var rec = arr && arr.find(function(x){ return x.id===id; });
       if(rec) Object.assign(rec, w.data);
     });
@@ -6160,17 +6163,38 @@ import './platform.js?v=2026-11-13.47';
       return r;
     });
   }
+  /* ---- Xero export tracking for credit notes (update 48) ---- */
+  function markCnXeroExported(list, filename){
+    var now = new Date().toISOString();
+    return updateDocs(list.map(function(c){ return {path:'creditNotes/'+c.id, data:{xeroExportedAt:now, xeroExportFile:filename||''}}; }))
+      .then(function(){ render(); }).catch(function(){ toast('Exported, but could not record it — check your connection'); });
+  }
+  function clearCnXeroExported(list){
+    return updateDocs(list.map(function(c){ return {path:'creditNotes/'+c.id, data:{xeroExportedAt:'', xeroExportFile:''}}; })).then(function(){ render(); });
+  }
+  function cnToExport(){
+    var all = cnInRange();
+    return STATE.cnExNewOnly === false ? all : all.filter(function(c){ return !xeroExported(c); });
+  }
+  function duplicateCnNumbers(list){
+    var by = {}, dup = [];
+    (STATE.creditNotes||[]).filter(function(c){ return !c.voided; }).forEach(function(c){ (by[c.number] = by[c.number] || []).push(c); });
+    list.forEach(function(c){ if(by[c.number] && by[c.number].length > 1 && dup.indexOf(c.number) < 0) dup.push(c.number); });
+    return dup;
+  }
   function exportCreditNotesXero(){
     if(!isOwnerRole()) return;
-    var list = cnInRange();
-    if(!list.length){ toast('No credit notes in that date range'); return; }
+    var list = cnToExport();
+    if(!list.length){ toast(cnInRange().length ? 'All credit notes in that range were exported to Xero before' : 'No credit notes in that date range'); return; }
+    var dupC = duplicateCnNumbers(list);
+    if(dupC.length && !confirm('These credit note numbers are used more than once, so Xero will refuse the second one: '+dupC.join(', ')+'.\n\nExport anyway?')) return;
     var trows = [];
     list.forEach(function(c){ xeroCreditRows(c).forEach(function(r){ trows.push(xeroTemplateRow(r, -1)); }); });
     var csv = tplCsv(trows);
     var tag = (STATE.cnExFrom||STATE.cnExTo) ? ((STATE.cnExFrom||'start')+'_to_'+(STATE.cnExTo||todayIso())+'_') : '';
     var cds = list.map(function(c){ return c.date; }).sort();
     var filename = 'DsignX_SalesCreditNotes_Xero_Import_'+fileRangeTag(STATE.cnExFrom||cds[0], STATE.cnExTo||cds[cds.length-1])+'.csv';
-    var done = function(){ toast('Exported '+list.length+' credit note'+(list.length===1?'':'s')); };
+    var done = function(){ markCnXeroExported(list, filename); toast('Exported '+list.length+' credit note'+(list.length===1?'':'s')+' — marked as sent to Xero'); };
     if(STATE.downloads){
       STATE.downloads.save({filename:filename, data:csv}).then(done).catch(function(e){
         if(e && e.code==='declined'){ toast('Export cancelled'); } else { fallbackDownload(new Blob([csv],{type:'text/csv'}), filename); done(); }
@@ -6178,7 +6202,9 @@ import './platform.js?v=2026-11-13.47';
     } else { fallbackDownload(new Blob([csv],{type:'text/csv'}), filename); done(); }
   }
   function renderCreditExportPanel(){
-    var list = cnInRange();
+    var inRange = cnInRange(), list = cnToExport();
+    var before = inRange.filter(xeroExported), notYet = inRange.filter(function(c){ return !xeroExported(c); });
+    var dupC = duplicateCnNumbers(list);
     var lineCount = 0, grand = 0;
     list.forEach(function(c){ lineCount += (c.items||[]).length; grand += Number(c.total)||0; });
     var statusOpts = ['Draft','Awaiting Approval','Awaiting Payment'].map(function(v){ return '<option'+((STATE.cnExStatus||'Draft')===v?' selected':'')+'>'+v+'</option>'; }).join('');
@@ -6195,8 +6221,14 @@ import './platform.js?v=2026-11-13.47';
         '<div class="field"><label for="cnExTo">To</label><input type="date" id="cnExTo" value="'+escapeHtml(STATE.cnExTo||'')+'"></div>' +
       '</div>' +
       '<div class="hint" style="margin-bottom:10px;">Tax types and tracking name are the same as for invoices.</div>' +
+      '<label style="display:flex; gap:8px; align-items:center; margin:2px 0 6px; cursor:pointer;"><input type="checkbox" id="cnExNewOnly" style="width:auto;"'+(STATE.cnExNewOnly!==false?' checked':'')+'> Leave out credit notes already exported to Xero</label>' +
+      '<div class="hint" style="margin:0 0 10px;">'+(before.length ? ('<strong>'+before.length+'</strong> credit note'+(before.length===1?' in this range was':'s in this range were')+' exported before'+(STATE.cnExNewOnly!==false ? ' and '+(before.length===1?'is':'are')+' left out' : ' — <span style="color:var(--critical);">Xero will refuse '+(before.length===1?'it':'them')+' (“Invoice # must be unique”)</span>')+'. ') : '') +
+        'Xero refuses a number it already has, so each credit note should only be exported once.' +
+        (notYet.length ? ' Already imported some of these into Xero before this tracking existed? <a href="#" data-action="cn-xero-mark-range">Mark the '+notYet.length+' in this range as already in Xero</a>.' : '') +
+        (before.length ? ' <a href="#" data-action="cn-xero-unmark-range">Clear the mark on the '+before.length+'</a> (only if they are not in Xero).' : '') + '</div>' +
+      (dupC.length ? '<div class="hint" style="color:var(--critical); margin:0 0 10px;">Credit note number'+(dupC.length===1?'':'s')+' used more than once: <strong>'+escapeHtml(dupC.join(', '))+'</strong> — Xero will refuse the second one.</div>' : '') +
       '<div style="background:var(--surface-2); border-radius:var(--radius-s); padding:10px 12px; font-size:12.5px; color:var(--ink-soft); margin-bottom:12px;">' +
-        (list.length ? ('<strong style="color:var(--ink);">'+list.length+' credit note'+(list.length===1?'':'s')+'</strong> &middot; '+lineCount+' line'+(lineCount===1?'':'s')+' &middot; '+money(round2(grand))+' incl. VAT') : 'No credit notes in these dates.') +
+        (list.length ? ('<strong style="color:var(--ink);">'+list.length+' credit note'+(list.length===1?'':'s')+'</strong> &middot; '+lineCount+' line'+(lineCount===1?'':'s')+' &middot; '+money(round2(grand))+' incl. VAT') : before.length ? ('Nothing new to export — all '+before.length+' credit note'+(before.length===1?'':'s')+' in this range '+(before.length===1?'is':'are')+' already in Xero.') : 'No credit notes in these dates.') +
       '</div>' +
       '<button class="btn btn-primary btn-sm" data-action="export-cn-xero"'+(list.length?'':' disabled')+'>Download CSV</button>' +
     '</div>';
