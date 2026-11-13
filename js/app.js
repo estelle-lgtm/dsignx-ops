@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-11.43';
+import './platform.js?v=2026-11-13.44';
 
 (function(){
   "use strict";
@@ -63,7 +63,7 @@ import './platform.js?v=2026-11-11.43';
       bankName:'', bankAccountHolder:'', bankAccountNumber:'', bankBranchCode:'',
       appShareLink:''
     },
-    quoteFilter:'all',
+    quoteFilter:'all', quoteFrom:'', quoteTo:'', quoteDateBy:'invoice',
     customerQuery:'',
     boardQuery:'',
     openOrderId:null,
@@ -1860,7 +1860,7 @@ import './platform.js?v=2026-11-11.43';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-11.43</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-13.44</span></div>' +
       '</div>'
     );
   }
@@ -2846,6 +2846,19 @@ import './platform.js?v=2026-11-11.43';
     if(cns.length) out += qDate(cns[cns.length-1].date, 'Credited');
     return out;
   }
+  function quoteListDate(o, by){
+    if(by==='quote') return String(o.quoteGeneratedAt || '').slice(0,10);
+    if(by==='order') return o.quoteOnly ? '' : orderDateOf(o);
+    return (o.invoiced || hasInvoiceDoc(o)) ? invoiceDateOf(o) : '';
+  }
+  function setQuoteRange(r){
+    var t = todayIso();
+    if(r==='clear'){ STATE.quoteFrom = ''; STATE.quoteTo = ''; }
+    else if(r==='month'){ STATE.quoteFrom = t.slice(0,8)+'01'; STATE.quoteTo = t; }
+    else if(r==='last'){ var d = new Date(Number(t.slice(0,4)), Number(t.slice(5,7))-2, 1); var y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0');
+      STATE.quoteFrom = y+'-'+m+'-01'; STATE.quoteTo = y+'-'+m+'-'+String(new Date(y, d.getMonth()+1, 0).getDate()).padStart(2,'0'); }
+    render();
+  }
   function renderQuotesTab(){
     var list = STATE.orders.filter(function(o){ return o.quoteOnly || (o.quoteAmount!==null && o.quoteAmount!==undefined && o.quoteAmount!==''); });
     if(STATE.quoteFilter==='quoteonly') list = list.filter(function(o){ return o.quoteOnly; });
@@ -2860,8 +2873,19 @@ import './platform.js?v=2026-11-11.43';
                   (o.quoteAmount!=null ? Number(o.quoteAmount).toFixed(2) : '')].concat(cn, rc).filter(Boolean).join(' ');
       return searchMatch(qq, text, [o.phone]);
     });
-
-    var selectedCount = Object.keys(STATE.selectedForExport).filter(function(k){ return STATE.selectedForExport[k]; }).length;
+    // date range (update 44): From / To on the invoice, quote or order date
+    var qFrom = STATE.quoteFrom || '', qTo = STATE.quoteTo || '', qBy = STATE.quoteDateBy || 'invoice';
+    if(qFrom && qTo && qFrom > qTo){ var qt = qFrom; qFrom = qTo; qTo = qt; }
+    var beforeDates = list.length;
+    if(qFrom || qTo) list = list.filter(function(o){
+      var d = quoteListDate(o, qBy);
+      return d && (!qFrom || d >= qFrom) && (!qTo || d <= qTo);
+    });
+    STATE.quoteShownIds = list.map(function(o){ return o.id; });
+    var shownSel = list.filter(function(o){ return STATE.selectedForExport[o.id]; });
+    var selectedCount = shownSel.length;
+    var allShownSel = list.length && selectedCount===list.length;
+    var shownTotal = round2(list.reduce(function(s,o){ return s + (Number(o.quoteAmount)||0); }, 0));
 
     var rows = list.length ? list.map(function(o){
       var checked = !!STATE.selectedForExport[o.id];
@@ -2878,7 +2902,7 @@ import './platform.js?v=2026-11-11.43';
           '<td>'+(o.quoteOnly ? '<span style="color:var(--ink-faint);">—</span>' : '')+(o.quoteOnly ? '' : (function(){ var st = payStatus(o); return '<span class="pay-chip pay-'+st.key+'">'+st.label+'</span>'+payDatesHtml(o); })())+'</td>' +
         '</tr>'
       );
-    }).join('') : qq ? '<tr><td colspan="9" class="empty-note">Nothing matches “'+escapeHtml(qq)+'”.</td></tr>' : '<tr><td colspan="9" class="empty-note">No quotations yet — use “+ New quotation”, or set a quote amount on any job card.</td></tr>';
+    }).join('') : (qFrom || qTo) ? '<tr><td colspan="9" class="empty-note">Nothing in that date range'+(qq?' matching “'+escapeHtml(qq)+'”':'')+'.</td></tr>' : qq ? '<tr><td colspan="9" class="empty-note">Nothing matches “'+escapeHtml(qq)+'”.</td></tr>' : '<tr><td colspan="9" class="empty-note">No quotations yet — use “+ New quotation”, or set a quote amount on any job card.</td></tr>';
 
     return (
       '<div class="topline"><div><h1>Quotes &amp; invoicing</h1><div class="sub">Quote a customer without opening a job, or export selected jobs as a Xero-ready invoice CSV</div></div>' + exampleBadge() +
@@ -2894,7 +2918,20 @@ import './platform.js?v=2026-11-11.43';
         '<button class="btn btn-primary btn-sm" data-action="export-xero" '+(selectedCount?'':'disabled')+'>Export '+(selectedCount||'')+' to Xero CSV</button>' +
       '</div>' +
       (qq ? '<div class="hint" style="margin:-4px 0 10px;">'+list.length+' of '+beforeSearch+' match “'+escapeHtml(qq)+'”</div>' : '') +
-      '<div class="panel"><div class="tbl-wrap"><table><thead><tr><th></th><th>Customer</th><th>Ordered</th><th>Job</th><th>Amount</th><th>Invoice</th><th>Due</th><th>Quotation</th><th>Payment</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>' +
+      '<div class="panel qdate-panel"><div class="qdate-bar">' +
+        '<span class="qdate-label">Dates</span>' +
+        '<select id="quoteDateBy" aria-label="Which date to search on">' +
+          [['invoice','Invoice date'],['quote','Quote date'],['order','Order date']].map(function(x){ return '<option value="'+x[0]+'"'+(qBy===x[0]?' selected':'')+'>'+x[1]+'</option>'; }).join('') +
+        '</select>' +
+        '<label class="qdate-f">From <input type="date" id="quoteFrom" value="'+escapeHtml(STATE.quoteFrom||'')+'"></label>' +
+        '<label class="qdate-f">To <input type="date" id="quoteTo" value="'+escapeHtml(STATE.quoteTo||'')+'"></label>' +
+        '<button class="chip-toggle" data-action="quote-range" data-r="month">This month</button>' +
+        '<button class="chip-toggle" data-action="quote-range" data-r="last">Last month</button>' +
+        (qFrom || qTo ? '<button class="btn btn-ghost btn-sm" data-action="quote-range" data-r="clear">Clear dates</button>' : '') +
+      '</div>' +
+      (qFrom || qTo ? '<div class="hint" style="margin:6px 0 0;"><strong>'+list.length+'</strong> of '+beforeDates+' with a'+(qBy==='order'?'n order':qBy==='quote'?' quote':'n invoice')+' date '+(qFrom && qTo ? 'from '+fullDate(qFrom)+' to '+fullDate(qTo) : qFrom ? 'from '+fullDate(qFrom) : 'up to '+fullDate(qTo))+' &middot; total '+money(shownTotal)+(qBy==='invoice' ? ' &middot; jobs not invoiced yet are left out' : '')+'. Tick <strong>Select all shown</strong> and export.</div>' : '') +
+      '</div>' +
+      '<div class="panel"><div class="tbl-wrap"><table><thead><tr><th><input type="checkbox" data-action="select-export-all"'+(allShownSel?' checked':'')+(list.length?'':' disabled')+' title="Select all shown" aria-label="Select all shown"></th><th>Customer</th><th>Ordered</th><th>Job</th><th>Amount</th><th>Invoice</th><th>Due</th><th>Quotation</th><th>Payment</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>' +
       '<div class="hint" style="margin-top:10px;">Xero import needs the <strong>ContactName</strong> to match an existing Xero contact exactly, and every line filled in for AccountCode and TaxType — set your defaults on the Exports tab.</div>'
     );
   }
@@ -3350,6 +3387,7 @@ import './platform.js?v=2026-11-11.43';
   }
   function exportXero(){
     var ids = Object.keys(STATE.selectedForExport).filter(function(k){ return STATE.selectedForExport[k]; });
+    if(STATE.quoteShownIds) ids = ids.filter(function(k){ return STATE.quoteShownIds.indexOf(k) >= 0; });
     var rows = ids.map(function(id){ return STATE.orders.find(function(o){ return o.id===id; }); }).filter(Boolean);
     if(!rows.length){ toast('Select at least one job first'); return; }
     var trows = [];
@@ -3679,6 +3717,8 @@ import './platform.js?v=2026-11-11.43';
       else if(action==='team-cashup'){ toggleCashupPermission(el.getAttribute('data-id'), el.checked); }
       else if(action==='cashup-date'){ STATE.cashupDate = el.getAttribute('data-date'); STATE.cashupForm = null; render(); }
       else if(action==='select-export'){ STATE.selectedForExport[el.getAttribute('data-id')] = el.checked; render(); }
+      else if(action==='select-export-all'){ var on = el.checked; (STATE.quoteShownIds||[]).forEach(function(id){ STATE.selectedForExport[id] = on; }); render(); }
+      else if(action==='quote-range'){ setQuoteRange(el.getAttribute('data-r')); }
       else if(action==='export-xero'){ exportXero(); }
       else if(action==='save-whatsapp'){
         updateConfig({
@@ -3711,6 +3751,8 @@ import './platform.js?v=2026-11-11.43';
       if(e.target.id==='importFile'){ importBackupFile(e.target.files[0]); e.target.value=''; }
       if(e.target.id==='productFile'){ importProductsFile(e.target.files[0]); e.target.value=''; }
       if(e.target.hasAttribute && e.target.hasAttribute('data-stmt-sel')){ var sk2 = e.target.getAttribute('data-stmt-sel'); if(e.target.checked) STATE.stmtSel[sk2] = true; else delete STATE.stmtSel[sk2]; render(); return; }
+      if(e.target.id==='quoteFrom' || e.target.id==='quoteTo'){ STATE[e.target.id] = e.target.value; render(); return; }
+      if(e.target.id==='quoteDateBy'){ STATE.quoteDateBy = e.target.value; render(); return; }
       if(e.target.id==='bankFile'){ bankImportFile(e.target.files[0]); e.target.value=''; return; }
       if(e.target.hasAttribute && e.target.hasAttribute('data-bi-row') && STATE.bankImport && STATE.bankImport.rows){
         var bir = STATE.bankImport.rows[Number(e.target.getAttribute('data-bi-row'))];
