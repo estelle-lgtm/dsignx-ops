@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-13.44';
+import './platform.js?v=2026-11-13.46';
 
 (function(){
   "use strict";
@@ -1860,7 +1860,7 @@ import './platform.js?v=2026-11-13.44';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-13.44</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-13.46</span></div>' +
       '</div>'
     );
   }
@@ -2507,6 +2507,37 @@ import './platform.js?v=2026-11-13.44';
   function exportCustomersXero(){
     var res = customersForExport(), list = res.list;
     if(!list.length){ toast('No customers in that date range'); return; }
+    var tag = (STATE.custExportFrom||STATE.custExportTo) ? ((STATE.custExportFrom||'start')+'_to_'+(STATE.custExportTo||todayIso())+'_') : '';
+    saveContactsCsv(list, 'Contacts_DsignX_'+tag+todayIso()+'.csv');
+  }
+  // Customers tab (update 45): export the customers shown (all, or the search results) in the Xero contacts template.
+  function exportCustomersShown(){
+    if(!isOwnerRole()) return;
+    var q = String(STATE.customerQuery||'').trim().toLowerCase();
+    var list = STATE.customers.filter(function(c){ return !q || searchMatch(q, customerSearchText(c), [c.phone].concat((c.contacts||[]).map(function(p){ return p.phone; }))); })
+      .slice().sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||'')); });
+    if(!list.length){ toast(q ? 'No customers match the search' : 'No customers to export'); return; }
+    saveContactsCsv(list, 'Contacts_DsignX_'+(q ? 'search_' : '')+todayIso()+'.csv');
+  }
+  // Xero imports at most 1,000 contacts per file: above that, split A–M / N–Z (and into parts if a half is still too big).
+  var XERO_CONTACT_LIMIT = 1000;
+  function saveContactsCsv(list, filename){
+    if(list.length <= XERO_CONTACT_LIMIT){ saveContactsFile(list, filename, 0, 1); return; }
+    var first = function(c){ return String(c.name||'').trim().charAt(0).toUpperCase(); };
+    var am = list.filter(function(c){ return !(first(c) >= 'N' && first(c) <= 'Z'); });   // A–M (plus names starting with a digit or symbol)
+    var nz = list.filter(function(c){ return first(c) >= 'N' && first(c) <= 'Z'; });
+    var files = [];
+    [['A-M', am], ['N-Z', nz]].forEach(function(g){
+      var part = g[1]; if(!part.length) return;
+      var n = Math.ceil(part.length / XERO_CONTACT_LIMIT);
+      for(var i=0; i<n; i++){
+        files.push({list:part.slice(i*XERO_CONTACT_LIMIT, (i+1)*XERO_CONTACT_LIMIT), name:filename.replace(/^Contacts_DsignX_/, 'Contacts_DsignX_'+g[0]+(n>1?('_part'+(i+1)):'')+'_')});
+      }
+    });
+    toast(list.length+' customers — more than Xero’s '+XERO_CONTACT_LIMIT+' per import, so they download as '+files.length+' files ('+files.map(function(f){ return f.name.split('_')[2]; }).join(', ')+')');
+    files.forEach(function(f, i){ setTimeout(function(){ saveContactsFile(f.list, f.name, i, files.length); }, i*900); });
+  }
+  function saveContactsFile(list, filename, idx, total){
     var out = [XERO_CONTACT_COLUMNS.join(',')];
     list.forEach(function(c){
       var r = {};
@@ -2533,9 +2564,7 @@ import './platform.js?v=2026-11-13.44';
       out.push(XERO_CONTACT_COLUMNS.map(function(k){ return csvCell(r[k]); }).join(','));
     });
     var csv = out.join('\r\n') + '\r\n';
-    var tag = (STATE.custExportFrom||STATE.custExportTo) ? ((STATE.custExportFrom||'start')+'_to_'+(STATE.custExportTo||todayIso())+'_') : '';
-    var filename = 'Contacts_DsignX_'+tag+todayIso()+'.csv';
-    var done = function(){ toast('Exported '+list.length+' customer'+(list.length===1?'':'s')); };
+    var done = function(){ toast(total > 1 ? ('File '+(idx+1)+' of '+total+': '+list.length+' customers ('+filename+')') : ('Exported '+list.length+' customer'+(list.length===1?'':'s'))); };
     if(STATE.downloads){
       STATE.downloads.save({filename:filename, data:csv}).then(done).catch(function(e){
         if(e && e.code==='declined'){ toast('Export cancelled'); } else { fallbackDownload(new Blob([csv],{type:'text/csv'}), filename); done(); }
@@ -2823,7 +2852,7 @@ import './platform.js?v=2026-11-13.44';
 
     return (
       '<div class="topline"><div><h1>Customers</h1><div class="sub">'+STATE.customers.length+' on file</div></div>' + exampleBadge() +
-        '<div style="display:flex; gap:8px; flex-wrap:wrap;"><button class="btn" data-action="stmt-open">Send statements</button>' +
+        '<div style="display:flex; gap:8px; flex-wrap:wrap;">' + (isOwnerRole() ? '<button class="btn" data-action="cust-export-csv" title="Xero contacts template — exports the customers shown (all, or your search results)">Export CSV'+(String(STATE.customerQuery||'').trim() ? ' (search results)' : '')+'</button>' : '') + '<button class="btn" data-action="stmt-open">Send statements</button>' +
         '<button class="btn btn-primary" data-action="open-add-customer">+ Add customer</button></div>' +
       '</div>' +
       '<div class="two-col">' +
@@ -3437,6 +3466,7 @@ import './platform.js?v=2026-11-13.44';
       else if(action==='lock-app'){ lockApp(''); }
       else if(action==='cust-ex-preset'){ STATE.custExportFrom = el.getAttribute('data-from'); STATE.custExportTo = el.getAttribute('data-to'); render(); }
       else if(action==='export-customers-xero'){ if(isOwnerRole()) exportCustomersXero(); }
+      else if(action==='cust-export-csv'){ exportCustomersShown(); }
       else if(action==='inv-ex-preset'){ STATE.invExportFrom = el.getAttribute('data-from'); STATE.invExportTo = el.getAttribute('data-to'); render(); }
       else if(action==='save-letterhead' && isOwnerRole()){
         updateConfig({
