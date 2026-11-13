@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-13.48';
+import './platform.js?v=2026-11-13.49';
 
 (function(){
   "use strict";
@@ -1860,7 +1860,7 @@ import './platform.js?v=2026-11-13.48';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-13.48</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-13.49</span></div>' +
       '</div>'
     );
   }
@@ -3599,6 +3599,10 @@ import './platform.js?v=2026-11-13.48';
       else if(action==='cn-pdf'){ downloadCreditNote(el.getAttribute('data-id')); }
       else if(action==='cn-wa'){ sendCreditNoteWhatsapp(el.getAttribute('data-id')); }
       else if(action==='cn-void'){ voidCreditNote(el.getAttribute('data-id')); }
+      else if(action==='q-ex-preset'){ STATE.qExFrom = el.getAttribute('data-from'); STATE.qExTo = el.getAttribute('data-to'); render(); }
+      else if(action==='export-quotes-csv'){ exportQuotesCsv(); }
+      else if(action==='q-ex-mark'){ e.preventDefault(); if(isOwnerRole()){ var qm = quotesInRange().filter(function(o){ return !quoteExported(o); }); if(qm.length && confirm('Mark '+qm.length+' quote'+(qm.length===1?'':'s')+' as already exported? They will be left out of future quote exports.')) markQuotesExported(qm, 'marked by owner').then(function(){ toast(qm.length+' marked as exported'); }); } }
+      else if(action==='q-ex-unmark'){ e.preventDefault(); if(isOwnerRole()){ var qu = quotesInRange().filter(quoteExported); if(qu.length && confirm('Clear the “exported” mark on '+qu.length+' quote'+(qu.length===1?'':'s')+'? They will be included in the next export again.')) clearQuotesExported(qu).then(function(){ toast('Mark cleared'); }); } }
       else if(action==='cn-ex-preset'){ STATE.cnExFrom = el.getAttribute('data-from'); STATE.cnExTo = el.getAttribute('data-to'); render(); }
       else if(action==='export-cn-xero'){ exportCreditNotesXero(); }
       else if(action==='cn-xero-mark-range'){ e.preventDefault(); if(isOwnerRole()){ var cm = cnInRange().filter(function(c){ return !xeroExported(c); }); if(cm.length && confirm('Mark '+cm.length+' credit note'+(cm.length===1?'':'s')+' ('+(STATE.cnExFrom?fullDate(STATE.cnExFrom):'all dates')+(STATE.cnExTo?' – '+fullDate(STATE.cnExTo):'')+') as already in Xero? They will be left out of future exports.')) markCnXeroExported(cm, 'marked by owner').then(function(){ toast(cm.length+' marked as already in Xero'); }); } }
@@ -3856,6 +3860,9 @@ import './platform.js?v=2026-11-13.48';
       if(e.target.id==='custExMode'){ STATE.custExportMode = e.target.value; render(); }
       if(e.target.id==='invExNewOnly'){ STATE.invExportNewOnly = e.target.checked; render(); return; }
       if(e.target.id==='invExFrom'){ STATE.invExportFrom = e.target.value; render(); }
+      if(e.target.id==='qExNewOnly'){ STATE.qExNewOnly = e.target.checked; render(); return; }
+      if(e.target.id==='qExFrom'){ STATE.qExFrom = e.target.value; render(); return; }
+      if(e.target.id==='qExTo'){ STATE.qExTo = e.target.value; render(); return; }
       if(e.target.id==='cnExNewOnly'){ STATE.cnExNewOnly = e.target.checked; render(); return; }
       if(e.target.id==='cnExFrom'){ STATE.cnExFrom = e.target.value; render(); }
       if(e.target.id==='cnExTo'){ STATE.cnExTo = e.target.value; render(); }
@@ -6245,11 +6252,115 @@ import './platform.js?v=2026-11-13.48';
     '</div>';
   }
   function renderExportsTab(){
-    return '<div class="topline"><div><h1>Exports</h1><div class="sub">Download invoices, credit notes, customers and receipts for Xero and your bank statement import</div></div></div>' +
+    return '<div class="topline"><div><h1>Exports</h1><div class="sub">Download invoices, credit notes, quotes, customers and receipts for Xero and your bank statement import</div></div></div>' +
       '<div class="two-col">' +
-        '<div>' + renderInvoiceExportPanel() + renderCreditExportPanel() + '</div>' +
+        '<div>' + renderInvoiceExportPanel() + renderCreditExportPanel() + renderQuoteExportPanel() + '</div>' +
         '<div>' + renderReceiptExportPanel() + renderCustomerExportPanel() + renderXeroDefaultsPanel() + '</div>' +
       '</div>';
+  }
+
+  /* ============================ quotes export (update 49) ============================ */
+  // A CSV list of quotations, one row per line (quote details repeated on each line, like the Xero invoice file).
+  // Each quote is recorded as exported (quoteExportedAt) so the next export only has new quotes.
+  var QUOTE_EXPORT_COLUMNS = ['*ContactName','EmailAddress','Phone','*QuoteNumber','Reference','*QuoteDate','ExpiryDate','JobNumber','QuoteStatus','*Description','*Quantity','*UnitAmount','Discount','LineAmount','TaxType','TaxAmount','QuoteSubtotal','QuoteVAT','QuoteTotal','SalesRep','Currency'];
+  function issuedQuotes(){ return STATE.orders.filter(function(o){ return o.quoteNumber && o.quoteGeneratedAt && (o.lineItems||[]).length; }); }
+  function quoteDateOf(o){ return String(o.quoteGeneratedAt||'').slice(0,10); }
+  function quoteExported(o){ return !!o.quoteExportedAt; }
+  function quotesInRange(){
+    var from = STATE.qExFrom||'', to = STATE.qExTo||'';
+    if(from && to && from > to){ var t = from; from = to; to = t; }
+    return issuedQuotes().filter(function(o){ var d = quoteDateOf(o); return (!from || d >= from) && (!to || d <= to); })
+      .sort(function(a,b){ return quoteDateOf(a).localeCompare(quoteDateOf(b)) || String(a.quoteNumber).localeCompare(String(b.quoteNumber)); });
+  }
+  function quotesToExport(){ var all = quotesInRange(); return STATE.qExNewOnly === false ? all : all.filter(function(o){ return !quoteExported(o); }); }
+  function quoteStatusText(o){
+    if(o.quoteOnly) return o.status==='lost' ? 'Lost' : 'Open';
+    if(hasInvoiceDoc(o) || o.invoiced) return 'Invoiced';
+    return 'Accepted (job)';
+  }
+  function quoteExportRows(o){
+    var vatOn = !!o.quoteVatEnabled && isVatVendor(), rate = vatOn ? (Number(STATE.config.vatRate)||0)/100 : 0;
+    var t = quoteTotals({items:o.lineItems||[], vatEnabled:vatOn});
+    var cust = STATE.customers.find(function(c){ return c.id===o.customerId; }) || {};
+    var date = quoteDateOf(o), exp = addDays(date, Number(o.quoteValidDays)||Number(STATE.config.quoteValidityDays)||14);
+    var reps = [o.designerName, o.technicianName, o.technician2Name].filter(Boolean).map(firstName).filter(function(n,i,a){ return a.indexOf(n)===i; }).join(' & ');
+    return (o.lineItems||[]).map(function(li){
+      var amount = round2(lineNet(li));
+      var r = {};
+      QUOTE_EXPORT_COLUMNS.forEach(function(k){ r[k] = ''; });
+      r['*ContactName'] = o.customerName || cust.name || '';
+      r.EmailAddress = cust.email || '';
+      r.Phone = o.phone || cust.phone || '';
+      r['*QuoteNumber'] = o.quoteNumber;
+      r.Reference = (o.poNumber ? 'PO '+o.poNumber : '') || o.title || '';
+      r['*QuoteDate'] = dmy(date); r.ExpiryDate = dmy(exp);
+      r.JobNumber = o.quoteOnly ? '' : (o.jobNumber||'');
+      r.QuoteStatus = quoteStatusText(o);
+      r['*Description'] = li.description || '';
+      r['*Quantity'] = tplNum(li.qty, 4);
+      r['*UnitAmount'] = tplNum(li.unitPrice, 4);
+      r.Discount = lineDiscPct(li) ? tplNum(lineDiscPct(li), 2) : '';
+      r.LineAmount = amount.toFixed(2);
+      r.TaxType = vatOn ? (STATE.config.xeroTaxVat || 'Standard Rate Sales') : (STATE.config.xeroTaxNoVat || 'No VAT');
+      r.TaxAmount = round2(amount*rate).toFixed(2);
+      r.QuoteSubtotal = round2(t.subtotal).toFixed(2); r.QuoteVAT = round2(t.vat).toFixed(2); r.QuoteTotal = round2(t.total).toFixed(2);
+      r.SalesRep = reps;
+      r.Currency = STATE.config.currency || 'ZAR';
+      return r;
+    });
+  }
+  function exportQuotesCsv(){
+    if(!isOwnerRole()) return;
+    var list = quotesToExport();
+    if(!list.length){ toast(quotesInRange().length ? 'All quotes in that range were exported before' : 'No quotes in that date range'); return; }
+    var rows = [];
+    list.forEach(function(o){ quoteExportRows(o).forEach(function(r){ rows.push(r); }); });
+    var csv = [QUOTE_EXPORT_COLUMNS.join(',')].concat(rows.map(function(r){ return QUOTE_EXPORT_COLUMNS.map(function(k){ return csvCell(r[k]); }).join(','); })).join('\r\n') + '\r\n';
+    var ds = list.map(quoteDateOf).sort();
+    var filename = 'DsignX_Quotes_'+fileRangeTag(STATE.qExFrom||ds[0], STATE.qExTo||ds[ds.length-1])+'.csv';
+    var done = function(){ markQuotesExported(list, filename); toast('Exported '+list.length+' quote'+(list.length===1?'':'s')+' — marked as exported'); };
+    if(STATE.downloads){
+      STATE.downloads.save({filename:filename, data:csv}).then(done).catch(function(e){
+        if(e && e.code==='declined'){ toast('Export cancelled'); } else { fallbackDownload(new Blob([csv],{type:'text/csv'}), filename); done(); }
+      });
+    } else { fallbackDownload(new Blob([csv],{type:'text/csv'}), filename); done(); }
+  }
+  function markQuotesExported(list, filename){
+    var now = new Date().toISOString();
+    return updateDocs(list.map(function(o){ return {path:'orders/'+o.id, data:{quoteExportedAt:now, quoteExportFile:filename||''}}; }))
+      .then(function(){ render(); }).catch(function(){ toast('Exported, but could not record it — check your connection'); });
+  }
+  function clearQuotesExported(list){
+    return updateDocs(list.map(function(o){ return {path:'orders/'+o.id, data:{quoteExportedAt:'', quoteExportFile:''}}; })).then(function(){ render(); });
+  }
+  function renderQuoteExportPanel(){
+    var inRange = quotesInRange(), list = quotesToExport();
+    var before = inRange.filter(quoteExported), notYet = inRange.filter(function(o){ return !quoteExported(o); });
+    var lineCount = 0, grand = 0;
+    list.forEach(function(o){ lineCount += (o.lineItems||[]).length; grand += quoteTotals({items:o.lineItems||[], vatEnabled:!!o.quoteVatEnabled && isVatVendor()}).total; });
+    var open = list.filter(function(o){ return o.quoteOnly; }).length;
+    return '<div class="panel">' +
+      '<div class="section-label">Export quotes</div>' +
+      '<div class="hint" style="margin:-4px 0 12px;">Every quotation generated in the app, one row per line with the quote details on each row: customer, quote number and date, expiry, job number, status (Open, Accepted (job), Invoiced), description, quantity, price, discount, VAT and totals.</div>' +
+      '<div class="section-label" style="margin-bottom:6px;">Quote dates to export</div>' +
+      '<div class="filterbar" style="margin-bottom:10px;">' + invExportPresets().map(function(p){
+        var on = (STATE.qExFrom||'')===p.from && (STATE.qExTo||'')===p.to;
+        return '<button type="button" class="chip-toggle'+(on?' active':'')+'" data-action="q-ex-preset" data-from="'+p.from+'" data-to="'+p.to+'">'+p.label+'</button>';
+      }).join('') + '</div>' +
+      '<div class="field-row">' +
+        '<div class="field"><label for="qExFrom">From</label><input type="date" id="qExFrom" value="'+escapeHtml(STATE.qExFrom||'')+'"></div>' +
+        '<div class="field"><label for="qExTo">To</label><input type="date" id="qExTo" value="'+escapeHtml(STATE.qExTo||'')+'"></div>' +
+      '</div>' +
+      '<label style="display:flex; gap:8px; align-items:center; margin:2px 0 6px; cursor:pointer;"><input type="checkbox" id="qExNewOnly" style="width:auto;"'+(STATE.qExNewOnly!==false?' checked':'')+'> Leave out quotes already exported</label>' +
+      '<div class="hint" style="margin:0 0 10px;">'+(before.length ? ('<strong>'+before.length+'</strong> quote'+(before.length===1?' in this range was':'s in this range were')+' exported before'+(STATE.qExNewOnly!==false ? ' and '+(before.length===1?'is':'are')+' left out. ' : ' and '+(before.length===1?'is':'are')+' included again. ')) : '') +
+        'Each export is recorded, so the next one only has new quotes.' +
+        (notYet.length ? ' <a href="#" data-action="q-ex-mark">Mark the '+notYet.length+' in this range as already exported</a>.' : '') +
+        (before.length ? ' <a href="#" data-action="q-ex-unmark">Clear the mark on the '+before.length+'</a>.' : '') + '</div>' +
+      '<div style="background:var(--surface-2); border-radius:var(--radius-s); padding:10px 12px; font-size:12.5px; color:var(--ink-soft); margin-bottom:12px;">' +
+        (list.length ? ('<strong style="color:var(--ink);">'+list.length+' quote'+(list.length===1?'':'s')+'</strong> ('+open+' still open) &middot; '+lineCount+' line'+(lineCount===1?'':'s')+' &middot; '+money(round2(grand))+' incl. VAT') : before.length ? ('Nothing new to export — all '+before.length+' quote'+(before.length===1?'':'s')+' in this range '+(before.length===1?'was':'were')+' exported before.') : 'No quotes in these dates.') +
+      '</div>' +
+      '<button class="btn btn-primary btn-sm" data-action="export-quotes-csv"'+(list.length?'':' disabled')+'>Download CSV</button>' +
+    '</div>';
   }
 
   /* ============================ age analysis ============================ */
