@@ -159,3 +159,9 @@ test('email_send: statements by email go out from the server address, PDF only',
   assert.throws(() => core.birdRequest('email_send', { to: 'a@b.co', subject: 's', text: 't', attachments: [{ filename: 'x.exe', content: 'AA==' }] }, opts));
   assert.throws(() => core.birdRequest('email_send', { to: 'a@b.co', subject: 's', text: 't' }, Object.assign({}, opts, { emailFrom: '' })));
 });
+
+test('cleanBirdKey keeps the whole key, including _ and - in the secret', () => {
+  assert.strictEqual(core.cleanBirdKey('bk_us1_Ab3x_Kq9-m77ZZ'), 'bk_us1_Ab3x_Kq9-m77ZZ');
+  assert.strictEqual(core.cleanBirdKey('  "bk_eu1_Ab_c-D"\n'), 'bk_eu1_Ab_c-D');
+  assert.strictEqual(core.cleanBirdKey('BIRD_API_KEY=bk_us1_AbC123'), 'bk_us1_AbC123');
+});

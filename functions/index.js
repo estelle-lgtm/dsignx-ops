@@ -124,7 +124,27 @@ exports.connector = onCall(
     if (!birdKey && BIRD_API_KEY.value()) logger.warn('BIRD_API_KEY is set but does not look like a Bird key (bk_...)');
 
     if (server === '_status') {
-      return { bird: !!birdKey, cloudinary: !!cloud };
+      const out = { bird: !!birdKey, cloudinary: !!cloud };
+      // Owner-only key diagnostics: never the key itself — only its public prefix (as Bird shows it), its length
+      // and whether Bird accepts it for WhatsApp and for email.
+      if (role === 'owner' && input && input.diagnose) {
+        const raw = String(BIRD_API_KEY.value() || '');
+        out.birdKey = { prefix: birdKey ? birdKey.slice(0, 11) : '', length: birdKey.length, storedLength: raw.length, trimmed: raw.length !== birdKey.length };
+        if (birdKey) {
+          const host = core.birdHost(birdKey);
+          const probe = async (path) => {
+            try {
+              const r = await fetch(host + path, { headers: { Authorization: `Bearer ${birdKey}`, Accept: 'application/json' } });
+              let code = '';
+              if (!r.ok) { try { const j = await r.json(); code = (j && j.error && (j.error.code + ': ' + (j.error.message || ''))) || ''; } catch (e) { /* ignore */ } }
+              return { status: r.status, ok: r.ok, error: code.slice(0, 200) };
+            } catch (e) { return { status: 0, ok: false, error: 'Could not reach Bird' }; }
+          };
+          out.birdKey.whatsapp = await probe('/v1/whatsapp/messages?limit=1');
+          out.birdKey.email = await probe('/v1/email/messages?limit=1');
+        }
+      }
+      return out;
     }
 
     if (server === 'Bird') {

@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-13.49';
+import './platform.js?v=2026-11-13.50';
 
 (function(){
   "use strict";
@@ -1860,7 +1860,7 @@ import './platform.js?v=2026-11-13.49';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-13.49</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-13.50</span></div>' +
       '</div>'
     );
   }
@@ -3003,9 +3003,16 @@ import './platform.js?v=2026-11-13.49';
     if(c.status==='error'){
       return '<div class="hint" style="margin-top:8px; color:var(--critical);">Could not check — '+escapeHtml(waErrorNotice(c.error).text)+'</div>';
     }
+    var k = c.key, keyHtml = '';
+    if(k){
+      var res = function(x){ return !x ? '' : (x.ok ? '<span style="color:var(--success);">accepted</span>' : '<span style="color:var(--critical);">refused'+(x.error?' — '+escapeHtml(x.error):(' (HTTP '+x.status+')'))+'</span>'); };
+      keyHtml = '<br><br><strong>Bird key in use:</strong> '+(k.prefix ? '<span class="mono">'+escapeHtml(k.prefix)+'…</span> ('+k.length+' characters'+(k.trimmed ? ', '+k.storedLength+' as saved — extra characters were removed' : '')+')' : '<span style="color:var(--critical);">none found — the saved value does not look like a Bird key (bk_…)</span>') +
+        (k.whatsapp ? '<br>WhatsApp: '+res(k.whatsapp) : '') + (k.email ? '<br>Email: '+res(k.email) : '') +
+        '<br><span style="color:var(--ink-faint);">Compare the start with the key prefix on Bird’s API keys page. The full key is usually about 40+ characters.</span>';
+    }
     return '<div class="hint" style="margin-top:8px;">' + c.rows.map(function(r){
       return escapeHtml(r.name)+': <strong>'+(r.ok?'connected':'not set up')+'</strong>'+(r.ok?'':' — add its key on the server (see the setup guide)');
-    }).join('<br>') + '</div>';
+    }).join('<br>') + keyHtml + '</div>';
   }
 
   function renderSettingsTab(){
@@ -4375,6 +4382,11 @@ import './platform.js?v=2026-11-13.49';
       });
       STATE.waMediaCheck = {status:'done', rows:rows};
       render();
+      // Owner: ask the server whether Bird accepts the key for WhatsApp and for email (update 50).
+      if(isOwnerRole()) STATE.mcp.callTool('_status', 'status', {diagnose:true}).then(function(r){
+        var k = r && r.payload && r.payload.birdKey; if(!k || !STATE.waMediaCheck) return;
+        STATE.waMediaCheck.key = k; render();
+      }).catch(function(){});
     }).catch(function(err){
       STATE.waMediaCheck = {status:'error', error:err};
       render();

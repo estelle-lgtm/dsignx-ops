@@ -143,7 +143,8 @@ function parseCloudinaryUrl(u) {
 }
 
 function cleanBirdKey(v) {
-  const m = /bk_[a-z]+\d+_[A-Za-z0-9]+/.exec(cleanSecret(v));
+  // The secret part may contain letters, digits, "_" and "-" (newer Bird keys); keep all of it.
+  const m = /bk_[a-z]+\d+_[A-Za-z0-9_-]+/.exec(cleanSecret(v));
   return m ? m[0] : '';
 }
 
