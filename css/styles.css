@@ -717,3 +717,6 @@ img{max-width:100%}
 .qdate-bar select{width:auto;}
 .qdate-f{display:inline-flex; align-items:center; gap:6px; font-size:13px; color:var(--ink-soft); margin:0;}
 .qdate-f input{width:auto;}
+
+/* update 52 */
+.stmt-search{flex:1; min-width:220px; max-width:380px;}

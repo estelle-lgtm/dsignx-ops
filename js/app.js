@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-13.51';
+import './platform.js?v=2026-11-17.52';
 
 (function(){
   "use strict";
@@ -1860,7 +1860,7 @@ import './platform.js?v=2026-11-13.51';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-13.51</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-17.52</span></div>' +
       '</div>'
     );
   }
@@ -3585,7 +3585,8 @@ import './platform.js?v=2026-11-13.51';
       else if(action==='stmt-close'){ STATE.stmtOpen = false; render(); }
       else if(action==='stmt-toggle'){ var sk = el.getAttribute('data-key'); if(STATE.stmtCollapsed[sk]) delete STATE.stmtCollapsed[sk]; else STATE.stmtCollapsed[sk] = true; render(); }
       else if(action==='stmt-expand'){ if(el.getAttribute('data-v')==='1') STATE.stmtCollapsed = {}; else statementData(STATE.stmtAsAt).forEach(function(a){ STATE.stmtCollapsed[a.key] = true; }); render(); }
-      else if(action==='stmt-all'){ var on = el.checked; STATE.stmtSel = {}; if(on) statementData(STATE.stmtAsAt).forEach(function(a){ if(a.balance > STMT_MIN) STATE.stmtSel[a.key] = true; }); render(); }
+      else if(action==='stmt-all'){ var on = el.checked, sq2 = String(STATE.stmtQuery||'').trim(); statementData(STATE.stmtAsAt).forEach(function(a){ if(!(a.balance > STMT_MIN)) return; if(sq2 && !stmtSearchHit(a, sq2)) return; if(on) STATE.stmtSel[a.key] = true; else delete STATE.stmtSel[a.key]; }); render(); }
+      else if(action==='stmt-search-clear'){ STATE.stmtQuery = ''; render(); focusEl('stmtSearch'); }
       else if(action==='stmt-pdf'){ downloadStatement(el.getAttribute('data-key')); }
       else if(action==='stmt-email'){ var se = stmtFind(el.getAttribute('data-key')); if(se) emailStatement(se); }
       else if(action==='stmt-wa'){ var sw = stmtFind(el.getAttribute('data-key')); if(sw) whatsappStatement(sw); }
@@ -3834,6 +3835,7 @@ import './platform.js?v=2026-11-13.51';
       if(e.target.id==='boardSearch' && STATE.boardQuery!==e.target.value){ STATE.boardQuery = e.target.value; render(); focusEl('boardSearch'); }
       if(e.target.id==='customerSearch' && STATE.customerQuery!==e.target.value){ STATE.customerQuery = e.target.value; render(); focusEl('customerSearch'); }
       if(e.target.id==='opSearch' && STATE.opQuery!==e.target.value){ STATE.opQuery = e.target.value; render(); focusEl('opSearch'); }
+      if(e.target.id==='stmtSearch' && STATE.stmtQuery!==e.target.value){ STATE.stmtQuery = e.target.value; render(); focusEl('stmtSearch'); }
       if(e.target.id==='ofAttach'){ handleAttach(e.target.files[0]); }
       if(e.target.id==='chatAttach'){ attachFromDevice(e.target.getAttribute('data-phone'), e.target.files[0]); e.target.value=''; }
       if(e.target.id==='importFile'){ importBackupFile(e.target.files[0]); e.target.value=''; }
@@ -3893,6 +3895,7 @@ import './platform.js?v=2026-11-13.51';
       if(e.target.id==='boardSearch' && STATE.boardQuery!==e.target.value){ STATE.boardQuery = e.target.value; render(); focusEl('boardSearch'); }
       if(e.target.id==='customerSearch' && STATE.customerQuery!==e.target.value){ STATE.customerQuery = e.target.value; render(); focusEl('customerSearch'); }
       if(e.target.id==='opSearch' && STATE.opQuery!==e.target.value){ STATE.opQuery = e.target.value; render(); focusEl('opSearch'); }
+      if(e.target.id==='stmtSearch' && STATE.stmtQuery!==e.target.value){ STATE.stmtQuery = e.target.value; render(); focusEl('stmtSearch'); }
       if(e.target.id==='msgText'){ STATE.msgDraft = e.target.value; }
       if(e.target.id==='quoteSearch' && STATE.quoteQuery!==e.target.value){ STATE.quoteQuery = e.target.value; render(); focusEl('quoteSearch'); return; }
       if(e.target.id==='chatCompose'){ var p = currentChatPhone(); if(p){ STATE.chatDraft[p] = e.target.value; } }
@@ -7922,7 +7925,7 @@ import './platform.js?v=2026-11-13.51';
     STATE.stmtOpen = true; STATE.stmtAsAt = todayIso();
     var list = statementData(STATE.stmtAsAt).filter(function(a){ return a.balance > STMT_MIN; });
     STATE.stmtSel = {}; list.forEach(function(a){ STATE.stmtSel[a.key] = true; });
-    STATE.stmtStatus = {}; STATE.stmtCollapsed = {};
+    STATE.stmtStatus = {}; STATE.stmtCollapsed = {}; STATE.stmtQuery = '';
     render(); window.scrollTo(0, 0);
   }
 
@@ -8122,13 +8125,25 @@ import './platform.js?v=2026-11-13.51';
       return '<div class="q-date"><span class="pay-chip '+cls+'">'+(k==='email'?'Email':'WhatsApp')+'</span> '+escapeHtml(v.text)+'</div>';
     }).join('');
   }
+  function stmtSearchHit(a, q){
+    var text = [a.name, a.email, a.phone, (a.customer && a.customer.firstName)||'', (a.customer && a.customer.lastName)||'', money(a.balance), Number(a.balance).toFixed(2)]
+      .concat(a.items.map(function(x){ return [x.ref, x.job, x.desc, Number(x.balance).toFixed(2)].join(' '); }))
+      .concat(a.credits.map(function(x){ return [x.ref, x.desc].join(' '); })).join(' ');
+    var phones = [a.phone].concat(((a.customer && a.customer.contacts) || []).map(function(p){ return p.phone; }));
+    return searchMatch(q, text, phones);
+  }
   function renderStatementsView(){
     var all = statementData(STATE.stmtAsAt), list = all.filter(function(a){ return a.balance > STMT_MIN; });
     var sel = list.filter(function(a){ return STATE.stmtSel[a.key]; });
     var tot = round2(sel.reduce(function(s,a){ return s + a.balance; }, 0));
     var noEmail = sel.filter(function(a){ return !a.email; }).length, noPhone = sel.filter(function(a){ return !(a.phone && waPhone(a.phone)); }).length;
-    var allSel = list.length && sel.length===list.length;
-    var rows = list.length ? list.map(function(a){
+    // search (update 52): customer name, email, cellphone, invoice/job numbers, descriptions or amounts
+    var sq = String(STATE.stmtQuery||'').trim();
+    var shown = sq ? list.filter(function(a){ return stmtSearchHit(a, sq); }) : list;
+    var shownSel = shown.filter(function(a){ return STATE.stmtSel[a.key]; });
+    var hiddenSel = sel.length - shownSel.length;
+    var allSel = shown.length && shownSel.length===shown.length;
+    var rows = shown.length ? shown.map(function(a){
       var on = !!STATE.stmtSel[a.key], open = !STATE.stmtCollapsed[a.key];
       var lastSent = a.customer && a.customer.lastStatementAt ? '<div class="q-date">Last statement '+shortDate(String(a.customer.lastStatementAt).slice(0,10))+' ('+escapeHtml(String(a.customer.lastStatementVia||'').replace('-template',' notice'))+')</div>' : '';
       var tx = a.items.map(function(x){
@@ -8150,7 +8165,7 @@ import './platform.js?v=2026-11-13.51';
             '<button class="btn btn-ghost btn-sm" data-action="stmt-wa" data-key="'+escapeHtml(a.key)+'"'+(a.phone && !STATE.stmtBusy?'':' disabled')+'>WhatsApp</button></td></tr>' +
         (open ? '<tr class="stmt-tx-row"><td></td><td colspan="5"><table class="stmt-tx"><thead><tr><th>Date</th><th>Reference</th><th>Description</th><th>Due</th><th class="num">Amount</th><th class="num">Paid / credited</th><th class="num">Balance</th></tr></thead><tbody>'+tx+
           '<tr class="stmt-total"><td colspan="6">Amount due'+(a.creditTotal>0.004?' (invoices '+money(a.invTotal)+' less '+money(a.creditTotal)+' received)':'')+'</td><td class="num"><strong>'+money(a.balance)+'</strong></td></tr></tbody></table></td></tr>' : '');
-    }).join('') : '<tr><td colspan="6" class="empty-note">No customer owes more than '+money(STMT_MIN)+'.</td></tr>';
+    }).join('') : (sq && list.length ? '<tr><td colspan="6" class="empty-note">No customer matches “'+escapeHtml(sq)+'”.</td></tr>' : '<tr><td colspan="6" class="empty-note">No customer owes more than '+money(STMT_MIN)+'.</td></tr>');
     return '<div class="topline"><div><h1>Send statements</h1><div class="sub">Customers whose outstanding balance is more than '+money(STMT_MIN)+' &middot; all open transactions</div></div>' +
         '<button class="btn btn-ghost" data-action="stmt-close">&larr; Back to customers</button></div>' +
       '<div class="tiles">' +
@@ -8160,13 +8175,16 @@ import './platform.js?v=2026-11-13.51';
       '</div>' +
       '<div class="panel">' +
         '<div class="stmt-bar">' +
-          '<label class="count-all"><input type="checkbox" data-action="stmt-all"'+(allSel?' checked':'')+(list.length?'':' disabled')+'> Select all</label>' +
+          '<label class="count-all"><input type="checkbox" data-action="stmt-all"'+(allSel?' checked':'')+(shown.length?'':' disabled')+'> '+(sq ? 'Select all shown' : 'Select all')+'</label>' +
+          '<div class="search stmt-search"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><input type="text" id="stmtSearch" placeholder="Search customer, email, cellphone, invoice no…" value="'+escapeHtml(STATE.stmtQuery||'')+'"></div>' +
+          (sq ? '<button class="btn btn-ghost btn-sm" data-action="stmt-search-clear">Clear</button>' : '') +
           '<button class="btn btn-ghost btn-sm" data-action="stmt-expand" data-v="'+(Object.keys(STATE.stmtCollapsed).length ? '1' : '0')+'">'+(Object.keys(STATE.stmtCollapsed).length ? 'Show all transactions' : 'Hide transactions')+'</button>' +
           '<span style="flex:1;"></span>' +
           '<button class="btn btn-sm" data-action="stmt-dl"'+(sel.length?'':' disabled')+'>Download PDFs</button>' +
           '<button class="btn btn-sm" data-action="stmt-send-wa"'+(sel.length && !STATE.stmtBusy?'':' disabled')+'>WhatsApp selected</button>' +
           '<button class="btn btn-primary btn-sm" data-action="stmt-send-email"'+(sel.length && !STATE.stmtBusy?'':' disabled')+'>'+(STATE.stmtBusy?'Sending…':'Email selected')+'</button>' +
         '</div>' +
+        (sq ? '<div class="hint" style="margin:0 0 8px;">'+shown.length+' of '+list.length+' customers match “'+escapeHtml(sq)+'”'+(hiddenSel ? ' &middot; <strong>'+hiddenSel+' more selected</strong> customer'+(hiddenSel===1?' is':'s are')+' not shown but will also be sent — untick “Select all” before searching to send only to the ones you find' : '')+'.</div>' : '') +
         ((noEmail || noPhone) && sel.length ? '<div class="hint" style="margin:0 0 8px;">'+(noEmail? noEmail+' selected without an email address':'')+(noEmail&&noPhone?' &middot; ':'')+(noPhone? noPhone+' without a cellphone number':'')+' — they are skipped for that channel. Use Download PDFs for them.</div>' : '') +
         '<div class="tbl-wrap"><table class="stmt-table"><thead><tr><th style="width:34px;"></th><th>Customer</th><th class="num">Open items</th><th class="num">Oldest</th><th class="num">Balance</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
         '<div class="hint" style="margin-top:10px;">The balance is unpaid invoices less payments received on account and deposits on jobs not invoiced yet. Emails go out from the DsignX email address set up in Bird; WhatsApp sends the PDF if the customer messaged you in the last 24 hours, otherwise the approved <em>dsignx_statement</em> template asks them to reply first.</div>' +
