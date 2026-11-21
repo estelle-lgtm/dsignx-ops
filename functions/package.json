@@ -1,13 +1,13 @@
 {
   "name": "dsignx-ops-functions",
-  "description": "Cloud Functions for DsignX Ops: invite codes, WhatsApp (Bird) and file links (Cloudinary).",
+  "description": "Cloud Functions for DsignX Ops: invite codes, WhatsApp/email (Bird), file links (Cloudinary) and Xero sync.",
   "private": true,
   "main": "index.js",
   "engines": {
     "node": "22"
   },
   "scripts": {
-    "test": "node --test test/core.test.js",
+    "test": "node --test test/core.test.js test/xero.test.js test/xero-sync.test.js",
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log"
   },

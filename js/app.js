@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-17.52';
+import './platform.js?v=2026-11-21.53';
 
 (function(){
   "use strict";
@@ -1259,6 +1259,11 @@ import './platform.js?v=2026-11-17.52';
     }
     STATE.db = P.db;
     STATE.isLive = true;
+    try{
+      var xh = /#xero=(\w+)/.exec(location.hash||'');
+      if(xh){ STATE.tab = 'settings'; history.replaceState(null, '', location.href.split('#')[0]);
+        setTimeout(function(){ toast({connected:'Xero connected — now choose the payment accounts and link', cancelled:'Xero connection cancelled', expired:'The Xero sign-in took too long — try again', failed:'Xero connection failed — try again'}[xh[1]] || 'Xero: '+xh[1]); }, 1500); }
+    }catch(e){}
     STATE.customers = [];
     STATE.orders = [];
     STATE.team = [];
@@ -1860,7 +1865,7 @@ import './platform.js?v=2026-11-17.52';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-17.52</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-21.53</span></div>' +
       '</div>'
     );
   }
@@ -2956,7 +2961,7 @@ import './platform.js?v=2026-11-17.52';
           '<td style="white-space:nowrap;">'+(o.quoteOnly ? '<span style="color:var(--ink-faint);">—</span>' : (orderDateOf(o) ? fullDate(orderDateOf(o)) : ''))+'</td>' +
           '<td class="row-btn" data-action="'+(o.quoteOnly?'open-quote':'open-order')+'" data-id="'+o.id+'">'+escapeHtml(o.title)+(o.quoteOnly ? ' <span class="pay-chip quote-only-chip">Quote only</span>' : (o.jobNumber ? '<div class="mono" style="font-size:11px; color:var(--ink-faint);">'+escapeHtml(o.jobNumber)+'</div>' : ''))+'</td>' +
           '<td class="num">'+money(o.quoteAmount||0)+'</td>' +
-          '<td>'+(o.quoteOnly ? '<button class="btn btn-ghost btn-sm" data-action="quote-convert" data-id="'+o.id+'">Convert to job</button>' : o.invoiced ? ('<span class="status-chip status-invoiced">'+escapeHtml(o.invoiceNumber||'Invoiced')+'</span>'+qDate(o.invoiceGeneratedAt||o.invoicedAt)+(xeroExported(o)?'<div class="q-date" title="'+escapeHtml(o.xeroExportFile||'')+'">In Xero file '+shortDate(String(o.xeroExportedAt).slice(0,10))+'</div>':'')) : '<button class="btn btn-ghost btn-sm" data-action="open-invoice" data-id="'+o.id+'">Generate</button>')+'</td>' +
+          '<td>'+(o.quoteOnly ? '<button class="btn btn-ghost btn-sm" data-action="quote-convert" data-id="'+o.id+'">Convert to job</button>' : o.invoiced ? ('<span class="status-chip status-invoiced">'+escapeHtml(o.invoiceNumber||'Invoiced')+'</span>'+qDate(o.invoiceGeneratedAt||o.invoicedAt)+(o.xeroInv && o.xeroInv.status ? xeroBadge(o) : (xeroExported(o)?'<div class="q-date" title="'+escapeHtml(o.xeroExportFile||'')+'">In Xero file '+shortDate(String(o.xeroExportedAt).slice(0,10))+'</div>':''))) : '<button class="btn btn-ghost btn-sm" data-action="open-invoice" data-id="'+o.id+'">Generate</button>')+'</td>' +
           '<td>'+shortDate(o.dueDate)+'</td>' +
           '<td>'+(o.quoteNumber ? ('<span class="mono" style="font-size:11.5px;">'+escapeHtml(o.quoteNumber)+'</span>'+qDate(o.quoteGeneratedAt)) : '<button class="btn btn-ghost btn-sm" data-action="open-quote" data-id="'+o.id+'">Generate</button>')+'</td>' +
           '<td>'+(o.quoteOnly ? '<span style="color:var(--ink-faint);">—</span>' : '')+(o.quoteOnly ? '' : (function(){ var st = payStatus(o); return '<span class="pay-chip pay-'+st.key+'">'+st.label+'</span>'+payDatesHtml(o); })())+'</td>' +
@@ -3025,6 +3030,7 @@ import './platform.js?v=2026-11-17.52';
 
     return (
       '<div class="topline"><div><h1>Settings</h1><div class="sub">WhatsApp ordering &amp; invoicing defaults</div></div></div>' +
+      renderXeroPanel() +
       '<div class="two-col">' +
         '<div>' +
           '<div class="panel">' +
@@ -3593,6 +3599,11 @@ import './platform.js?v=2026-11-17.52';
       else if(action==='stmt-dl'){ downloadSelectedStatements(); }
       else if(action==='stmt-send-email'){ sendSelectedStatements('email'); }
       else if(action==='stmt-send-wa'){ sendSelectedStatements('wa'); }
+      else if(action==='xero-connect'){ xeroConnect(); }
+      else if(action==='xero-link'){ xeroAction('link', 'Link the app to Xero now? Matching records are linked, and anything Xero does not have yet is sent to Xero over the next while.', function(r){ toast('Linked: '+(r.contacts||0)+' customers, '+(r.invoices||0)+' invoices, '+(r.creditNotes||0)+' credit notes, '+(r.quotes||0)+' quotes · '+(r.toPush||0)+' to send'); }); }
+      else if(action==='xero-sync'){ xeroAction('syncNow', '', function(r){ var p = (r && r.pull) || {}, w = (r && r.sweep) || {}; toast('Xero: '+(p.payments||0)+' payment(s) in, '+(w.pushed||0)+' record(s) sent'+(w.stopped?' — '+w.stopped:'')); }); }
+      else if(action==='xero-disconnect'){ xeroAction('disconnect', 'Disconnect Xero? Syncing stops until you connect again. Nothing is deleted in Xero or the app.', function(){ STATE.xero = null; STATE.xeroAccounts = null; toast('Xero disconnected'); }); }
+      else if(action==='xero-retry'){ xeroRetry(el.getAttribute('data-coll'), el.getAttribute('data-id')); }
       else if(action==='bi-template'){ e.preventDefault(); downloadBankTemplate(); }
       else if(action==='bi-confirm'){ confirmBankImport(); }
       else if(action==='bi-reset'){ closeBankImport(); }
@@ -3843,6 +3854,7 @@ import './platform.js?v=2026-11-17.52';
       if(e.target.hasAttribute && e.target.hasAttribute('data-stmt-sel')){ var sk2 = e.target.getAttribute('data-stmt-sel'); if(e.target.checked) STATE.stmtSel[sk2] = true; else delete STATE.stmtSel[sk2]; render(); return; }
       if(e.target.id==='quoteFrom' || e.target.id==='quoteTo'){ STATE[e.target.id] = e.target.value; render(); return; }
       if(e.target.id==='quoteDateBy'){ STATE.quoteDateBy = e.target.value; render(); return; }
+      if(e.target.hasAttribute && e.target.hasAttribute('data-xero-acct') && isOwnerRole()){ var xp = {}; xp[e.target.getAttribute('data-xero-acct')] = e.target.value; updateConfig(xp); toast('Saved'); return; }
       if(e.target.id==='bankFile'){ bankImportFile(e.target.files[0]); e.target.value=''; return; }
       if(e.target.hasAttribute && e.target.hasAttribute('data-bi-row') && STATE.bankImport && STATE.bankImport.rows){
         var bir = STATE.bankImport.rows[Number(e.target.getAttribute('data-bi-row'))];
@@ -7726,7 +7738,7 @@ import './platform.js?v=2026-11-17.52';
   // not (yet) against an invoice — e.g. a deposit before the job/invoice exists, or the extra on an invoice.
   // Allocating creates an allocation record in receipts/ (method 'alloc', sourceReceiptId) against the job,
   // so every balance in the app (payments, age analysis, reminders) picks it up. Undo = void the allocation.
-  function isTillReceipt(r){ return !r.method || r.method==='cash' || r.method==='card'; }
+  function isTillReceipt(r){ return !r.fromXero && (!r.method || r.method==='cash' || r.method==='card'); }
   function onAccountReceipts(){ return STATE.receipts.filter(function(r){ return r.kind==='onaccount' && !r.voided; }); }
   function allocationsOf(srcId, withVoid){ return STATE.receipts.filter(function(r){ return r.method==='alloc' && r.sourceReceiptId===srcId && (withVoid || !r.voided); }); }
   function overpayRemaining(src){ return round2((Number(src.amount)||0) - allocationsOf(src.id).reduce(function(s,a){ return s + (Number(a.amount)||0); }, 0)); }
@@ -8189,6 +8201,123 @@ import './platform.js?v=2026-11-17.52';
         '<div class="tbl-wrap"><table class="stmt-table"><thead><tr><th style="width:34px;"></th><th>Customer</th><th class="num">Open items</th><th class="num">Oldest</th><th class="num">Balance</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>' +
         '<div class="hint" style="margin-top:10px;">The balance is unpaid invoices less payments received on account and deposits on jobs not invoiced yet. Emails go out from the DsignX email address set up in Bird; WhatsApp sends the PDF if the customer messaged you in the last 24 hours, otherwise the approved <em>dsignx_statement</em> template asks them to reply first.</div>' +
       '</div>';
+  }
+
+  /* ============================ Xero live sync (update 53) ============================ */
+  // Settings → Xero: connect, choose the payment accounts, link what already exists, then the server keeps
+  // both sides in step (app → Xero on every change; Xero → app every 15 minutes).
+  var XERO_KINDS = [
+    {coll:'customers', key:'xero', label:'Customer', name:function(d){ return d.name; }},
+    {coll:'orders', key:'xeroQuote', label:'Quote', name:function(d){ return (d.quoteNumber||'')+' · '+(d.customerName||''); }},
+    {coll:'orders', key:'xeroInv', label:'Invoice', name:function(d){ return (d.invoiceNumber||'')+' · '+(d.customerName||''); }},
+    {coll:'creditNotes', key:'xero', label:'Credit note', name:function(d){ return (d.number||'')+' · '+(d.customerName||''); }},
+    {coll:'receipts', key:'xero', label:'Receipt', name:function(d){ return (d.number||'')+' · '+(d.customerName||'')+' · '+money(d.amount); }}
+  ];
+  function xeroColl(coll){ return coll==='customers' ? STATE.customers : coll==='orders' ? STATE.orders : coll==='creditNotes' ? (STATE.creditNotes||[]) : STATE.receipts; }
+  function xeroIssues(){
+    var out = {error:[], retry:0, pending:0, waiting:0};
+    XERO_KINDS.forEach(function(k){
+      (xeroColl(k.coll)||[]).forEach(function(d){
+        var s = d[k.key]; if(!s || !s.status) return;
+        if(s.status==='error') out.error.push({k:k, d:d, s:s});
+        else if(s.status==='retry') out.retry++;
+        else if(s.status==='pending') out.pending++;
+        else if(s.status==='waiting') out.waiting++;
+      });
+    });
+    return out;
+  }
+  function xeroCall(action, extra){
+    if(!(window.DSX && window.DSX.call)) return Promise.reject(new Error('Xero needs the live app'));
+    return window.DSX.call('xeroAdmin', Object.assign({action:action}, extra||{}));
+  }
+  function xeroLoadStatus(){
+    if(!isOwnerRole() || !STATE.isLive || STATE.xeroBusy) return;
+    STATE.xeroBusy = 'status';
+    xeroCall('status').then(function(st){ STATE.xero = st || {connected:false}; STATE.xeroBusy = ''; render();
+      if(st && st.connected && !STATE.xeroAccounts) xeroLoadAccounts(); })
+      .catch(function(e){ STATE.xeroBusy = ''; STATE.xero = {connected:false, error:xeroErr(e)}; render(); });
+  }
+  function xeroLoadAccounts(){
+    xeroCall('accounts').then(function(r){ STATE.xeroAccounts = (r && r.accounts) || []; render(); })
+      .catch(function(e){ STATE.xeroAccounts = []; toast('Could not read the Xero accounts — '+xeroErr(e)); });
+  }
+  function xeroErr(e){
+    var m = (e && (e.message || (e.details && e.details.message))) || 'unknown error';
+    if(/not.found|NOT_FOUND/i.test(String(e && (e.code||e.message)))) return 'deploy the functions first (firebase deploy --only functions)';
+    return m;
+  }
+  function xeroConnect(){
+    if(!isOwnerRole()) return;
+    STATE.xeroBusy = 'connect'; render();
+    window.DSX.call('xeroConnectUrl', {returnUrl: location.href.split('#')[0]}).then(function(r){ location.href = r.url; })
+      .catch(function(e){ STATE.xeroBusy = ''; render(); toast('Could not start the Xero connection — '+xeroErr(e)); });
+  }
+  function xeroAction(action, confirmText, done){
+    if(confirmText && !confirm(confirmText)) return;
+    STATE.xeroBusy = action; render();
+    xeroCall(action).then(function(r){ STATE.xeroBusy = ''; if(done) done(r); xeroLoadStatus(); })
+      .catch(function(e){ STATE.xeroBusy = ''; render(); toast('Xero: '+xeroErr(e)); });
+  }
+  function xeroRetry(coll, id){
+    STATE.xeroBusy = 'retry'; render();
+    xeroCall('retry', {kind:coll, id:id}).then(function(){ STATE.xeroBusy = ''; render(); toast('Sent to Xero again — see the status'); })
+      .catch(function(e){ STATE.xeroBusy = ''; render(); toast('Xero: '+xeroErr(e)); });
+  }
+  function xeroWhen(iso){ if(!iso) return '—'; var d = new Date(iso); if(isNaN(d)) return '—'; return shortDate(localIso(d))+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+  function renderXeroPanel(){
+    if(!isOwnerRole()) return '';
+    if(!STATE.isLive) return '<div class="panel"><div class="section-label">Xero</div><p class="hint" style="margin:0;">The Xero connection works in the live app only.</p></div>';
+    if(!STATE.xero && !STATE.xeroBusy) setTimeout(xeroLoadStatus, 0);
+    var x = STATE.xero || {}, busy = STATE.xeroBusy;
+    var head = '<div class="section-label" style="display:flex; justify-content:space-between; align-items:center;">Xero live sync '+(x.connected ? '<span class="pay-chip pay-paid">Connected</span>' : '<span class="pay-chip pay-unpaid">Not connected</span>')+'</div>';
+    if(!STATE.xero) return '<div class="panel">'+head+'<p class="hint" style="margin:0;">Checking…</p></div>';
+    if(!x.connected){
+      return '<div class="panel">'+head+
+        '<p class="hint" style="margin-top:0;">Connect DsignX’s Xero organisation. After that, customers, quotes, invoices, credit notes and receipts you save in the app go to Xero straight away, and every 15 minutes the app reads back payments made in Xero (e.g. bank reconciliation), contact changes, new customers added in Xero, and invoices voided or paid in Xero.</p>' +
+        (x.error ? '<p class="hint" style="color:var(--critical);">'+escapeHtml(x.error)+'</p>' : '') +
+        '<button class="btn btn-primary btn-sm" data-action="xero-connect"'+(busy?' disabled':'')+'>'+(busy==='connect'?'Opening Xero…':'Connect to Xero')+'</button>' +
+        '<p class="hint">You sign in to Xero and choose the organisation. The server keeps the connection; nothing is stored in the browser.</p></div>';
+    }
+    var accts = STATE.xeroAccounts;
+    var sel = function(id, key, label, hint){
+      var v = STATE.config[key] || '';
+      var opts = '<option value="">— Choose —</option>' + (accts||[]).map(function(a){ return '<option value="'+escapeHtml(a.id)+'"'+(a.id===v?' selected':'')+'>'+escapeHtml((a.code?a.code+' · ':'')+a.name)+(a.bank?' (bank)':'')+'</option>'; }).join('');
+      return '<div class="field"><label for="'+id+'">'+label+'</label><select id="'+id+'" data-xero-acct="'+key+'"'+(accts?'':' disabled')+'>'+(accts?opts:'<option>Loading…</option>')+'</select>'+(hint?'<div class="hint">'+hint+'</div>':'')+'</div>';
+    };
+    var acctsDone = STATE.config.xeroPayCash && STATE.config.xeroPayCard && STATE.config.xeroPayEft;
+    var iss = xeroIssues();
+    var errRows = iss.error.slice(0, 25).map(function(it){
+      return '<tr><td>'+it.k.label+'</td><td>'+escapeHtml(it.k.name(it.d)||'')+'</td><td style="color:var(--critical);">'+escapeHtml(it.s.error||'')+'</td><td style="text-align:right;"><button class="btn btn-ghost btn-sm" data-action="xero-retry" data-coll="'+it.k.coll+'" data-id="'+escapeHtml(it.d.id)+'"'+(busy?' disabled':'')+'>Retry</button></td></tr>';
+    }).join('');
+    var lp = x.lastPullResult;
+    return '<div class="panel">'+head+
+      '<p class="hint" style="margin-top:0;">Organisation: <strong>'+escapeHtml(x.tenantName||'')+'</strong> &middot; connected '+xeroWhen(x.connectedAt)+(x.linkedAt ? ' &middot; syncing since '+xeroWhen(x.linkedAt) : '')+' &middot; Xero calls today: '+(x.callsToday||0)+' of 1,000</p>' +
+      '<div class="section-label" style="margin-top:6px;">1. Where payments go in Xero</div>' +
+      '<div class="field-row">' + sel('xeroPayCash','xeroPayCash','Cash receipts','Cash on hand / petty cash account') + sel('xeroPayCard','xeroPayCard','Card (speedpoint) receipts','Speedpoint clearing or bank account') + '</div>' +
+      sel('xeroPayEft','xeroPayEft','EFT receipts (bank)','Your business bank account — match the bank-feed line to the payment in Xero') +
+      (x.linkedAt ? '' :
+        '<div class="section-label" style="margin-top:6px;">2. Link what is already in Xero and start syncing</div>' +
+        '<p class="hint" style="margin-top:0;">Matches customers by name, and invoices, credit notes and quotes by number. Only what Xero does not have yet is sent. Receipts already recorded are taken as already in Xero (except for invoices the app creates in Xero now). Do this once.</p>' +
+        '<button class="btn btn-primary btn-sm" data-action="xero-link"'+(busy||!acctsDone?' disabled':'')+'>'+(busy==='link'?'Linking… (can take a minute)':'Link & start syncing')+'</button>' +
+        (acctsDone ? '' : '<div class="hint">Choose the three payment accounts first.</div>')) +
+      (x.linkedAt ?
+        '<div class="section-label" style="margin-top:10px;">Sync</div>' +
+        '<div class="hint" style="margin:0 0 8px;">Last read from Xero: '+xeroWhen(x.lastPullAt)+(lp ? ' &middot; '+[lp.payments?lp.payments+' payment'+(lp.payments===1?'':'s'):'', lp.paymentsRemoved?lp.paymentsRemoved+' removed':'', lp.contacts?lp.contacts+' contact update'+(lp.contacts===1?'':'s'):'', lp.newCustomers?lp.newCustomers+' new customer'+(lp.newCustomers===1?'':'s'):'', lp.invoices?lp.invoices+' invoice status change'+(lp.invoices===1?'':'s'):''].filter(Boolean).join(', ')||'nothing new' : '')+
+          ' &middot; Waiting to send: '+(iss.pending+iss.retry)+(iss.waiting?' &middot; '+iss.waiting+' receipt'+(iss.waiting===1?'':'s')+' waiting for an invoice':'')+'</div>' +
+        '<div style="display:flex; gap:8px; flex-wrap:wrap;"><button class="btn btn-sm" data-action="xero-sync"'+(busy?' disabled':'')+'>'+(busy==='syncNow'?'Syncing…':'Sync now')+'</button>' +
+        '<button class="btn btn-ghost btn-sm" data-action="xero-disconnect"'+(busy?' disabled':'')+'>Disconnect</button></div>' +
+        (iss.error.length ? '<div class="section-label" style="margin-top:12px; color:var(--critical);">'+iss.error.length+' not accepted by Xero</div><div class="tbl-wrap"><table><tbody>'+errRows+'</tbody></table></div>'+(iss.error.length>25?'<div class="hint">Showing the first 25.</div>':'') +
+          '<div class="hint">Fix the cause (in the app, or in Xero — e.g. approve a draft invoice), then press Retry.</div>' : '<div class="hint" style="margin-top:8px;">No errors.</div>')
+      : '') +
+    '</div>';
+  }
+  function xeroBadge(o){
+    if(!o.xeroInv || !o.xeroInv.status) return '';
+    var s = o.xeroInv.status;
+    if(s==='synced') return '<div class="q-date" title="In Xero'+(o.xeroInvoiceStatus?' ('+escapeHtml(o.xeroInvoiceStatus)+')':'')+'">Xero ✓'+(o.xeroInvoiceStatus==='VOIDED'?' <span style="color:var(--critical);">voided in Xero</span>':(o.xeroInvoiceStatus==='PAID'?' paid':''))+'</div>';
+    if(s==='error') return '<div class="q-date" style="color:var(--critical);" title="'+escapeHtml(o.xeroInv.error||'')+'">Xero ⚠ not accepted</div>';
+    return '<div class="q-date">Xero: sending…</div>';
   }
 
   /* ============================ boot ============================ */

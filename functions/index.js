@@ -281,3 +281,119 @@ exports.sendProfileTasks = onCall(async (req) => {
   if ((await roleOf(req.auth.uid)) !== 'owner') throw new HttpsError('permission-denied', 'Only the owner can send these tasks.');
   return runProfileTasks('manual');
 });
+
+/* ---------------- Xero live sync ---------------- */
+// The app leads: customers, quotes, invoices, credit notes and receipts are pushed to Xero as they change.
+// Every 15 minutes the app also reads back from Xero: payments (e.g. bank reconciliation), contact changes,
+// new customers added in Xero, and invoices voided or paid in Xero.
+// Setup: create a Web app at developer.xero.com, then
+//   firebase functions:secrets:set XERO_CLIENT_SECRET
+//   and give XERO_CLIENT_ID when deploy asks (it is not secret).
+// Redirect URI to register at Xero: https://europe-west1-<project-id>.cloudfunctions.net/xeroCallback
+const { onRequest } = require('firebase-functions/v2/https');
+const { onDocumentWritten } = require('firebase-functions/v2/firestore');
+const XS = require('./lib/xero');
+const { makeSync } = require('./lib/xero-sync');
+const crypto = require('crypto');
+
+const XERO_CLIENT_ID = defineString('XERO_CLIENT_ID', { default: '' });
+const XERO_CLIENT_SECRET = defineSecret('XERO_CLIENT_SECRET');
+const XERO_SCOPES = defineString('XERO_SCOPES', { default: 'openid profile email offline_access accounting.contacts accounting.invoices accounting.payments accounting.settings.read' });
+const XERO_REDIRECT = defineString('XERO_REDIRECT_URI', { default: '' });
+// Firestore triggers must run in the database's region. Change in functions/.env if deploy says so.
+const TRIGGER_REGION = process.env.XERO_TRIGGER_REGION || 'europe-west1';
+const xeroOpts = { secrets: [XERO_CLIENT_SECRET], memory: '512MiB', timeoutSeconds: 300 };
+
+const xsync = makeSync({
+  db, admin, logger,
+  clientId: () => XERO_CLIENT_ID.value(),
+  clientSecret: () => XERO_CLIENT_SECRET.value(),
+  scopes: () => XERO_SCOPES.value(),
+});
+function xeroRedirectUri() {
+  return XERO_REDIRECT.value() || `https://europe-west1-${process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT}.cloudfunctions.net/xeroCallback`;
+}
+async function ownerOnly(req) {
+  if (!req.auth) throw new HttpsError('unauthenticated', 'Sign in first.');
+  if ((await roleOf(req.auth.uid)) !== 'owner') throw new HttpsError('permission-denied', 'Only the owner can manage the Xero connection.');
+}
+function xeroHttpsError(e) {
+  if (e instanceof HttpsError) return e;
+  if (e.kind === 'notconnected') return new HttpsError('failed-precondition', e.message);
+  if (e.kind === 'rate') return new HttpsError('resource-exhausted', e.message);
+  return new HttpsError('aborted', e.message || 'Xero error');
+}
+
+exports.xeroConnectUrl = onCall(xeroOpts, async (req) => {
+  await ownerOnly(req);
+  if (!XERO_CLIENT_ID.value()) throw new HttpsError('failed-precondition', 'XERO_CLIENT_ID is not set on the server yet (see the setup steps).');
+  const state = crypto.randomBytes(18).toString('hex');
+  const ret = String((req.data && req.data.returnUrl) || '');
+  if (!/^https:\/\/[^\s]+$/.test(ret)) throw new HttpsError('invalid-argument', 'Missing return address');
+  await db.doc('xero/oauth').set({ state, returnUrl: ret, at: Date.now(), uid: req.auth.uid });
+  return { url: xsync.authUrl(state, xeroRedirectUri()) };
+});
+
+exports.xeroCallback = onRequest(xeroOpts, async (req, res) => {
+  const s = await db.doc('xero/oauth').get();
+  const o = s.exists ? s.data() : null;
+  const back = (o && o.returnUrl) || '';
+  const go = (tag) => { if (back) res.redirect(back.split('#')[0] + '#xero=' + tag); else res.status(200).send('Xero: ' + tag + '. You can close this window.'); };
+  try {
+    if (!o || !req.query.state || req.query.state !== o.state || Date.now() - o.at > 15 * 60 * 1000) return go('expired');
+    if (req.query.error) return go('cancelled');
+    await xsync.finishConnect(String(req.query.code || ''), xeroRedirectUri());
+    await db.doc('xero/oauth').delete();
+    go('connected');
+  } catch (e) {
+    logger.error('xero connect failed', { message: e.message });
+    go('failed');
+  }
+});
+
+exports.xeroAdmin = onCall(xeroOpts, async (req) => {
+  const action = req.data && req.data.action;
+  if (!req.auth) throw new HttpsError('unauthenticated', 'Sign in first.');
+  const role = await roleOf(req.auth.uid);
+  if (action === 'status') {
+    if (role !== 'owner' && role !== 'designer') throw new HttpsError('permission-denied', 'Not allowed.');
+    return xsync.status();
+  }
+  await ownerOnly(req);
+  try {
+    if (action === 'accounts') return { accounts: await xsync.accounts() };
+    if (action === 'link') { const r = await xsync.linkExisting(); const sw = await xsync.sweep(20); return Object.assign({}, r, { sweep: sw }); }
+    if (action === 'syncNow') { const p = await xsync.pull(); const sw = await xsync.sweep(30); return { pull: p, sweep: sw }; }
+    if (action === 'retry') {
+      const kind = String(req.data.kind || ''), id = String(req.data.id || '');
+      if (!['customers', 'orders', 'creditNotes', 'receipts'].includes(kind) || !/^[\w-]{1,80}$/.test(id)) throw new HttpsError('invalid-argument', 'Bad record');
+      await xsync.pushOne(kind, id);
+      const d = (await db.doc(kind + '/' + id).get()).data() || {};
+      return { xero: d.xero || null, xeroInv: d.xeroInv || null, xeroQuote: d.xeroQuote || null };
+    }
+    if (action === 'disconnect') { await xsync.disconnect(); return { ok: true }; }
+    throw new HttpsError('invalid-argument', 'Unknown action');
+  } catch (e) { throw xeroHttpsError(e); }
+});
+
+// Push as soon as something changes in the app (our own xero* bookkeeping fields are ignored).
+function xeroTrigger(coll) {
+  return onDocumentWritten({ document: coll + '/{id}', region: TRIGGER_REGION, secrets: [XERO_CLIENT_SECRET], memory: '256MiB', timeoutSeconds: 120, retry: false }, async (event) => {
+    const before = event.data && event.data.before && event.data.before.exists ? event.data.before.data() : null;
+    const after = event.data && event.data.after && event.data.after.exists ? event.data.after.data() : null;
+    if (!after) return;
+    if (!XS.relevantChange(before, after)) return;
+    try { await xsync.pushOne(coll, event.params.id); }
+    catch (e) { logger.warn('xero push failed', { coll, id: event.params.id, message: e.message }); }
+  });
+}
+exports.xeroCustomers = xeroTrigger('customers');
+exports.xeroOrders = xeroTrigger('orders');
+exports.xeroCreditNotes = xeroTrigger('creditNotes');
+exports.xeroReceipts = xeroTrigger('receipts');
+
+// Every 15 minutes: read back from Xero, then catch up anything still pending or to retry.
+exports.xeroSync = onSchedule(Object.assign({ schedule: '*/15 * * * *', timeZone: 'Africa/Johannesburg' }, xeroOpts), async () => {
+  try { const p = await xsync.pull(); const s = await xsync.sweep(25); logger.info('xero sync', { pull: p, sweep: s }); }
+  catch (e) { logger.warn('xero sync failed', { message: e.message }); }
+});
