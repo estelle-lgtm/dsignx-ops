@@ -26,6 +26,8 @@ function fakeXero() {
     }
     if (p === '/Contacts' && m === 'POST') { const c = body.Contacts[0]; if (!c.ContactID) { c.ContactID = id('XC'); X.contacts.push(Object.assign({}, c)); } return ok({ Contacts: [c] }); }
     if (p === '/Invoices' && m === 'GET') {
+      const ids = u.searchParams.get('IDs');
+      if (ids) return ok({ Invoices: X.invoices.filter((i) => ids.split(',').includes(i.InvoiceID)) });
       const nums = u.searchParams.get('InvoiceNumbers');
       if (nums) return ok({ Invoices: X.invoices.filter((i) => i.InvoiceNumber === nums) });
       return ok({ Invoices: page === 1 ? X.invoices : [] });
@@ -120,4 +122,22 @@ test('link, push, payments and pull', async () => {
   assert.strictEqual(fromXero.length, 1); assert.strictEqual(fromXero[0].number, 'DSX-R0050'); assert.strictEqual(fromXero[0].orderId, 'o1'); assert.strictEqual(fromXero[0].method, 'eft');
   assert.strictEqual(db.S['customers/c1'].email, 'accounts@kroon.co.za');
   assert.ok(Object.values(db.S).some((d) => d && d.name === 'Walk-in From Xero' && d.xeroContactId === 'XC-new'));
+
+  // receipts recorded before the link on an invoice that was a draft: preview, then send what Xero still owes
+  X.invoices.push({ InvoiceID: 'XI-draft', InvoiceNumber: 'DSX-INV0003', Type: 'ACCREC', Status: 'AUTHORISED', AmountDue: 150 });
+  db.S['orders/o3'] = Object.assign({ customerId: 'c1', customerName: 'Kroon Motors', xeroInvoiceId: 'XI-draft' }, inv('DSX-INV0003', '2026-11-05'));
+  db.S['receipts/r4'] = { number: 'DSX-R0004', orderId: 'o3', amount: 100, method: 'card', date: '2026-11-05', kind: 'payment', xero: { status: 'skipped' } };
+  db.S['receipts/r5'] = { number: 'DSX-R0005', orderId: 'o3', amount: 100, method: 'cash', date: '2026-11-06', kind: 'payment', xero: { status: 'skipped' } };
+  db.S['config/business'].xeroPayCard = 'ACC-CARD';
+  const pv = await xs.skippedReceipts();
+  const byNo = {}; pv.items.forEach((i) => { byNo[i.number] = i; });
+  assert.strictEqual(byNo['DSX-R0004'].ok, true);
+  assert.strictEqual(byNo['DSX-R0005'].ok, false); assert.match(byNo['DSX-R0005'].why, /only R 50.00/);
+  assert.strictEqual(byNo['DSX-R0001'].ok, false); // XI-old already paid (AmountDue 0)
+  const sent = await xs.sendSkipped(['r4']);
+  assert.strictEqual(sent.queued, 1);
+  await xs.sweep(30);
+  assert.strictEqual(db.S['receipts/r4'].xero.status, 'synced');
+  assert.strictEqual(X.payments[X.payments.length - 1].Account.AccountID, 'ACC-CARD');
+  assert.strictEqual(db.S['receipts/r5'].xero.status, 'skipped');
 });

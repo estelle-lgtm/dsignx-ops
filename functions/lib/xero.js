@@ -174,7 +174,7 @@ function receiptPlan(r, order, linkedAt, sourceReceipt) {
   if (r.voided) return r.xeroPaymentId ? { action: 'delete' } : { action: 'skip', status: 'void', note: 'Voided' };
   const when = r.method === 'alloc' && sourceReceipt ? sourceReceipt.date : r.date;
   const createdByApp = order && order.xeroInv && order.xeroInv.created;
-  if (linkedAt && day(when) < day(linkedAt) && !createdByApp) return { action: 'skip', status: 'skipped', note: 'Before the Xero link — assumed already in Xero' };
+  if (linkedAt && day(when) < day(linkedAt) && !createdByApp && !r.xeroSendLate) return { action: 'skip', status: 'skipped', note: 'Before the Xero link — assumed already in Xero' };
   if (!order || !order.xeroInvoiceId) return { action: 'wait', status: 'waiting', note: 'Waiting for the invoice to reach Xero' };
   return { action: 'push' };
 }

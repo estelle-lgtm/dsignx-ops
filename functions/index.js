@@ -371,6 +371,11 @@ exports.xeroAdmin = onCall(xeroOpts, async (req) => {
       const d = (await db.doc(kind + '/' + id).get()).data() || {};
       return { xero: d.xero || null, xeroInv: d.xeroInv || null, xeroQuote: d.xeroQuote || null };
     }
+    if (action === 'skippedReceipts') return xsync.skippedReceipts();
+    if (action === 'sendSkipped') {
+      const ids = Array.isArray(req.data.ids) ? req.data.ids.filter((x) => /^[\w-]{1,80}$/.test(String(x))).map(String) : [];
+      const q = await xsync.sendSkipped(ids); const sw = await xsync.sweep(30); return Object.assign(q, { sweep: sw });
+    }
     if (action === 'disconnect') { await xsync.disconnect(); return { ok: true }; }
     throw new HttpsError('invalid-argument', 'Unknown action');
   } catch (e) { throw xeroHttpsError(e); }

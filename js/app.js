@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-21.53';
+import './platform.js?v=2026-11-21.54';
 
 (function(){
   "use strict";
@@ -1865,7 +1865,7 @@ import './platform.js?v=2026-11-21.53';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-21.53</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-21.54</span></div>' +
       '</div>'
     );
   }
@@ -3603,6 +3603,10 @@ import './platform.js?v=2026-11-21.53';
       else if(action==='xero-link'){ xeroAction('link', 'Link the app to Xero now? Matching records are linked, and anything Xero does not have yet is sent to Xero over the next while.', function(r){ toast('Linked: '+(r.contacts||0)+' customers, '+(r.invoices||0)+' invoices, '+(r.creditNotes||0)+' credit notes, '+(r.quotes||0)+' quotes · '+(r.toPush||0)+' to send'); }); }
       else if(action==='xero-sync'){ xeroAction('syncNow', '', function(r){ var p = (r && r.pull) || {}, w = (r && r.sweep) || {}; toast('Xero: '+(p.payments||0)+' payment(s) in, '+(w.pushed||0)+' record(s) sent'+(w.stopped?' — '+w.stopped:'')); }); }
       else if(action==='xero-disconnect'){ xeroAction('disconnect', 'Disconnect Xero? Syncing stops until you connect again. Nothing is deleted in Xero or the app.', function(){ STATE.xero = null; STATE.xeroAccounts = null; toast('Xero disconnected'); }); }
+      else if(action==='xero-skip-check'){ xeroSkipCheck(); }
+      else if(action==='xero-skip-send'){ xeroSkipSend(); }
+      else if(action==='xero-skip-one'){ if(STATE.xeroSkipped){ var sid = el.getAttribute('data-id'); if(el.checked) STATE.xeroSkipped.sel[sid] = true; else delete STATE.xeroSkipped.sel[sid]; render(); } }
+      else if(action==='xero-skip-all'){ if(STATE.xeroSkipped){ var son = el.checked; STATE.xeroSkipped.sel = {}; if(son) STATE.xeroSkipped.items.forEach(function(i){ if(i.ok) STATE.xeroSkipped.sel[i.id] = true; }); render(); } }
       else if(action==='xero-retry'){ xeroRetry(el.getAttribute('data-coll'), el.getAttribute('data-id')); }
       else if(action==='bi-template'){ e.preventDefault(); downloadBankTemplate(); }
       else if(action==='bi-confirm'){ confirmBankImport(); }
@@ -8308,9 +8312,52 @@ import './platform.js?v=2026-11-21.53';
         '<div style="display:flex; gap:8px; flex-wrap:wrap;"><button class="btn btn-sm" data-action="xero-sync"'+(busy?' disabled':'')+'>'+(busy==='syncNow'?'Syncing…':'Sync now')+'</button>' +
         '<button class="btn btn-ghost btn-sm" data-action="xero-disconnect"'+(busy?' disabled':'')+'>Disconnect</button></div>' +
         (iss.error.length ? '<div class="section-label" style="margin-top:12px; color:var(--critical);">'+iss.error.length+' not accepted by Xero</div><div class="tbl-wrap"><table><tbody>'+errRows+'</tbody></table></div>'+(iss.error.length>25?'<div class="hint">Showing the first 25.</div>':'') +
-          '<div class="hint">Fix the cause (in the app, or in Xero — e.g. approve a draft invoice), then press Retry.</div>' : '<div class="hint" style="margin-top:8px;">No errors.</div>')
+          '<div class="hint">Fix the cause (in the app, or in Xero — e.g. approve a draft invoice), then press Retry.</div>' : '<div class="hint" style="margin-top:8px;">No errors.</div>') +
+        renderXeroSkipped()
       : '') +
     '</div>';
+  }
+  // Receipts recorded before the link were assumed to be in Xero already. For invoices that were still
+  // drafts in Xero (CSV imports) they never got there: check them against Xero, then send the selected ones.
+  function renderXeroSkipped(){
+    var sk = STATE.xeroSkipped, busy = STATE.xeroBusy;
+    var html = '<div class="section-label" style="margin-top:14px;">Receipts recorded before the link</div>' +
+      '<p class="hint" style="margin-top:0;">When you linked, receipts already in the app were taken as already in Xero. For invoices that were still drafts in Xero, the payments are missing there. Check compares each receipt with what Xero still shows as owing on its invoice.</p>';
+    if(!sk) return html + '<button class="btn btn-sm" data-action="xero-skip-check"'+(busy?' disabled':'')+'>'+(busy==='skipCheck'?'Checking Xero…':'Check earlier receipts')+'</button>';
+    var ok = sk.items.filter(function(i){ return i.ok; }), no = sk.items.filter(function(i){ return !i.ok; });
+    var sel = ok.filter(function(i){ return sk.sel[i.id]; });
+    var tot = sel.reduce(function(a,i){ return a + (Number(i.amount)||0); }, 0);
+    var mlabel = function(m){ return m==='eft'?'EFT':m==='card'?'Card':m==='cash'?'Cash':m==='alloc'?'Overpayment':m; };
+    var row = function(i, box){ return '<tr><td style="width:30px;">'+(box?'<input type="checkbox" data-action="xero-skip-one" data-id="'+escapeHtml(i.id)+'"'+(sk.sel[i.id]?' checked':'')+'>':'')+'</td><td>'+escapeHtml(i.number)+'</td><td>'+shortDate(i.date)+'</td><td>'+escapeHtml(i.invoiceNumber)+'</td><td>'+escapeHtml(i.customerName)+'</td><td>'+mlabel(i.method)+'</td><td class="num">'+money(i.amount)+'</td>'+(box?'':'<td class="hint" style="margin:0;">'+escapeHtml(i.why)+'</td>')+'</tr>'; };
+    html += '<div class="hint" style="margin:0 0 8px;"><strong>'+ok.length+'</strong> can go to Xero (invoice approved and still owing) &middot; '+no.length+' left as they are.</div>';
+    if(ok.length){
+      html += '<div class="tbl-wrap" style="max-height:340px; overflow:auto;"><table><thead><tr><th><input type="checkbox" data-action="xero-skip-all"'+(sel.length===ok.length?' checked':'')+'></th><th>Receipt</th><th>Date</th><th>Invoice</th><th>Customer</th><th>Method</th><th class="num">Amount</th></tr></thead><tbody>'+ok.map(function(i){ return row(i, true); }).join('')+'</tbody></table></div>' +
+        '<div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;"><button class="btn btn-primary btn-sm" data-action="xero-skip-send"'+(busy||!sel.length?' disabled':'')+'>'+(busy==='skipSend'?'Sending…':'Send '+sel.length+' receipt'+(sel.length===1?'':'s')+' ('+money(tot)+') to Xero')+'</button>' +
+        '<button class="btn btn-ghost btn-sm" data-action="xero-skip-check"'+(busy?' disabled':'')+'>Check again</button></div>' +
+        '<div class="hint">Untick any payment you already entered in Xero yourself (e.g. reconciled from the bank feed with “Add payment”), otherwise it is counted twice. Payments go into the cash / speedpoint / bank accounts chosen above, with the receipt number as reference.</div>';
+    } else html += '<button class="btn btn-ghost btn-sm" data-action="xero-skip-check"'+(busy?' disabled':'')+'>Check again</button>';
+    if(no.length) html += '<details style="margin-top:8px;"><summary class="hint" style="cursor:pointer;">Show the '+no.length+' left as they are</summary><div class="tbl-wrap" style="max-height:300px; overflow:auto;"><table><tbody>'+no.map(function(i){ return row(i, false); }).join('')+'</tbody></table></div></details>';
+    return html;
+  }
+  function xeroSkipCheck(){
+    STATE.xeroBusy = 'skipCheck'; render();
+    xeroCall('skippedReceipts').then(function(r){
+      var items = (r && r.items) || [], sel = {};
+      items.forEach(function(i){ if(i.ok) sel[i.id] = true; });
+      STATE.xeroSkipped = {items:items, sel:sel}; STATE.xeroBusy = ''; render();
+    }).catch(function(e){ STATE.xeroBusy = ''; render(); toast('Xero: '+xeroErr(e)); });
+  }
+  function xeroSkipSend(){
+    var sk = STATE.xeroSkipped; if(!sk) return;
+    var ids = sk.items.filter(function(i){ return i.ok && sk.sel[i.id]; }).map(function(i){ return i.id; });
+    var tot = sk.items.filter(function(i){ return i.ok && sk.sel[i.id]; }).reduce(function(a,i){ return a + (Number(i.amount)||0); }, 0);
+    if(!ids.length || !confirm('Send '+ids.length+' payment(s) totalling '+money(tot)+' to Xero? They are recorded against their invoices in Xero.')) return;
+    STATE.xeroBusy = 'skipSend'; render();
+    xeroCall('sendSkipped', {ids:ids}).then(function(r){
+      STATE.xeroBusy = ''; STATE.xeroSkipped = null;
+      toast((r.queued||0)+' receipt(s) queued for Xero · '+((r.sweep&&r.sweep.pushed)||0)+' sent now, the rest within the next hour');
+      xeroLoadStatus();
+    }).catch(function(e){ STATE.xeroBusy = ''; render(); toast('Xero: '+xeroErr(e)); });
   }
   function xeroBadge(o){
     if(!o.xeroInv || !o.xeroInv.status) return '';

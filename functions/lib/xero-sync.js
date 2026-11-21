@@ -521,7 +521,54 @@ function makeSync({ db, admin, logger, clientId, clientSecret, scopes }) {
       linkResult: c.linkResult || null, callsToday: u.day === new Date().toISOString().slice(0, 10) ? (u.calls || 0) : 0 };
   }
 
-  return { api, pushOne, sweep, pull, linkExisting, authUrl, finishConnect, disconnect, accounts, status, connection };
+
+  /* ---------------- receipts recorded before the link ---------------- */
+  // Link assumed every earlier receipt was already in Xero. Invoices that were still drafts in Xero
+  // (CSV imports) never got those payments. This checks each one against what Xero still shows as owing.
+  async function skippedReceipts() {
+    const conn = await connection();
+    if (!conn || !conn.refreshToken || !conn.linkedAt) return { items: [] };
+    const rs = await db.collection('receipts').where('xero.status', '==', 'skipped').get();
+    const recs = rs.docs.map((d) => Object.assign({ id: d.id }, d.data()))
+      .filter((r) => !r.voided && !r.fromXero && r.kind !== 'onaccount' && r.orderId && !r.xeroPaymentId);
+    const orders = {};
+    for (const r of recs) {
+      if (orders[r.orderId] === undefined) { const s = await db.doc('orders/' + r.orderId).get(); orders[r.orderId] = s.exists ? s.data() : null; }
+    }
+    const invIds = Array.from(new Set(recs.map((r) => orders[r.orderId] && orders[r.orderId].xeroInvoiceId).filter(Boolean)));
+    const inXero = {};
+    for (let i = 0; i < invIds.length; i += 40) {
+      const res = await api('GET', '/Invoices?IDs=' + invIds.slice(i, i + 40).join(',') + '&summaryOnly=true');
+      (res.Invoices || []).forEach((x) => { inXero[x.InvoiceID] = x; });
+    }
+    const left = {}; Object.keys(inXero).forEach((k) => { left[k] = Number(inXero[k].AmountDue) || 0; });
+    recs.sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.number).localeCompare(String(b.number)));
+    const items = recs.map((r) => {
+      const o = orders[r.orderId] || {};
+      const x = o.xeroInvoiceId && inXero[o.xeroInvoiceId];
+      const it = { id: r.id, number: r.number || '', date: r.date || '', amount: X.round2(r.amount), method: r.method || '', invoiceNumber: o.invoiceNumber || r.invoiceNumber || '', customerName: r.customerName || o.customerName || '', ok: false, why: '' };
+      if (!x) it.why = 'Invoice not in Xero';
+      else if (x.Status === 'DRAFT' || x.Status === 'SUBMITTED') it.why = 'Invoice is still a draft in Xero — approve it first';
+      else if (x.Status === 'PAID') it.why = 'Already fully paid in Xero';
+      else if (x.Status !== 'AUTHORISED') it.why = 'Invoice is ' + String(x.Status).toLowerCase() + ' in Xero';
+      else if (it.amount > left[x.InvoiceID] + 0.005) it.why = left[x.InvoiceID] > 0 ? 'Xero shows only R ' + left[x.InvoiceID].toFixed(2) + ' still due' : 'Already paid in Xero';
+      else { it.ok = true; left[x.InvoiceID] = X.round2(left[x.InvoiceID] - it.amount); }
+      return it;
+    });
+    return { items };
+  }
+  async function sendSkipped(ids) {
+    let queued = 0;
+    for (const id of (ids || []).slice(0, 1000)) {
+      const ref = db.doc('receipts/' + id); const s = await ref.get(); if (!s.exists) continue;
+      const r = s.data(); if (!r.xero || r.xero.status !== 'skipped' || r.xeroPaymentId) continue;
+      await ref.set(Object.assign({ xeroSendLate: true }, stamp('xero', 'pending')), { merge: true });
+      queued++;
+    }
+    return { queued };
+  }
+
+  return { api, pushOne, sweep, pull, skippedReceipts, sendSkipped, linkExisting, authUrl, finishConnect, disconnect, accounts, status, connection };
 }
 
 module.exports = { makeSync };

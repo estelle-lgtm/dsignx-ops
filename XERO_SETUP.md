@@ -60,6 +60,8 @@ git push
 
 ## Good to know
 
+- **Receipts recorded before the link** (Settings → Xero → *Check earlier receipts*): for invoices that were still drafts in Xero when you linked, the payments were never sent. Approve the drafts in Xero, press *Check earlier receipts*, untick anything you already entered in Xero yourself, and *Send*. Only receipts on approved invoices that Xero still shows as owing are offered.
+
 - **EFT:** a receipt you save in the app (also from Bank import) becomes a payment in your bank account in Xero; in Xero's bank reconciliation choose **Match** for that bank-feed line. If instead you reconcile an EFT in Xero with *Create/Add payment*, that payment comes back to the app as a receipt. Use one of the two for each payment, not both.
 - **Draft invoices in Xero** (old CSV imports) cannot take payments until approved. The app shows the error; approve the invoice in Xero and press **Retry**.
 - **Errors** (e.g. Xero refuses something) are listed under Settings → Xero with a **Retry** button.

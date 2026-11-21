@@ -43,6 +43,7 @@ test('receipt plan', () => {
   assert.strictEqual(X.receiptPlan({ kind: 'onaccount' }, null, linked).action, 'skip');
   assert.strictEqual(X.receiptPlan({ date: '2026-11-10', method: 'cash' }, { xeroInvoiceId: 'I' }, linked).status, 'skipped');
   assert.strictEqual(X.receiptPlan({ date: '2026-11-10', method: 'cash' }, { xeroInvoiceId: 'I', xeroInv: { created: true } }, linked).action, 'push');
+  assert.strictEqual(X.receiptPlan({ date: '2026-11-10', method: 'cash', xeroSendLate: true }, { xeroInvoiceId: 'I' }, linked).action, 'push');
   assert.strictEqual(X.receiptPlan({ date: '2026-11-22', method: 'eft' }, { }, linked).action, 'wait');
   assert.strictEqual(X.receiptPlan({ date: '2026-11-22', method: 'eft' }, { xeroInvoiceId: 'I' }, linked).action, 'push');
   assert.strictEqual(X.receiptPlan({ voided: true, xeroPaymentId: 'P' }, {}, linked).action, 'delete');
