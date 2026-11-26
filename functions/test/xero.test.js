@@ -40,11 +40,21 @@ test('contact payload and back', () => {
 });
 test('receipt plan', () => {
   const linked = '2026-11-21T08:00:00Z';
-  assert.strictEqual(X.receiptPlan({ kind: 'onaccount' }, null, linked).action, 'skip');
   assert.strictEqual(X.receiptPlan({ date: '2026-11-10', method: 'cash' }, { xeroInvoiceId: 'I' }, linked).status, 'skipped');
   assert.strictEqual(X.receiptPlan({ date: '2026-11-10', method: 'cash' }, { xeroInvoiceId: 'I', xeroInv: { created: true } }, linked).action, 'push');
   assert.strictEqual(X.receiptPlan({ date: '2026-11-10', method: 'cash', xeroSendLate: true }, { xeroInvoiceId: 'I' }, linked).action, 'push');
-  assert.strictEqual(X.receiptPlan({ date: '2026-11-22', method: 'eft' }, { }, linked).action, 'wait');
+  assert.strictEqual(X.receiptPlan({ date: '2026-11-22', method: 'eft' }, { }, linked).action, 'overpay'); // deposit, no invoice yet
+  assert.strictEqual(X.receiptPlan({ date: '2026-11-22', method: 'eft', xeroOverpaymentId: 'OV' }, { }, linked).status, 'overpayment');
+  assert.strictEqual(X.receiptPlan({ date: '2026-11-22', method: 'eft', xeroOverpaymentId: 'OV' }, { xeroInvoiceId: 'I' }, linked).action, 'allocate');
+  assert.strictEqual(X.receiptPlan({ date: '2026-11-22', method: 'eft', xeroOverpaymentId: 'OV', xeroAlloc: { invoiceId: 'I' } }, { xeroInvoiceId: 'I' }, linked).status, 'synced');
+  assert.strictEqual(X.receiptPlan({ date: '2026-11-22', kind: 'onaccount', method: 'eft' }, null, linked).action, 'overpay');
+  assert.strictEqual(X.receiptPlan({ date: '2026-11-10', kind: 'onaccount', method: 'eft' }, null, linked).status, 'onaccount');
+  assert.strictEqual(X.receiptPlan({ date: '2026-11-10', kind: 'onaccount', method: 'eft', xeroSendLate: true }, null, linked).action, 'overpay');
+  const src = { kind: 'onaccount', date: '2026-11-22', xeroOverpaymentId: 'OV' };
+  assert.deepStrictEqual(X.receiptPlan({ date: '2026-11-23', method: 'alloc', amount: 10 }, { xeroInvoiceId: 'I' }, linked, src), { action: 'allocate', from: 'OV' });
+  assert.strictEqual(X.receiptPlan({ date: '2026-11-23', method: 'alloc' }, { xeroInvoiceId: 'I' }, linked, { kind: 'onaccount', date: '2026-11-22', xero: { status: 'pending' } }).action, 'wait');
+  assert.strictEqual(X.receiptPlan({ date: '2026-11-23', method: 'alloc' }, { xeroInvoiceId: 'I' }, linked, { kind: 'onaccount', date: '2026-11-22', xero: { status: 'onaccount' } }).action, 'push');
+  assert.strictEqual(X.receiptPlan({ voided: true, xeroOverpaymentId: 'OV' }, {}, linked).action, 'deleteOver');
   assert.strictEqual(X.receiptPlan({ date: '2026-11-22', method: 'eft' }, { xeroInvoiceId: 'I' }, linked).action, 'push');
   assert.strictEqual(X.receiptPlan({ voided: true, xeroPaymentId: 'P' }, {}, linked).action, 'delete');
   assert.strictEqual(X.paymentAccountFor({ method: 'alloc' }, { xeroPayEft: 'B' }, { method: 'eft' }).id, 'B');
@@ -55,4 +65,26 @@ test('only real changes trigger a push; Xero dates', () => {
   assert.strictEqual(X.relevantChange({ a: 1 }, { a: 2 }), true);
   assert.strictEqual(X.xeroDate('/Date(1763164800000+0000)/'), '2025-11-15');
   assert.strictEqual(X.xeroErrorText({ Elements: [{ ValidationErrors: [{ Message: 'Invoice # must be unique.' }] }] }, 400), 'Invoice # must be unique.');
+});
+
+test('VAT per line adds up to the app total (no cent differences)', () => {
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const sum = (a) => r2(a.reduce((x, y) => x + y, 0));
+  // INV0302: app R260.00, Xero line rounding would give R260.01
+  const a = [{ qty: 2, unitPrice: 86.96 }, { qty: 1, unitPrice: 52.17 }];
+  assert.strictEqual(X.docTotal(a, true, 15), 260.00);
+  assert.strictEqual(sum(X.vatSplit(a, 15)), 33.91);
+  // INV0296: app R1 520.02
+  const b = [{ qty: 2, unitPrice: 165.22 }, { qty: 5, unitPrice: 165.22 }, { qty: 1, unitPrice: 165.22 }, { qty: 25, unitPrice: 0 }];
+  assert.strictEqual(X.docTotal(b, true, 15), 1520.02);
+  const tb = X.vatSplit(b, 15); assert.strictEqual(sum(tb), 198.26); assert.strictEqual(tb[3], 0);
+  // payload carries TaxAmount; the fingerprint ignores it
+  const cfg = { businessVatNumber: '4', invoiceDueDays: 7 };
+  const p = X.invoicePayload({ invoiceNumber: 'I1', invoiceGeneratedAt: '2026-11-25', invoiceVatEnabled: true, invoiceLineItems: a }, cfg, { contactId: 'C', vatRate: 15, taxVat: 'OUTPUT', taxNoVat: 'NONE' });
+  assert.deepStrictEqual(p.LineItems.map((l) => l.TaxAmount), X.vatSplit(a, 15));
+  const noTax = JSON.parse(JSON.stringify(p)); noTax.LineItems.forEach((l) => { delete l.TaxAmount; });
+  assert.strictEqual(X.docHash(p), X.hashOf(noTax));
+  // no VAT → no TaxAmount
+  const p2 = X.invoicePayload({ invoiceNumber: 'I2', invoiceGeneratedAt: '2026-11-25', invoiceVatEnabled: false, invoiceLineItems: a }, cfg, { contactId: 'C', vatRate: 15 });
+  assert.ok(p2.LineItems.every((l) => l.TaxAmount === undefined));
 });

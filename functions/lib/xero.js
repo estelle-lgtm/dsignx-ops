@@ -20,6 +20,12 @@ function lineNet(li) { return round2((Number(li.qty) || 0) * (Number(li.unitPric
 
 // Stable fingerprint of what we send, so an unchanged record is never pushed twice.
 function hashOf(obj) { return crypto.createHash('sha1').update(JSON.stringify(obj)).digest('hex').slice(0, 20); }
+// Fingerprint of a document leaving out the per-line TaxAmount, so documents sent before that was added
+// are not all re-sent (Xero will not change invoices that already have payments).
+function docHash(p) {
+  const c = Object.assign({}, p, { LineItems: (p.LineItems || []).map((l) => { const o = Object.assign({}, l); delete o.TaxAmount; return o; }) });
+  return hashOf(c);
+}
 
 // Xero dates come back as "/Date(1699999999000+0000)/" or ISO strings.
 function xeroDate(v) {
@@ -83,9 +89,29 @@ function customerFromContact(x) {
 
 /* ---------------- documents ---------------- */
 // ctx: {contactId, accountCode, taxVat, taxNoVat, tracking:{name, options:[...]}, currency}
+// The app works out VAT on the document total (subtotal x rate); Xero would round VAT on every line,
+// which can make its total a cent or two different. So each line gets an explicit TaxAmount, spread so
+// that together they equal the app's VAT exactly.
+function vatSplit(items, rate) {
+  const nets = (items || []).map(lineNet);
+  const target = round2(nets.reduce((a, b) => a + b, 0) * rate / 100);
+  const tax = nets.map((n) => round2(n * rate / 100));
+  let diff = Math.round((target - tax.reduce((a, b) => a + b, 0)) * 100);
+  if (diff && nets.length) {
+    const order = nets.map((n, i) => i).filter((i) => nets[i] > 0).sort((a, b) => nets[b] - nets[a]);
+    let k = 0;
+    while (diff && order.length && k < 1000) { const i = order[k % order.length]; const step = diff > 0 ? 1 : -1; tax[i] = round2(tax[i] + step / 100); diff -= step; k++; }
+  }
+  return tax;
+}
+function docTotal(items, vatOn, rate) {
+  const sub = round2((items || []).map(lineNet).reduce((a, b) => a + b, 0));
+  return round2(sub + (vatOn ? round2(sub * rate / 100) : 0));
+}
 function lines(items, vatOn, ctx, reps) {
   const trackingOk = ctx.tracking && ctx.tracking.name && reps && (ctx.tracking.options || []).some((o) => o.toLowerCase() === reps.toLowerCase());
-  return (items || []).map((li) => {
+  const tax = vatOn ? vatSplit(items, Number(ctx.vatRate) || 15) : null;
+  return (items || []).map((li, idx) => {
     const l = {
       Description: [str(li.description), str(li.note)].filter(Boolean).join('\n') || '-',
       Quantity: round4(li.qty),
@@ -94,6 +120,7 @@ function lines(items, vatOn, ctx, reps) {
       TaxType: vatOn ? ctx.taxVat : ctx.taxNoVat,
     };
     if (discPct(li)) l.DiscountRate = round2(discPct(li));
+    if (tax) l.TaxAmount = tax[idx];
     if (trackingOk) l.Tracking = [{ Name: ctx.tracking.name, Option: (ctx.tracking.options || []).find((o) => o.toLowerCase() === reps.toLowerCase()) }];
     return l;
   });
@@ -168,15 +195,49 @@ function paymentPayload(r, ctx) {
 }
 
 // How a receipt should be treated (before anything is sent).
+// Money that cannot go against an invoice in Xero yet (a deposit on a job not invoiced, or a payment kept
+// "on account") goes to Xero as an overpayment on the customer; it is applied to the invoice later.
 function receiptPlan(r, order, linkedAt, sourceReceipt) {
-  if (r.kind === 'onaccount') return { action: 'skip', status: 'onaccount', note: 'Overpayment — goes to Xero when it is allocated to an invoice' };
   if (r.fromXero) return { action: 'skip', status: 'synced', note: 'Came from Xero' };
-  if (r.voided) return r.xeroPaymentId ? { action: 'delete' } : { action: 'skip', status: 'void', note: 'Voided' };
+  if (r.voided) {
+    if (r.xeroPaymentId) return { action: 'delete' };
+    if (r.xeroOverpaymentId || r.xeroAllocId) return { action: 'deleteOver' };
+    return { action: 'skip', status: 'void', note: 'Voided' };
+  }
+  if (r.xeroPaymentId) return { action: 'skip', status: 'synced', note: 'In Xero' };
   const when = r.method === 'alloc' && sourceReceipt ? sourceReceipt.date : r.date;
   const createdByApp = order && order.xeroInv && order.xeroInv.created;
-  if (linkedAt && day(when) < day(linkedAt) && !createdByApp && !r.xeroSendLate) return { action: 'skip', status: 'skipped', note: 'Before the Xero link — assumed already in Xero' };
-  if (!order || !order.xeroInvoiceId) return { action: 'wait', status: 'waiting', note: 'Waiting for the invoice to reach Xero' };
+  if (linkedAt && day(when) < day(linkedAt) && !createdByApp && !r.xeroSendLate && !r.xeroOverpaymentId) {
+    if (r.kind === 'onaccount') return { action: 'skip', status: 'onaccount', note: 'Overpayment from before the Xero link — send it from Settings → Xero' };
+    return { action: 'skip', status: 'skipped', note: 'Before the Xero link — assumed already in Xero' };
+  }
+  if (r.kind === 'onaccount') return r.xeroOverpaymentId ? { action: 'skip', status: 'overpayment', note: 'Overpayment in Xero' } : { action: 'overpay' };
+  if (r.method === 'alloc') {
+    if (r.xeroAllocId) return { action: 'skip', status: 'synced', note: 'Applied in Xero' };
+    if (!order || !order.xeroInvoiceId) return { action: 'wait', status: 'waiting', note: 'Waiting for the invoice to reach Xero' };
+    if (sourceReceipt && sourceReceipt.xeroOverpaymentId) return { action: 'allocate', from: sourceReceipt.xeroOverpaymentId };
+    const st = sourceReceipt && sourceReceipt.xero && sourceReceipt.xero.status;
+    if (sourceReceipt && sourceReceipt.kind === 'onaccount' && !sourceReceipt.voided && (!st || st === 'pending' || st === 'retry'))
+      return { action: 'wait', status: 'waiting', note: 'Waiting for the overpayment to reach Xero' };
+    return { action: 'push' };
+  }
+  if (!order || !order.xeroInvoiceId) return r.xeroOverpaymentId ? { action: 'skip', status: 'overpayment', note: 'Deposit in Xero as an overpayment — applied when the invoice is issued' } : { action: 'overpay' };
+  if (r.xeroOverpaymentId) return (r.xeroAlloc && r.xeroAlloc.invoiceId === order.xeroInvoiceId) ? { action: 'skip', status: 'synced', note: 'Applied in Xero' } : { action: 'allocate', from: r.xeroOverpaymentId };
   return { action: 'push' };
+}
+// Xero "receive overpayment" bank transaction.
+function overpaymentPayload(r, ctx) {
+  const label = r.kind === 'onaccount' ? 'Payment on account' : 'Deposit' + (r.jobNumber ? ' ' + r.jobNumber : '');
+  return {
+    Type: 'RECEIVE-OVERPAYMENT',
+    Contact: { ContactID: ctx.contactId },
+    BankAccount: { AccountID: ctx.accountId },
+    Date: day(r.date),
+    Reference: [r.number, str(r.bankReference)].filter(Boolean).join(' ').slice(0, 255),
+    LineAmountTypes: 'NoTax',
+    CurrencyCode: ctx.currency || 'ZAR',
+    LineItems: [{ Description: (label + ' — ' + (r.number || '')).slice(0, 4000), LineAmount: round2(ctx.amount) }],
+  };
 }
 
 // Did anything other than our own xero* bookkeeping fields change?
@@ -195,7 +256,7 @@ function xeroErrorText(json, status) {
 }
 
 module.exports = {
-  round2, hashOf, xeroDate, addDays, hasInvoiceDoc, hasQuoteDoc, lineNet,
+  round2, hashOf, docHash, vatSplit, docTotal, xeroDate, addDays, hasInvoiceDoc, hasQuoteDoc, lineNet,
   contactPayload, customerFromContact, invoicePayload, quotePayload, quoteStatus, creditNotePayload,
-  paymentAccountFor, paymentPayload, receiptPlan, relevantChange, xeroErrorText, repsOf,
+  paymentAccountFor, paymentPayload, receiptPlan, overpaymentPayload, relevantChange, xeroErrorText, repsOf,
 };

@@ -9,6 +9,7 @@ The app leads; Xero feeds back.
 | Invoices | App → Xero, status **Awaiting Payment** | As soon as the invoice is issued or changes |
 | Credit notes | App → Xero, applied to the invoice | As soon as they are issued or voided |
 | Receipts (cash, card, EFT, allocated overpayments) | App → Xero as payments into the accounts you choose | As soon as they are saved; voiding deletes the payment |
+| Receipts with no invoice in Xero (payments on account, deposits on jobs not invoiced yet) | App → Xero as an **overpayment** on the customer; applied to the invoice when it is issued or when you allocate it in the app | As soon as they are saved; undo/void removes it |
 | Payments entered in Xero (e.g. bank reconciliation) | Xero → App as receipts | Every 15 minutes |
 | Contact changes / new customers in Xero | Xero → App | Every 15 minutes |
 | Invoices voided or paid in Xero | Xero → App (shown on Quotes & invoicing) | Every 15 minutes |
@@ -60,6 +61,9 @@ git push
 
 ## Good to know
 
+- **VAT to the cent:** the app works out VAT on the invoice total; each line sent to Xero carries its share of that VAT, so Xero's total always equals the app's. *Fix cent differences* (Settings → Xero) corrects older unpaid invoices that were a cent or two off.
+
+- **Receipts not in Xero yet**: includes overpayments recorded before this update — send them from the same list.
 - **Receipts recorded before the link** (Settings → Xero → *Check earlier receipts*): for invoices that were still drafts in Xero when you linked, the payments were never sent. Approve the drafts in Xero, press *Check earlier receipts*, untick anything you already entered in Xero yourself, and *Send*. Only receipts on approved invoices that Xero still shows as owing are offered.
 
 - **EFT:** a receipt you save in the app (also from Bank import) becomes a payment in your bank account in Xero; in Xero's bank reconciliation choose **Match** for that bank-feed line. If instead you reconcile an EFT in Xero with *Create/Add payment*, that payment comes back to the app as a receipt. Use one of the two for each payment, not both.

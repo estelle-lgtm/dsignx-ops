@@ -101,6 +101,7 @@ function makeSync({ db, admin, logger, clientId, clientSecret, scopes }) {
       taxVat: find(cfg.xeroTaxVat || 'Standard Rate Sales', (t) => t.report === 'OUTPUT' && Math.abs(t.rate - vatRate) < 0.01) || 'OUTPUT',
       taxNoVat: find(cfg.xeroTaxNoVat || 'No VAT', (t) => t.type === 'NONE') || 'NONE',
       tracking: m.tracking.find((t) => t.name.toLowerCase() === trackName.toLowerCase()) || null,
+      vatRate,
       accountCode: cfg.accountCode || '200',
       currency: cfg.currency || 'ZAR',
     };
@@ -152,13 +153,13 @@ function makeSync({ db, admin, logger, clientId, clientSecret, scopes }) {
   }
 
   /* ---------------- invoices & quotes ---------------- */
-  async function pushInvoice(ref, o, cfg, ctx0) {
+  async function pushInvoice(ref, o, cfg, ctx0, force) {
     if (!X.hasInvoiceDoc(o)) return;
     try {
       const ctx = Object.assign({}, ctx0, { contactId: await contactIdForOrder(o) });
       const payload = X.invoicePayload(o, cfg, ctx);
-      const hash = X.hashOf(payload);
-      if (o.xeroInvoiceId && o.xeroInv && o.xeroInv.hash === hash) return;
+      const hash = X.docHash(payload);
+      if (!force && o.xeroInvoiceId && o.xeroInv && o.xeroInv.hash === hash) return;
       let id = o.xeroInvoiceId, created = !!(o.xeroInv && o.xeroInv.created);
       if (!id) {
         const f = await api('GET', '/Invoices?InvoiceNumbers=' + encodeURIComponent(o.invoiceNumber));
@@ -174,7 +175,7 @@ function makeSync({ db, admin, logger, clientId, clientSecret, scopes }) {
         stamp('xeroInv', 'synced', { hash, created })), { merge: true });
       // receipts that were waiting for this invoice can go now
       // (if the app just created the invoice in Xero, its earlier receipts belong in Xero too)
-      const again = created ? ['waiting', 'retry', 'error', 'pending', 'skipped'] : ['waiting', 'retry', 'error', 'pending'];
+      const again = created ? ['waiting', 'retry', 'error', 'pending', 'skipped', 'overpayment'] : ['waiting', 'retry', 'error', 'pending', 'overpayment'];
       const waiting = await db.collection('receipts').where('orderId', '==', ref.id).get();
       for (const d of waiting.docs) {
         const r2 = d.data();
@@ -193,7 +194,7 @@ function makeSync({ db, admin, logger, clientId, clientSecret, scopes }) {
     try {
       const ctx = Object.assign({}, ctx0, { contactId: await contactIdForOrder(o) });
       const payload = X.quotePayload(o, cfg, ctx);
-      const hash = X.hashOf(payload);
+      const hash = X.docHash(payload);
       if (o.xeroQuoteId && o.xeroQuote && o.xeroQuote.hash === hash) return;
       let id = o.xeroQuoteId;
       if (!id) {
@@ -224,7 +225,7 @@ function makeSync({ db, admin, logger, clientId, clientSecret, scopes }) {
       const o = os && os.exists ? os.data() : { customerId: c.customerId, customerName: c.customerName };
       const ctx = Object.assign({}, ctx0, { contactId: await contactIdForOrder(o) });
       const payload = X.creditNotePayload(c, cfg, ctx);
-      const hash = X.hashOf(payload);
+      const hash = X.docHash(payload);
       if (c.xeroCreditNoteId && c.xero && c.xero.hash === hash) return;
       if (!c.xeroCreditNoteId && c.voided) { await ref.set(stamp('xero', 'void', { hash }), { merge: true }); return; }
       let id = c.xeroCreditNoteId;
@@ -272,7 +273,9 @@ function makeSync({ db, admin, logger, clientId, clientSecret, scopes }) {
         await ref.set(stamp('xero', 'deleted'), { merge: true });
         return;
       }
-      if (r.xeroPaymentId) return; // already in Xero
+      if (plan.action === 'deleteOver') return removeOverpayment(ref, r);
+      if (plan.action === 'overpay') return sendOverpayment(ref, r, cfg, order);
+      if (plan.action === 'allocate') return allocateOverpayment(ref, r, order, plan.from, src);
       const acct = X.paymentAccountFor(r, cfg, src);
       if (!acct.id) { const e = new Error('Choose the Xero account for ' + acct.label + ' payments under Settings → Xero'); e.kind = 'invalid'; throw e; }
       const body = X.paymentPayload(r, { invoiceId: order.xeroInvoiceId, accountId: acct.id, date: src ? src.date : r.date });
@@ -284,6 +287,70 @@ function makeSync({ db, admin, logger, clientId, clientSecret, scopes }) {
       if (e.kind === 'notconnected') return;
       throw e;
     }
+  }
+
+  /* ---------------- overpayments: money with no invoice in Xero yet ---------------- */
+  async function sendOverpayment(ref, r, cfg, order) {
+    const acct = X.paymentAccountFor(r, cfg, null);
+    if (!acct.id) { const e = new Error('Choose the Xero account for ' + acct.label + ' payments under Settings → Xero'); e.kind = 'invalid'; throw e; }
+    let amount = X.round2(r.amount);
+    if (r.kind === 'onaccount') {
+      // parts already allocated before this goes to Xero went (or were taken) as ordinary payments
+      const allocs = await db.collection('receipts').where('sourceReceiptId', '==', ref.id).get();
+      allocs.docs.forEach((d) => { const a = d.data(); if (!a.voided && !a.xeroAllocId && (a.xeroPaymentId || (a.xero && a.xero.status === 'skipped'))) amount = X.round2(amount - (Number(a.amount) || 0)); });
+    }
+    if (amount <= 0) { await ref.set(stamp('xero', 'synced', { note: 'Fully allocated already' }), { merge: true }); return; }
+    const who = order || { customerId: r.customerId, customerName: r.customerName };
+    const contactId = await contactIdForOrder(who);
+    const body = X.overpaymentPayload(r, { contactId, accountId: acct.id, amount, currency: cfg.currency || 'ZAR' });
+    const res = await api('PUT', '/BankTransactions', { BankTransactions: [body] }, { idem: 'over-' + ref.id });
+    const bt = (res.BankTransactions || [])[0] || {};
+    if (!bt.OverpaymentID) { const e = new Error('Xero did not return the overpayment'); e.kind = 'retry'; throw e; }
+    await ref.set(Object.assign({ xeroOverpaymentId: bt.OverpaymentID, xeroBankTxnId: bt.BankTransactionID || '', xeroOverAmount: amount }, stamp('xero', 'overpayment', { note: 'Overpayment in Xero' })), { merge: true });
+    const now = Object.assign({}, r, { xeroOverpaymentId: bt.OverpaymentID });
+    // a deposit whose invoice is already in Xero: apply it straight away
+    if (r.kind !== 'onaccount' && order && order.xeroInvoiceId) await allocateOverpayment(ref, now, order, bt.OverpaymentID, null);
+    // allocations of this overpayment that were waiting for it
+    if (r.kind === 'onaccount') {
+      const allocs = await db.collection('receipts').where('sourceReceiptId', '==', ref.id).get();
+      for (const d of allocs.docs) {
+        const a = d.data(); if (a.voided || a.xeroAllocId || a.xeroPaymentId || !(a.xero && a.xero.status === 'waiting')) continue;
+        await d.ref.set({ xero: { status: 'pending', at: new Date().toISOString() } }, { merge: true });
+        try { await pushOne('receipts', d.id); } catch (e2) { /* left for the sweep */ }
+      }
+    }
+  }
+  // Apply (part of) an overpayment to an invoice. r is either the deposit itself or an allocation receipt.
+  async function allocateOverpayment(ref, r, order, overId, src) {
+    const [ov, inv] = await Promise.all([api('GET', '/Overpayments/' + overId), api('GET', '/Invoices/' + order.xeroInvoiceId)]);
+    const o = (ov.Overpayments || [])[0] || {}; const i = (inv.Invoices || [])[0] || {};
+    const credit = Number(o.RemainingCredit) || 0, due = Number(i.AmountDue) || 0;
+    if (i.Status === 'DRAFT' || i.Status === 'SUBMITTED') { const e = new Error('Invoice ' + (order.invoiceNumber || '') + ' is still a draft in Xero — approve it, then Retry'); e.kind = 'invalid'; throw e; }
+    const want = X.round2(r.method === 'alloc' ? r.amount : Math.min(Number(r.xeroOverAmount) || Number(r.amount) || 0, credit));
+    const amount = X.round2(Math.min(want, credit, due));
+    if (amount <= 0) {
+      if (r.method === 'alloc') { const e = new Error(credit <= 0 ? 'Nothing left on the overpayment in Xero' : 'Invoice ' + (order.invoiceNumber || '') + ' is already paid in Xero'); e.kind = 'invalid'; throw e; }
+      await ref.set(stamp('xero', 'overpayment', { note: due <= 0 ? 'Invoice already paid in Xero — deposit left as an overpayment' : 'Nothing left to apply' }), { merge: true });
+      return;
+    }
+    if (r.method === 'alloc' && amount < want) { const e = new Error('Xero has only ' + (credit < due ? 'R ' + credit.toFixed(2) + ' left on the overpayment' : 'R ' + due.toFixed(2) + ' still due on ' + (order.invoiceNumber || 'the invoice'))); e.kind = 'invalid'; throw e; }
+    const date = [X.xeroDate(o.Date), X.xeroDate(i.Date), String((src && src.date) || r.date || '').slice(0, 10)].filter(Boolean).sort().pop();
+    const res = await api('PUT', '/Overpayments/' + overId + '/Allocations', { Allocations: [{ Invoice: { InvoiceID: order.xeroInvoiceId }, Amount: amount, Date: date }] });
+    const al = (res.Allocations || [])[0] || {};
+    if (r.method === 'alloc') await ref.set(Object.assign({ xeroAllocId: al.AllocationID || 'yes', xeroAllocFrom: overId }, stamp('xero', 'synced')), { merge: true });
+    else await ref.set(Object.assign({ xeroAlloc: { invoiceId: order.xeroInvoiceId, amount, allocationId: al.AllocationID || '' } }, stamp('xero', 'synced', { note: amount < want ? 'R ' + X.round2(want - amount).toFixed(2) + ' left as an overpayment in Xero' : '' })), { merge: true });
+  }
+  // A voided receipt: take its allocation / overpayment back out of Xero.
+  async function removeOverpayment(ref, r) {
+    if (r.xero && r.xero.status === 'deleted') return;
+    if (r.xeroAllocId && r.xeroAllocFrom) {
+      if (r.xeroAllocId !== 'yes') await api('DELETE', '/Overpayments/' + r.xeroAllocFrom + '/Allocations/' + r.xeroAllocId);
+      await ref.set(stamp('xero', 'deleted'), { merge: true });
+      return;
+    }
+    if (r.xeroAlloc && r.xeroAlloc.allocationId) await api('DELETE', '/Overpayments/' + r.xeroOverpaymentId + '/Allocations/' + r.xeroAlloc.allocationId);
+    if (r.xeroBankTxnId) await api('POST', '/BankTransactions/' + r.xeroBankTxnId, { BankTransactions: [{ BankTransactionID: r.xeroBankTxnId, Status: 'DELETED' }] });
+    await ref.set(stamp('xero', 'deleted'), { merge: true });
   }
 
   /* ---------------- one record ---------------- */
@@ -334,7 +401,7 @@ function makeSync({ db, admin, logger, clientId, clientSecret, scopes }) {
     }
     const ctx = await meta(cfg, true);
     const contactFor = (o) => (o.customerId && custContact[o.customerId]) || byName[norm(o.customerName)] || '';
-    const hashFor = (fn, doc) => { const cid = contactFor(doc); return cid ? X.hashOf(fn(Object.assign({}, ctx, { contactId: cid }))) : 'linked'; };
+    const hashFor = (fn, doc) => { const cid = contactFor(doc); return cid ? X.docHash(fn(Object.assign({}, ctx, { contactId: cid }))) : 'linked'; };
     const os = await db.collection('orders').get();
     for (const d of os.docs) {
       const o = d.data(); const patch = {};
@@ -528,14 +595,23 @@ function makeSync({ db, admin, logger, clientId, clientSecret, scopes }) {
   async function skippedReceipts() {
     const conn = await connection();
     if (!conn || !conn.refreshToken || !conn.linkedAt) return { items: [] };
-    const rs = await db.collection('receipts').where('xero.status', '==', 'skipped').get();
+    const rs = await db.collection('receipts').where('xero.status', 'in', ['skipped', 'onaccount', 'waiting']).get();
     const recs = rs.docs.map((d) => Object.assign({ id: d.id }, d.data()))
-      .filter((r) => !r.voided && !r.fromXero && r.kind !== 'onaccount' && r.orderId && !r.xeroPaymentId);
+      .filter((r) => !r.voided && !r.fromXero && !r.xeroPaymentId && !r.xeroOverpaymentId && r.method !== 'alloc' && (r.orderId || r.kind === 'onaccount'));
     const orders = {};
-    for (const r of recs) {
-      if (orders[r.orderId] === undefined) { const s = await db.doc('orders/' + r.orderId).get(); orders[r.orderId] = s.exists ? s.data() : null; }
+    const oids = Array.from(new Set(recs.map((r) => r.orderId).filter(Boolean)));
+    for (let i = 0; i < oids.length; i += 100) { // read in parallel batches — hundreds of receipts must fit in the app's wait time
+      const snaps = await Promise.all(oids.slice(i, i + 100).map((id) => db.doc('orders/' + id).get()));
+      snaps.forEach((s, k) => { orders[oids[i + k]] = s.exists ? s.data() : null; });
     }
-    const invIds = Array.from(new Set(recs.map((r) => orders[r.orderId] && orders[r.orderId].xeroInvoiceId).filter(Boolean)));
+    // on-account receipts: what is still unallocated
+    const onacc = recs.filter((r) => r.kind === 'onaccount');
+    const used = {};
+    for (let i = 0; i < onacc.length; i += 100) {
+      const snaps = await Promise.all(onacc.slice(i, i + 100).map((r) => db.collection('receipts').where('sourceReceiptId', '==', r.id).get()));
+      snaps.forEach((snap, k) => { used[onacc[i + k].id] = snap.docs.reduce((a, d) => { const x = d.data(); return a + (!x.voided && !x.xeroAllocId && (x.xeroPaymentId || (x.xero && x.xero.status === 'skipped')) ? Number(x.amount) || 0 : 0); }, 0); });
+    }
+    const invIds = Array.from(new Set(recs.map((r) => r.kind !== 'onaccount' && orders[r.orderId] && orders[r.orderId].xeroInvoiceId).filter(Boolean)));
     const inXero = {};
     for (let i = 0; i < invIds.length; i += 40) {
       const res = await api('GET', '/Invoices?IDs=' + invIds.slice(i, i + 40).join(',') + '&summaryOnly=true');
@@ -544,9 +620,16 @@ function makeSync({ db, admin, logger, clientId, clientSecret, scopes }) {
     const left = {}; Object.keys(inXero).forEach((k) => { left[k] = Number(inXero[k].AmountDue) || 0; });
     recs.sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.number).localeCompare(String(b.number)));
     const items = recs.map((r) => {
-      const o = orders[r.orderId] || {};
-      const x = o.xeroInvoiceId && inXero[o.xeroInvoiceId];
-      const it = { id: r.id, number: r.number || '', date: r.date || '', amount: X.round2(r.amount), method: r.method || '', invoiceNumber: o.invoiceNumber || r.invoiceNumber || '', customerName: r.customerName || o.customerName || '', ok: false, why: '' };
+      const o = (r.orderId && orders[r.orderId]) || {};
+      const it = { id: r.id, number: r.number || '', date: r.date || '', amount: X.round2(r.amount), method: r.method || '', invoiceNumber: o.invoiceNumber || r.invoiceNumber || '', customerName: r.customerName || o.customerName || '', ok: false, why: '', as: 'payment' };
+      if (r.kind === 'onaccount') {
+        it.as = 'overpayment'; it.amount = X.round2((Number(r.amount) || 0) - (used[r.id] || 0)); it.invoiceNumber = 'On account';
+        if (it.amount <= 0) it.why = 'Fully allocated already'; else it.ok = true;
+        return it;
+      }
+      if (!o.xeroInvoiceId) { it.as = 'overpayment'; it.invoiceNumber = o.invoiceNumber || ('Deposit ' + (o.jobNumber || r.jobNumber || '')).trim(); it.ok = true; return it; }
+      if ((r.xero || {}).status === 'waiting') { it.why = 'Waiting for the invoice'; return it; }
+      const x = inXero[o.xeroInvoiceId];
       if (!x) it.why = 'Invoice not in Xero';
       else if (x.Status === 'DRAFT' || x.Status === 'SUBMITTED') it.why = 'Invoice is still a draft in Xero — approve it first';
       else if (x.Status === 'PAID') it.why = 'Already fully paid in Xero';
@@ -559,16 +642,49 @@ function makeSync({ db, admin, logger, clientId, clientSecret, scopes }) {
   }
   async function sendSkipped(ids) {
     let queued = 0;
-    for (const id of (ids || []).slice(0, 1000)) {
-      const ref = db.doc('receipts/' + id); const s = await ref.get(); if (!s.exists) continue;
-      const r = s.data(); if (!r.xero || r.xero.status !== 'skipped' || r.xeroPaymentId) continue;
-      await ref.set(Object.assign({ xeroSendLate: true }, stamp('xero', 'pending')), { merge: true });
-      queued++;
+    const list = (ids || []).slice(0, 1000);
+    for (let i = 0; i < list.length; i += 100) {
+      const done = await Promise.all(list.slice(i, i + 100).map(async (id) => {
+        const ref = db.doc('receipts/' + id); const s = await ref.get(); if (!s.exists) return 0;
+        const r = s.data(); if (!r.xero || !['skipped', 'onaccount', 'waiting'].includes(r.xero.status) || r.xeroPaymentId || r.xeroOverpaymentId) return 0;
+        await ref.set(Object.assign({ xeroSendLate: true }, stamp('xero', 'pending')), { merge: true });
+        return 1;
+      }));
+      queued += done.reduce((a, b) => a + b, 0);
     }
     return { queued };
   }
 
-  return { api, pushOne, sweep, pull, skippedReceipts, sendSkipped, linkExisting, authUrl, finishConnect, disconnect, accounts, status, connection };
+
+  /* ---------------- VAT rounding: make Xero's invoice totals equal the app's ---------------- */
+  async function fixRounding() {
+    const conn = await connection();
+    if (!conn || !conn.refreshToken || !conn.linkedAt) return { checked: 0, fixed: [], locked: [] };
+    const cfg = await cfgOf(); const ctx = await meta(cfg);
+    const rate = Number(cfg.vatRate) || 15, vendor = !!String(cfg.businessVatNumber || '').trim();
+    const os = await db.collection('orders').get();
+    const mine = os.docs.filter((d) => { const o = d.data(); return o.xeroInvoiceId && X.hasInvoiceDoc(o); });
+    const byId = {}; mine.forEach((d) => { byId[d.data().xeroInvoiceId] = d; });
+    const ids = Object.keys(byId); const out = { checked: 0, fixed: [], locked: [], failed: [] };
+    for (let i = 0; i < ids.length; i += 40) {
+      const res = await api('GET', '/Invoices?IDs=' + ids.slice(i, i + 40).join(',') + '&summaryOnly=true');
+      for (const x of (res.Invoices || [])) {
+        const d = byId[x.InvoiceID]; if (!d) continue; const o = d.data();
+        if (x.Status !== 'AUTHORISED' && x.Status !== 'PAID') continue;
+        out.checked++;
+        const appTotal = X.docTotal(o.invoiceLineItems, !!o.invoiceVatEnabled && vendor, rate);
+        const diff = X.round2(Number(x.Total) - appTotal);
+        if (!diff || Math.abs(diff) > 0.1) continue; // only cent rounding, never real differences
+        const row = { number: o.invoiceNumber, customer: o.customerName || '', app: appTotal, xero: Number(x.Total) };
+        if (Number(x.AmountPaid) || Number(x.AmountCredited) || x.Status === 'PAID') { out.locked.push(row); continue; }
+        try { await pushInvoice(d.ref, o, cfg, ctx, true); out.fixed.push(row); }
+        catch (e) { row.error = e.message; out.failed.push(row); if (e.kind === 'rate') break; }
+      }
+    }
+    return out;
+  }
+
+  return { api, pushOne, sweep, pull, fixRounding, skippedReceipts, sendSkipped, linkExisting, authUrl, finishConnect, disconnect, accounts, status, connection };
 }
 
 module.exports = { makeSync };
