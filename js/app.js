@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-26.56';
+import './platform.js?v=2026-11-26.57';
 
 (function(){
   "use strict";
@@ -1865,7 +1865,7 @@ import './platform.js?v=2026-11-26.56';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-26.56</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-26.57</span></div>' +
       '</div>'
     );
   }
@@ -2841,6 +2841,197 @@ import './platform.js?v=2026-11-26.56';
     STATE.orders.forEach(function(o){ if(o.customerId===c.id) a.push(o.jobNumber, o.quoteNumber, o.invoiceNumber, o.poNumber, o.title); });
     return a.filter(Boolean).join(' ');
   }
+  /* ============================ customer transactions (update 57) ============================ */
+  // Every money movement for one customer — invoices, credit notes, payments, deposits and payments on
+  // account — with an opening balance, running balance and closing balance for the chosen period.
+  // Allocations of an overpayment only move money already received, so they are listed without an amount.
+  function custOrdersOf(c){
+    var nm = String(c.name||'').trim().toLowerCase();
+    return STATE.orders.filter(function(o){ return o.customerId===c.id || (!o.customerId && nm && String(o.customerName||'').trim().toLowerCase()===nm); });
+  }
+  function customerLedger(c){
+    var os = custOrdersOf(c), ids = {}, rows = [];
+    os.forEach(function(o){ ids[o.id] = o; });
+    os.forEach(function(o){
+      if(o.quoteOnly || !(hasInvoiceDoc(o) || isSale(o))) return;
+      rows.push({date:invoiceDateOf(o), t:1, type:'Invoice', ref:o.invoiceNumber || jobNo(o.id), desc:(o.title||'Job')+(o.jobNumber?' ('+o.jobNumber+')':''), debit:invoiceGross(o), credit:0, orderId:o.id});
+    });
+    (STATE.creditNotes||[]).forEach(function(cn){
+      if(cn.voided || !(ids[cn.orderId] || cn.customerId===c.id)) return;
+      rows.push({date:String(cn.date||cn.createdAt||'').slice(0,10), t:2, type:'Credit note', ref:cn.number||'', desc:'Credit on '+(cn.invoiceNumber||'invoice')+(cn.reason?' — '+cn.reason:''), debit:0, credit:round2(Number(cn.total)||0), orderId:cn.orderId});
+    });
+    var seen = {};
+    STATE.receipts.forEach(function(r){
+      if(r.voided || seen[r.id]) return;
+      var o = r.orderId ? ids[r.orderId] : null;
+      if(!o && !(r.kind==='onaccount' && r.customerId===c.id)) return;
+      seen[r.id] = true;
+      var date = String(r.date||r.createdAt||'').slice(0,10);
+      if(r.method==='alloc'){
+        var src = STATE.receipts.find(function(x){ return x.id===r.sourceReceiptId; });
+        rows.push({date:date, t:4, type:'Allocation', ref:r.number||'', desc:money(r.amount)+' of overpayment '+((src&&src.number)||r.sourceNumber||'')+' applied to '+((o&&(o.invoiceNumber||o.jobNumber))||'the job'), debit:0, credit:0, info:true, orderId:r.orderId});
+        return;
+      }
+      var how = methodLabel(r.method);
+      var desc = r.kind==='onaccount' ? 'Payment on account ('+how+')'+(r.bankReference?' — ref '+r.bankReference:'')
+        : (o && (hasInvoiceDoc(o) || isSale(o)) ? 'Payment ('+how+') — '+(o.invoiceNumber||jobNo(o.id)) : 'Deposit ('+how+') — '+((o&&(o.title||o.jobNumber))||'job'));
+      rows.push({date:date, t:3, type: r.kind==='onaccount' ? 'Payment on account' : (o && (hasInvoiceDoc(o)||isSale(o)) ? 'Payment' : 'Deposit'), ref:r.number||'', desc:desc, debit:0, credit:round2(Number(r.amount)||0), orderId:r.orderId||null});
+    });
+    rows.sort(function(a,b){ return String(a.date).localeCompare(String(b.date)) || a.t - b.t || String(a.ref).localeCompare(String(b.ref)); });
+    return rows;
+  }
+  function custTxRange(){ var r = STATE.custTx || {}; var f = r.from||'', t = r.to||''; if(f && t && f > t){ var x = f; f = t; t = x; } return {from:f, to:t}; }
+  function customerTxData(c){
+    var rg = custTxRange(), all = customerLedger(c), open = 0, list = [];
+    all.forEach(function(x){
+      if(rg.from && x.date < rg.from){ open = round2(open + x.debit - x.credit); return; }
+      if(rg.to && x.date > rg.to) return;
+      list.push(x);
+    });
+    var run = open, deb = 0, cre = 0;
+    list.forEach(function(x){ if(x.info){ x.balance = run; return; } run = round2(run + x.debit - x.credit); deb = round2(deb + x.debit); cre = round2(cre + x.credit); x.balance = run; });
+    return {customer:c, from:rg.from, to:rg.to, opening:open, rows:list, debits:deb, credits:cre, closing:run};
+  }
+  function setCustTxRange(r){
+    var t = todayIso(), cur = STATE.custTx || {};
+    if(r==='all'){ cur.from = ''; cur.to = ''; }
+    else if(r==='month'){ cur.from = t.slice(0,8)+'01'; cur.to = t; }
+    else if(r==='last'){ var d = new Date(Number(t.slice(0,4)), Number(t.slice(5,7))-2, 1); var y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0');
+      cur.from = y+'-'+m+'-01'; cur.to = y+'-'+m+'-'+String(new Date(y, d.getMonth()+1, 0).getDate()).padStart(2,'0'); }
+    else if(r==='3m'){ var d3 = new Date(Number(t.slice(0,4)), Number(t.slice(5,7))-3, 1); cur.from = localIso(d3); cur.to = t; }
+    else if(r==='year'){ cur.from = t.slice(0,4)+'-01-01'; cur.to = t; }
+    cur.preset = r; STATE.custTx = cur; render();
+  }
+  function balLabel(n){ return Math.abs(n) < 0.005 ? money(0) : (n > 0 ? money(n) : money(-n)+' CR'); }
+  function renderCustomerTransactions(c){
+    var d = customerTxData(c), pr = (STATE.custTx||{}).preset || (d.from||d.to ? '' : 'all');
+    var chip = function(k, l){ return '<button class="chip-toggle'+(pr===k?' active':'')+'" data-action="cust-tx-range" data-r="'+k+'">'+l+'</button>'; };
+    var rows = d.rows.map(function(x){
+      return '<tr'+(x.orderId?' class="row-btn" data-action="open-order" data-id="'+escapeHtml(x.orderId)+'"':'')+'><td>'+shortDate(x.date)+'</td><td>'+escapeHtml(x.type)+'</td><td class="mono">'+escapeHtml(x.ref)+'</td><td>'+escapeHtml(x.desc)+'</td>' +
+        '<td class="num">'+(x.debit?money(x.debit):'')+'</td><td class="num">'+(x.credit?money(x.credit):'')+'</td><td class="num"'+(x.info?' style="color:var(--ink-soft);"':'')+'>'+(x.info?'—':balLabel(x.balance))+'</td></tr>';
+    }).join('');
+    var period = d.from && d.to ? fullDate(d.from)+' – '+fullDate(d.to) : d.from ? 'From '+fullDate(d.from) : d.to ? 'Up to '+fullDate(d.to) : 'All transactions';
+    return '<div class="panel">' +
+      '<div class="panel-head"><h2>Transactions</h2><div style="display:flex; gap:6px; flex-wrap:wrap;"><button class="btn btn-sm" data-action="cust-tx-csv"'+(d.rows.length?'':' disabled')+'>Download CSV</button><button class="btn btn-primary btn-sm" data-action="cust-tx-pdf">Download PDF</button></div></div>' +
+      '<div class="qdate-bar" style="margin-bottom:10px;">' +
+        '<label class="qdate-f">From <input type="date" id="custTxFrom" value="'+escapeHtml(d.from)+'"></label>' +
+        '<label class="qdate-f">To <input type="date" id="custTxTo" value="'+escapeHtml(d.to)+'"></label>' +
+        chip('month','This month') + chip('last','Last month') + chip('3m','Last 3 months') + chip('year','This year') + chip('all','All') +
+      '</div>' +
+      '<div class="tiles" style="margin-bottom:10px;">' +
+        tile('Opening balance', balLabel(d.opening), d.from ? 'Before '+fullDate(d.from) : 'Start of account') +
+        tile('Invoiced', money(d.debits), 'In the period') +
+        tile('Paid & credited', money(d.credits), 'In the period') +
+        tile('Closing balance', balLabel(d.closing), d.to ? 'At '+fullDate(d.to) : 'Today') +
+      '</div>' +
+      '<div class="tbl-wrap cust-tx"><table><thead><tr><th>Date</th><th>Type</th><th>Reference</th><th>Description</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Balance</th></tr></thead><tbody>' +
+        (rows || '<tr><td colspan="7" class="empty-note">No transactions in this period ('+escapeHtml(period)+').</td></tr>') +
+      '</tbody></table></div>' +
+      '<div class="hint" style="margin-top:8px;">Debit = invoiced; credit = payments, deposits and credit notes. “CR” means the customer is in credit. Allocations of an overpayment are shown for reference only — the money was counted when it was received.</div>' +
+    '</div>';
+  }
+  function custTxFileName(c, d, ext){
+    return 'DsignX-Transactions-'+String(c.name||'customer').replace(/[^A-Za-z0-9]+/g,'-').replace(/^-|-$/g,'')+'-'+(d.from||'start')+'-to-'+(d.to||todayIso())+'.'+ext;
+  }
+  function downloadCustTxCsv(){
+    var c = STATE.customers.find(function(x){ return x.id===STATE.viewCustomerId; }); if(!c) return;
+    var d = customerTxData(c);
+    var lines = [['Customer', c.name], ['Period', (d.from||'start')+' to '+(d.to||todayIso())], [], ['Date','Type','Reference','Description','Debit','Credit','Balance'],
+      [d.from||'', 'Opening balance', '', '', '', '', d.opening.toFixed(2)]];
+    d.rows.forEach(function(x){ lines.push([x.date, x.type, x.ref, x.desc, x.debit?x.debit.toFixed(2):'', x.credit?x.credit.toFixed(2):'', x.info?'':x.balance.toFixed(2)]); });
+    lines.push(['', 'Totals', '', '', d.debits.toFixed(2), d.credits.toFixed(2), d.closing.toFixed(2)]);
+    var csv = '﻿' + lines.map(function(r){ return r.map(csvCell).join(','); }).join('\r\n');
+    saveBlob(new Blob([csv], {type:'text/csv;charset=utf-8'}), custTxFileName(c, d, 'csv'));
+  }
+  function downloadCustTxPdf(){
+    var c = STATE.customers.find(function(x){ return x.id===STATE.viewCustomerId; }); if(!c) return;
+    if(!window.jspdf || !window.jspdf.jsPDF){ toast('PDF tools are still loading — try again in a moment'); return; }
+    var d = customerTxData(c), cfg = STATE.config;
+    var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
+    var L = 15, R = 195, W = R - L;
+    var MAROON = [78,9,40], INK = [43,43,43], GREY = [95,99,88], SAGE = [121,128,110], PANEL = [244,245,242], RULE = [222,222,216];
+    function color(k){ doc.setTextColor(k[0],k[1],k[2]); }
+    function font(st, sz){ doc.setFont('helvetica', st); doc.setFontSize(sz); }
+    var vatNo = String(cfg.businessVatNumber||'').trim();
+    function header(){
+      var logoW = 56, logoH = logoW*(358/800);
+      doc.addImage(LOGO_PDF_DATA_URL, 'PNG', L, 12, logoW, logoH);
+      font('bold', 11.5); color(MAROON); doc.text(lh('docCompanyName'), R, 18.5, {align:'right'});
+      font('normal', 8.3); color(GREY);
+      doc.text(lh('docAddress'), R, 23, {align:'right'});
+      doc.text('Tel '+lh('docTel')+'   |   WhatsApp '+lh('docWhatsapp'), R, 27.2, {align:'right'});
+      doc.text(lh('docEmail')+'   |   '+lh('docWebsite'), R, 31.4, {align:'right'});
+      doc.text('Reg No '+lh('docRegNo')+(vatNo?('   |   VAT No '+vatNo):''), R, 35.6, {align:'right'});
+      doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, 40.5, W, 0.9, 'F');
+    }
+    var pages = 1;
+    function footer(){
+      doc.setDrawColor(RULE[0],RULE[1],RULE[2]); doc.setLineWidth(0.25); doc.line(L, 277, R, 277);
+      font('normal', 6.8); color(GREY);
+      doc.text([lh('docCompanyName'), 'Reg No '+lh('docRegNo')].concat(vatNo?['VAT No '+vatNo]:[]).concat([lh('docAddress')]).join('  ·  '), 105, 282, {align:'center'});
+      doc.text('Page '+pages, R, 286, {align:'right'});
+    }
+    header();
+    font('bold', 22); color(MAROON); doc.text('TRANSACTIONS', L, 55);
+    font('bold', 7.2); color(SAGE); doc.text('CUSTOMER', L, 62);
+    font('bold', 10.5); color(INK); doc.text(c.name||'Customer', L, 67.5);
+    font('normal', 8.6); color(GREY);
+    var cy = 72;
+    var addr = c.postalAddress && addrHasData(c.postalAddress) ? formatAddress(c.postalAddress) : '';
+    [personName(c)||'', addr, [stmtPhone(c), stmtEmail(c)].filter(Boolean).join('   ·   '), c.vatNumber ? 'VAT No '+c.vatNumber : ''].filter(Boolean).forEach(function(t){
+      doc.splitTextToSize(String(t).replace(/\n/g, ', '), 95).forEach(function(line){ doc.text(line, L, cy); cy += 4.2; });
+    });
+    var bx = 128, by = 58;
+    doc.setFillColor(PANEL[0],PANEL[1],PANEL[2]); doc.rect(bx, by, R-bx, 26, 'F');
+    font('bold', 7.4); color(SAGE); doc.text('PERIOD', bx+4, by+6); doc.text('CLOSING BALANCE', bx+4, by+16);
+    font('bold', 8.6); color(INK); doc.text((d.from?shortDateYr(d.from):'Start')+' – '+shortDateYr(d.to||todayIso()), R-4, by+6.3, {align:'right'});
+    font('bold', 13); color(MAROON); doc.text('R '+pdfNum(Math.abs(d.closing))+(d.closing < -0.004 ? ' CR' : ''), R-4, by+17.5, {align:'right'});
+    font('normal', 7.4); color(GREY); doc.text('Opening R '+pdfNum(Math.abs(d.opening))+(d.opening < -0.004?' CR':''), bx+4, by+23);
+    var y = Math.max(cy, by+26) + 8;
+    var cols = [L+1.5, L+20, L+46, 141, 160, R-1.5];
+    function thead(){
+      doc.setFillColor(MAROON[0],MAROON[1],MAROON[2]); doc.rect(L, y, W, 7.5, 'F');
+      font('bold', 7.4); doc.setTextColor(255,255,255);
+      doc.text('DATE', cols[0], y+5); doc.text('REFERENCE', cols[1], y+5); doc.text('DESCRIPTION', cols[2], y+5);
+      doc.text('DEBIT', cols[3], y+5, {align:'right'}); doc.text('CREDIT', cols[4], y+5, {align:'right'}); doc.text('BALANCE', cols[5], y+5, {align:'right'});
+      y += 7.5;
+    }
+    function ensure(h){ if(y + h > 270){ footer(); doc.addPage(); pages++; header(); y = 50; thead(); } }
+    thead();
+    var odd = false;
+    function row(v, opts){
+      opts = opts || {};
+      var desc = doc.splitTextToSize(v[2], cols[3]-cols[2]-20);
+      var h = Math.max(6.6, 2.6 + desc.length*3.6);
+      ensure(h);
+      if(odd){ doc.setFillColor(248,247,244); doc.rect(L, y, W, h, 'F'); } odd = !odd;
+      font(opts.bold ? 'bold' : 'normal', 8.1); color(opts.info ? SAGE : INK);
+      doc.text(v[0], cols[0], y+4.5); doc.text(v[1], cols[1], y+4.5);
+      doc.text(desc, cols[2], y+4.5);
+      doc.text(v[3], cols[3], y+4.5, {align:'right'}); doc.text(v[4], cols[4], y+4.5, {align:'right'});
+      font('bold', 8.1); doc.text(v[5], cols[5], y+4.5, {align:'right'});
+      doc.setDrawColor(RULE[0],RULE[1],RULE[2]); doc.setLineWidth(0.12); doc.line(L, y+h, R, y+h);
+      y += h;
+    }
+    var bal = function(n){ return (n < -0.004 ? '-' : '') + pdfNum(Math.abs(n)); };
+    row([d.from?shortDateYr(d.from):'', '', 'Opening balance', '', '', bal(d.opening)], {bold:true});
+    d.rows.forEach(function(x){
+      row([shortDateYr(x.date), x.ref, x.type+' — '+x.desc, x.debit?pdfNum(x.debit):'', x.credit?pdfNum(x.credit):'', x.info?'':bal(x.balance)], {info:x.info});
+    });
+    if(!d.rows.length) row(['', '', 'No transactions in this period', '', '', '']);
+    ensure(10);
+    doc.setFillColor(PANEL[0],PANEL[1],PANEL[2]); doc.rect(L, y, W, 8, 'F');
+    font('bold', 8.4); color(MAROON);
+    doc.text('Totals for the period / closing balance', cols[2], y+5.3);
+    doc.text(pdfNum(d.debits), cols[3], y+5.3, {align:'right'}); doc.text(pdfNum(d.credits), cols[4], y+5.3, {align:'right'}); doc.text(bal(d.closing), cols[5], y+5.3, {align:'right'});
+    y += 13;
+    ensure(10);
+    font('normal', 7.6); color(GREY);
+    doc.text(doc.splitTextToSize('Debit = invoices; credit = payments, deposits and credit notes. A negative balance means the customer is in credit. Allocations of an overpayment are listed for reference; the money is counted when it was received.', W), L, y);
+    footer();
+    saveBlob(doc.output('blob'), custTxFileName(c, d, 'pdf'));
+  }
+
   function renderCustomersTab(){
     if(STATE.stmtOpen) return renderStatementsView();
     var q = STATE.customerQuery.trim().toLowerCase();
@@ -2883,6 +3074,7 @@ import './platform.js?v=2026-11-26.56';
             '</dl>' +
             '<div class="tbl-wrap"><table><thead><tr><th>Job</th><th>Status</th><th>Quote</th><th>Logged</th></tr></thead><tbody>'+hist+'</tbody></table></div>' +
           '</div>';
+        detail += renderCustomerTransactions(c);
       }
     }
 
@@ -3603,6 +3795,9 @@ import './platform.js?v=2026-11-26.56';
       else if(action==='xero-link'){ xeroAction('link', 'Link the app to Xero now? Matching records are linked, and anything Xero does not have yet is sent to Xero over the next while.', function(r){ toast('Linked: '+(r.contacts||0)+' customers, '+(r.invoices||0)+' invoices, '+(r.creditNotes||0)+' credit notes, '+(r.quotes||0)+' quotes · '+(r.toPush||0)+' to send'); }); }
       else if(action==='xero-sync'){ xeroAction('syncNow', '', function(r){ var p = (r && r.pull) || {}, w = (r && r.sweep) || {}; toast('Xero: '+(p.payments||0)+' payment(s) in, '+(w.pushed||0)+' record(s) sent'+(w.stopped?' — '+w.stopped:'')); }); }
       else if(action==='xero-disconnect'){ xeroAction('disconnect', 'Disconnect Xero? Syncing stops until you connect again. Nothing is deleted in Xero or the app.', function(){ STATE.xero = null; STATE.xeroAccounts = null; toast('Xero disconnected'); }); }
+      else if(action==='cust-tx-range'){ setCustTxRange(el.getAttribute('data-r')); }
+      else if(action==='cust-tx-csv'){ downloadCustTxCsv(); }
+      else if(action==='cust-tx-pdf'){ downloadCustTxPdf(); }
       else if(action==='xero-fix-round'){ xeroFixRound(); }
       else if(action==='xero-skip-check'){ xeroSkipCheck(); }
       else if(action==='xero-skip-send'){ xeroSkipSend(); }
@@ -3857,6 +4052,7 @@ import './platform.js?v=2026-11-26.56';
       if(e.target.id==='importFile'){ importBackupFile(e.target.files[0]); e.target.value=''; }
       if(e.target.id==='productFile'){ importProductsFile(e.target.files[0]); e.target.value=''; }
       if(e.target.hasAttribute && e.target.hasAttribute('data-stmt-sel')){ var sk2 = e.target.getAttribute('data-stmt-sel'); if(e.target.checked) STATE.stmtSel[sk2] = true; else delete STATE.stmtSel[sk2]; render(); return; }
+      if(e.target.id==='custTxFrom' || e.target.id==='custTxTo'){ STATE.custTx = STATE.custTx || {}; STATE.custTx[e.target.id==='custTxFrom'?'from':'to'] = e.target.value; STATE.custTx.preset = ''; render(); return; }
       if(e.target.id==='quoteFrom' || e.target.id==='quoteTo'){ STATE[e.target.id] = e.target.value; render(); return; }
       if(e.target.id==='quoteDateBy'){ STATE.quoteDateBy = e.target.value; render(); return; }
       if(e.target.hasAttribute && e.target.hasAttribute('data-xero-acct') && isOwnerRole()){ var xp = {}; xp[e.target.getAttribute('data-xero-acct')] = e.target.value; updateConfig(xp); toast('Saved'); return; }
