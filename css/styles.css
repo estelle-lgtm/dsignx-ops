@@ -801,3 +801,5 @@ img{max-width:100%}
 .calc-ptable td{vertical-align:top;}
 .calc-ptable td.rate{padding-top:12px; white-space:nowrap;}
 .calc-ptable td.name{min-width:260px;}
+
+.calc-unit.wide input{padding-right:64px;}

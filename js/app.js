@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-27.62';
+import './platform.js?v=2026-11-27.63';
 
 (function(){
   "use strict";
@@ -1999,7 +1999,7 @@ import './platform.js?v=2026-11-27.62';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-27.62</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-27.63</span></div>' +
       '</div>'
     );
   }
@@ -3344,7 +3344,8 @@ import './platform.js?v=2026-11-27.62';
     labour:{design:450,prod:350,min:350}
   };
   var CALC_LISTS = ['substrates','media','laminates','extras'];
-  var CALC_JOB_DEFAULT = {name:'',w:'',h:'',qty:1,sub:'',vin:'',lam:'',print:true,tape:false,fluid:false,other:true,waste:10,markup:100,designH:0,prodH:0,useMin:true,vat:null,split:true,extras:[]};
+  // Labour is entered per m² (update 63): 1 hr design and 2 hrs production & fitting for 3.01 m².
+  var CALC_JOB_DEFAULT = {name:'',w:'',h:'',qty:1,sub:'',vin:'',lam:'',print:true,tape:false,fluid:false,other:true,waste:10,markup:100,designM2:0.332226,prodM2:0.664452,useMin:true,vat:null,split:true,extras:[]};
   function calcClone(o){ return JSON.parse(JSON.stringify(o)); }
   function calcPrices(){
     if(!STATE.calcPrices) STATE.calcPrices = calcClone(CALC_DEFAULTS);
@@ -3379,6 +3380,9 @@ import './platform.js?v=2026-11-27.62';
       try { var raw = localStorage.getItem(CALC_KEY); if(raw) Object.assign(j, JSON.parse(raw)); } catch(e){}
       if(j.vat===null) j.vat = isVatVendor();
       if(!Array.isArray(j.extras)) j.extras = [];
+      if(j.designM2==null) j.designM2 = CALC_JOB_DEFAULT.designM2;
+      if(j.prodM2==null) j.prodM2 = CALC_JOB_DEFAULT.prodM2;
+      delete j.designH; delete j.prodH;
       STATE.calcJob = j;
     }
     return STATE.calcJob;
@@ -3434,7 +3438,8 @@ import './platform.js?v=2026-11-27.62';
     var exLines = (j.extras||[]).map(function(e, i){ var it = calcFind(P.extras, e.id), q = Math.max(0, cnum(e.qty)); return {i:i, it:it, q:q, amt: it ? q*cnum(it.price) : 0}; });
     var extras = exLines.reduce(function(a,x){ return a + x.amt; }, 0);
     var mk = cnum(j.markup)/100, markup = (cost + extras)*mk;
-    var designH = Math.max(0, cnum(j.designH)), prodH = Math.max(0, cnum(j.prodH));
+    var designM2 = Math.max(0, cnum(j.designM2)), prodM2 = Math.max(0, cnum(j.prodM2));
+    var designH = designM2*area, prodH = prodM2*area;
     var design = designH*cnum(P.labour.design), labour = prodH*cnum(P.labour.prod);
     var subtotal = cost + extras + markup + design + labour, minCharge = cnum(P.labour.min);
     var has = area>0 || design>0 || labour>0 || extras>0;
@@ -3442,7 +3447,7 @@ import './platform.js?v=2026-11-27.62';
     var excl = subtotal + minTop, vatRate = calcVatRate();
     var vat = j.vat ? excl*vatRate/100 : 0;
     return {piece:piece, qty:qty, area:area, wf:wf, billed:billed, rows:rows, raw:raw, costM2:raw*wf, cost:cost, exLines:exLines, extras:extras, mk:mk, markup:markup,
-      designH:designH, prodH:prodH, design:design, labour:labour, minTop:minTop, minCharge:minCharge, has:has, excl:excl, vat:vat, incl:excl+vat, vatRate:vatRate,
+      designM2:designM2, prodM2:prodM2, designH:designH, prodH:prodH, design:design, labour:labour, minTop:minTop, minCharge:minCharge, has:has, excl:excl, vat:vat, incl:excl+vat, vatRate:vatRate,
       sub:sub, vin:vin, lam:lam, sellM2: area>0 ? excl/area : 0,
       sheets: sub ? billed/(cnum(sub.w)/1000*cnum(sub.l)/1000) : 0,
       vinM: vin && cnum(vin.w)>0 ? billed/(cnum(vin.w)/1000) : 0, lamM: lam && !isLiquid(lam) && cnum(lam.w)>0 ? billed/(cnum(lam.w)/1000) : 0,
@@ -3467,8 +3472,8 @@ import './platform.js?v=2026-11-27.62';
       if(r.qty>0 && r.area>0) lines.push({description:title, note:spec, qty:r.qty, unitPrice:round2(mainTotal/r.qty)});
       else if(r.minTop>0) lines.push({description:'Minimum charge', note:'', qty:1, unitPrice:round2(r.minTop)});
       lines = lines.concat(extraLines);
-      if(r.design>0) lines.push({description:'Design', note:cfx(r.designH,2)+' hrs', qty:r.designH, unitPrice:round2(cnum(P.labour.design))});
-      if(r.labour>0) lines.push({description:'Production & fitting', note:cfx(r.prodH,2)+' hrs', qty:r.prodH, unitPrice:round2(cnum(P.labour.prod))});
+      if(r.design>0) lines.push({description:'Design', note:cfx(r.designH,2)+' hrs ('+cfx(r.area,2)+' m² at '+cfx(r.designM2,4)+' hrs/m²)', qty:1, unitPrice:round2(r.design)});
+      if(r.labour>0) lines.push({description:'Production & fitting', note:cfx(r.prodH,2)+' hrs ('+cfx(r.area,2)+' m² at '+cfx(r.prodM2,4)+' hrs/m²)', qty:1, unitPrice:round2(r.labour)});
     } else {
       var q = r.qty>0 && r.area>0 ? r.qty : 1;
       var inc = [calcExtrasList(r), r.design>0 ? 'design' : '', r.labour>0 ? 'production & fitting' : ''].filter(Boolean);
@@ -3505,8 +3510,8 @@ import './platform.js?v=2026-11-27.62';
       'Material & machine cost: '+cR(r.cost)
     ]).concat(r.exLines.filter(function(x){ return x.it && x.q>0; }).map(function(x){ return 'Extra: '+cfx(x.q, x.q%1?2:0)+' × '+x.it.name+' @ '+cR(cnum(x.it.price))+' = '+cR(x.amt); })).concat([
       'Markup '+cfx(cnum(j.markup),0)+'% on materials'+(r.extras>0?' & extras':'')+': '+cR(r.markup),
-      'Design: '+cfx(r.designH,2)+' hrs × '+cR(cnum(P.labour.design))+' = '+cR(r.design),
-      'Production & fitting: '+cfx(r.prodH,2)+' hrs × '+cR(cnum(P.labour.prod))+' = '+cR(r.labour),
+      'Design: '+cfx(r.designM2,4)+' hrs/m² × '+cfx(r.area,3)+' m² = '+cfx(r.designH,2)+' hrs × '+cR(cnum(P.labour.design))+' = '+cR(r.design),
+      'Production & fitting: '+cfx(r.prodM2,4)+' hrs/m² × '+cfx(r.area,3)+' m² = '+cfx(r.prodH,2)+' hrs × '+cR(cnum(P.labour.prod))+' = '+cR(r.labour),
       r.minTop>0 ? 'Minimum charge top-up: '+cR(r.minTop)+' (minimum '+cR(r.minCharge)+')' : null,
       'Sell excl. VAT: '+cR(r.excl) + (r.area>0 ? ' ('+cR(r.sellM2)+'/m²)' : ''),
       j.vat ? 'Total incl. VAT: '+cR(r.incl) : null
@@ -3563,7 +3568,7 @@ import './platform.js?v=2026-11-27.62';
   /* ---- views ---- */
   function cUnit(id, attr, val, unit, opts){
     opts = opts || {};
-    return '<span class="calc-unit"><input type="text" id="'+id+'" '+attr+' value="'+escapeHtml(val==null?'':val)+'" inputmode="decimal" autocomplete="off"'+(opts.ro?' readonly':'')+'><em>'+unit+'</em></span>';
+    return '<span class="calc-unit'+(opts.wide?' wide':'')+'"><input type="text" id="'+id+'" '+attr+' value="'+escapeHtml(val==null?'':val)+'" inputmode="decimal" autocomplete="off"'+(opts.ro?' readonly':'')+'><em>'+unit+'</em></span>';
   }
   function cField(label, inner){ return '<label class="calc-f">'+label+inner+'</label>'; }
   function cChk(id, k, on, label){ return '<label class="calc-chk"><input type="checkbox" id="'+id+'" data-calcj="'+k+'"'+(on?' checked':'')+'> '+label+'</label>'; }
@@ -3604,8 +3609,11 @@ import './platform.js?v=2026-11-27.62';
         '<div><button type="button" class="btn btn-sm" data-action="calc-ex-add"'+(P.extras.length?'':' disabled')+'>+ Add item</button></div>' +
         '<p class="hint">Items charged per piece, such as banner stands, standoffs, badge pins or mixer sticks. Markup applies to them; wastage doesn’t.</p>' +
         '<div class="section-label">Labour &amp; design</div>' +
-        '<div class="calc-row">' + cField('Design time', cUnit('calc-j-designH','data-calcj="designH"', j.designH, 'hrs')) + cField('Production &amp; fitting time', cUnit('calc-j-prodH','data-calcj="prodH"', j.prodH, 'hrs')) + '</div>' +
-        '<p class="hint">Design at <b>'+cR(cnum(P.labour.design))+'</b>/hr = '+cR(r.design)+' · production &amp; fitting at <b>'+cR(cnum(P.labour.prod))+'</b>/hr = '+cR(r.labour)+'</p>' +
+        '<div class="calc-row">' + cField('Design time per m²', cUnit('calc-j-designM2','data-calcj="designM2"', j.designM2, 'hrs/m²', {wide:true})) + cField('Production &amp; fitting time per m²', cUnit('calc-j-prodM2','data-calcj="prodM2"', j.prodM2, 'hrs/m²', {wide:true})) + '</div>' +
+        (function(){ var dM2 = r.designM2*cnum(P.labour.design), pM2 = r.prodM2*cnum(P.labour.prod);
+          return '<p class="hint">Design: '+cfx(r.designM2,4)+' hrs/m² × '+cR(cnum(P.labour.design))+'/hr = <b>'+cR(dM2)+'/m²</b> · production &amp; fitting: '+cfx(r.prodM2,4)+' hrs/m² × '+cR(cnum(P.labour.prod))+'/hr = <b>'+cR(pM2)+'/m²</b> · together <b>'+cR(dM2+pM2)+'/m²</b>' +
+            (r.area>0 ? '<br>For this job ('+cfx(r.area,2)+' m²): design '+cfx(r.designH,2)+' hrs = '+cR(r.design)+', production &amp; fitting '+cfx(r.prodH,2)+' hrs = '+cR(r.labour) : '') +
+            '<br>Based on 3.01 m² taking 1 hr design and 2 hrs production &amp; fitting.</p>'; })() +
         '<div class="section-label">Pricing</div>' +
         '<div class="calc-row">' + cField('Wastage &amp; offcuts', cUnit('calc-j-waste','data-calcj="waste"', j.waste, '%')) + cField('Markup on materials', cUnit('calc-j-markup','data-calcj="markup"', j.markup, '%')) + '</div>' +
         '<div class="calc-toggles">' + cChk('calc-j-min','useMin',j.useMin,'Apply minimum charge ('+cR(r.minCharge)+')') + cChk('calc-j-vat','vat',j.vat,'Add VAT ('+r.vatRate+'%)') + '</div>' +
@@ -3616,7 +3624,7 @@ import './platform.js?v=2026-11-27.62';
     var t = [['Cost per m² incl. wastage', cR(r.costM2)], ['Material &amp; machine cost', r.has ? cR(r.cost) : '—']];
     if(r.extras>0) t.push(['Extras &amp; hardware', cR(r.extras)]);
     t.push(['Markup '+cfx(cnum(j.markup),0)+'% on materials'+(r.extras>0?' &amp; extras':''), r.has ? cR(r.markup) : '—'],
-      ['Design '+cfx(r.designH,2)+' hrs', r.has ? cR(r.design) : '—'], ['Production &amp; fitting '+cfx(r.prodH,2)+' hrs', r.has ? cR(r.labour) : '—']);
+      ['Design '+cfx(r.designH,2)+' hrs ('+cfx(r.designM2,4)+'/m²)', r.has ? cR(r.design) : '—'], ['Production &amp; fitting '+cfx(r.prodH,2)+' hrs ('+cfx(r.prodM2,4)+'/m²)', r.has ? cR(r.labour) : '—']);
     if(r.minTop>0) t.push(['Minimum charge top-up (min '+cR(r.minCharge)+')', cR(r.minTop)]);
     t.push(['Price excl. VAT', r.has ? cR(r.excl) : '—']);
     if(j.vat) t.push(['VAT '+r.vatRate+'%', r.has ? cR(r.vat) : '—']);
