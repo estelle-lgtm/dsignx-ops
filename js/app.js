@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-27.59';
+import './platform.js?v=2026-11-27.60';
 
 (function(){
   "use strict";
@@ -72,7 +72,7 @@ import './platform.js?v=2026-11-27.59';
     selectedForExport:{},
     db:null, assets:null, downloads:null,
     mcp:null,
-    waStatus:'idle', waError:null, waConversations:[], waMessages:{}, waHandled:{}, waLastChecked:null, waLastInbound:{}, waUnwatch:null,
+    waStatus:'idle', waError:null, waConversations:[], waMessages:{}, waHandled:{}, waSeen:{}, waLastChecked:null, waLastInbound:{}, waUnwatch:null,
     chatMessages:{}, chatDraft:{},
     team:[], newTeamOpen:false, boardAssigneeFilter:'all',
     quoteModalOrderId:null, quoteDraft:null, waMediaCheck:null,
@@ -1362,6 +1362,12 @@ import './platform.js?v=2026-11-27.59';
       STATE.waHandled = map;
       render();
     }, function(){});
+    db.collection('wa_seen').onSnapshot(function(qs){
+      var map = {};
+      qs.docs.forEach(function(d){ map[d.id] = d.data(); });
+      STATE.waSeen = map;
+      render();
+    }, function(){});
     STATE.assets = window.DSX.assets;
     STATE.downloads = window.DSX.downloads;
     STATE.mcp = window.DSX.mcp;
@@ -1482,6 +1488,60 @@ import './platform.js?v=2026-11-27.59';
     return side && side.phone_number ? waPhone(side.phone_number) : '';
   }
 
+  /* ---- WhatsApps from customers with an open job go to that job (update 60) ----
+   * A job is open until it is Collected (quotes only and lost jobs don't count). A new message from the
+   * job's cellphone number flags the job (board card, Job board count) instead of landing in the
+   * WhatsApp inbox; opening the job's chat marks it seen for everyone. Once the job is collected, new
+   * messages from that number show in the WhatsApp inbox again. */
+  function isOpenJob(o){ return !!o && !o.quoteOnly && o.status!=='collected' && o.status!=='lost' && !o.deleted; }
+  function openJobForPhone(phone){
+    if(!phone) return null;
+    var best = null;
+    STATE.orders.forEach(function(o){
+      if(!isOpenJob(o) || waPhone(o.phone)!==phone) return;
+      if(!best || String(o.createdAt||'') > String(best.createdAt||'')) best = o;
+    });
+    return best;
+  }
+  function openJobCountForPhone(phone){ return STATE.orders.filter(function(o){ return isOpenJob(o) && waPhone(o.phone)===phone; }).length; }
+  // The customer wrote last, it isn't dealt with, and nobody has opened the chat since it arrived.
+  function waUnseen(phone){
+    var c = STATE.waConversations.find(function(x){ return x.phone===phone; }); if(!c) return null;
+    var m = STATE.waMessages[phone];
+    if(m && m.messageId && STATE.waHandled[m.messageId]) return null;
+    var seen = (STATE.waSeen[phone]||{}).at || '';
+    return String(c.last_message_date||'') > String(seen) ? c : null;
+  }
+  function jobWaNew(o){
+    if(!STATE.mcp || !isOpenJob(o)) return null;
+    var p = waPhone(o.phone); if(!p) return null;
+    var c = waUnseen(p); if(!c) return null;
+    var j = openJobForPhone(p);
+    return (j && j.id===o.id) ? c : null;
+  }
+  function flaggedJobs(mineOnly){
+    var me = STATE.currentUserId;
+    return STATE.orders.filter(function(o){ return jobWaNew(o) && (!mineOnly || onJob(o, me)); });
+  }
+  function markWaSeen(phone, at){
+    if(!phone || !at) return;
+    var cur = (STATE.waSeen[phone]||{}).at || '';
+    if(String(cur) >= String(at)) return;
+    var data = {at:at, by:myMsgId(), byName:myMsgName(), seenAt:new Date().toISOString()};
+    STATE.waSeen[phone] = data;
+    if(STATE.isLive && STATE.db) STATE.db.collection('wa_seen').doc(phone).set(data).catch(function(){});
+  }
+  var _waToasted = {};
+  function toastNewJobMessages(){
+    var me = STATE.currentUserId;
+    STATE.orders.forEach(function(o){
+      var c = jobWaNew(o); if(!c) return;
+      var key = o.id+'|'+c.last_message_date;
+      if(_waToasted[key]) return; _waToasted[key] = true;
+      if(isOwnerRole() || onJob(o, me)) toast('New WhatsApp from '+(o.customerName||c.name||'a customer')+' on '+(o.jobNumber||jobNo(o.id))+' — '+(o.title||'job'));
+    });
+  }
+
   // Inbox: one watch over recent messages; a contact is "waiting" when their latest
   // message is inbound (they wrote last).
   function handleWaEvent(ev){
@@ -1516,6 +1576,7 @@ import './platform.js?v=2026-11-27.59';
     STATE.waConversations = convs;
     STATE.waLastChecked = (ev.result.cache && ev.result.cache.storedAt) ? new Date(ev.result.cache.storedAt) : new Date();
     render();
+    try { toastNewJobMessages(); } catch(e){}
   }
 
   function startWaWatch(){
@@ -1575,6 +1636,8 @@ import './platform.js?v=2026-11-27.59';
       // Merge rather than replace: an in-flight file upload for this phone stashes its
       // own fields on this entry and must survive whichever call resolves first.
       STATE.chatMessages[phone] = Object.assign({}, STATE.chatMessages[phone], {loading:false, error:null, list:list});
+      var shownJob = STATE.openOrderId && STATE.orders.find(function(x){ return x.id===STATE.openOrderId; });
+      if(lastIn && shownJob && waPhone(shownJob.phone)===phone) markWaSeen(phone, lastIn.created_at);
       render();
       if(lastIn && !lastIn.read_at){
         STATE.mcp.callTool(WA_SERVER,'whatsapp_mark_read',{message_id:lastIn.id, idempotency_key:'read-'+lastIn.id}).catch(function(){});
@@ -1879,6 +1942,7 @@ import './platform.js?v=2026-11-27.59';
   function waPendingCount(){
     return STATE.waConversations.filter(function(c){
       var m = STATE.waMessages[c.phone];
+      if(openJobForPhone(c.phone)) return false; // goes to the open job instead
       return !(m && m.messageId && STATE.waHandled[m.messageId]);
     }).length;
   }
@@ -1916,6 +1980,7 @@ import './platform.js?v=2026-11-27.59';
     var items = navList.map(function(n){
       var badge = (n.key==='whatsapp' && pending) ? '<span class="badge">'+pending+'</span>' : '';
       if(n.key==='messages'){ var mc = msgAttnCount(); if(mc) badge = '<span class="badge">'+mc+'</span>'; }
+      if(n.key==='board' && !isTechnician()){ var bc = flaggedJobs(!isOwnerRole()).length; if(bc) badge = '<span class="badge" title="Jobs with a new WhatsApp from the customer">'+bc+'</span>'; }
       return '<li><button data-action="tab" data-tab="'+n.key+'" class="'+(STATE.tab===n.key?'active':'')+'" title="'+n.label+'">'+navIcon(n.key)+'<span class="nav-label">'+n.label+'</span>'+badge+'</button></li>';
     }).join('');
     var viewerPill = STATE.auth.phase==='demo' ? '<div class="who-box"><div><strong>Demo mode</strong><span style="font-size:11px;">Sample data only. Changes are not saved and nothing is sent. '+escapeHtml(STATE.demoReason||'')+'</span></div></div>' : (
@@ -1929,7 +1994,7 @@ import './platform.js?v=2026-11-27.59';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-27.59</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-27.60</span></div>' +
       '</div>'
     );
   }
@@ -2050,7 +2115,9 @@ import './platform.js?v=2026-11-27.59';
       '<div class="board-scroll"><div class="board">'+cols+'</div></div>'
     );
   }
+  var WA_FLAG_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 12a8.5 8.5 0 0 1-12.6 7.4L3 21l1.7-5.2A8.5 8.5 0 1 1 21 12z"/></svg>';
   function cardHtml(o){
+    var waNew = isTechnician() ? null : jobWaNew(o);
     var d = daysUntil(o.dueDate);
     var overdue = d!==null && d<0 && DONE_STATUSES.indexOf(o.status)<0;
     var avatars = '';
@@ -2058,7 +2125,8 @@ import './platform.js?v=2026-11-27.59';
     if(o.technicianName) avatars += '<div class="avatar technician" title="Technician: '+escapeHtml(o.technicianName)+'">'+initials(o.technicianName)+'</div>';
     if(o.technician2Name) avatars += '<div class="avatar technician" title="Technician: '+escapeHtml(o.technician2Name)+'">'+initials(o.technician2Name)+'</div>';
     return (
-      '<div class="card" draggable="true" data-id="'+o.id+'" data-action="open-order">' +
+      '<div class="card'+(waNew?' has-wa':'')+'" draggable="true" data-id="'+o.id+'" data-action="open-order">' +
+        (waNew ? '<div class="wa-flag" title="'+escapeHtml((STATE.waMessages[waPhone(o.phone)]||{}).body||'')+'">'+WA_FLAG_ICON+' New WhatsApp · '+relTime(waNew.last_message_date)+'</div>' : '') +
         '<div class="jobno">'+jobNo(o.id)+(orderDateOf(o)?'<span class="ordered" title="Order date">Ordered '+shortDate(orderDateOf(o))+'</span>':'')+'</div>' +
         '<h4>'+escapeHtml(o.title)+'</h4>' +
         '<div class="who">'+escapeHtml(o.customerName)+(o.poNumber ? ' <span class="po-tag">PO '+escapeHtml(o.poNumber)+'</span>' : '')+'</div>' +
@@ -2074,7 +2142,7 @@ import './platform.js?v=2026-11-27.59';
 
   /* ============================ whatsapp inbox tab ============================ */
   function renderWhatsAppTab(){
-    var head = '<div class="topline"><div><h1>WhatsApp inbox</h1><div class="sub">Customers who messaged last and are waiting for a reply · via Bird</div></div></div>';
+    var head = '<div class="topline"><div><h1>WhatsApp inbox</h1><div class="sub">Customers without an open job who messaged last and are waiting for a reply · via Bird</div></div></div>';
 
     if(!STATE.mcp){
       return head + '<div class="panel"><p style="margin:0 0 10px;">This app isn\'t connected to a WhatsApp tool yet, so orders won\'t appear here automatically.</p><p class="hint" style="margin:0;">WhatsApp needs the Bird and Cloudinary keys set up on the server (see the setup guide), then reload this page. Until then, share your order link from the Settings tab and log messages here manually with <strong>+ New order</strong>.</p></div>';
@@ -2089,9 +2157,12 @@ import './platform.js?v=2026-11-27.59';
       statusRow = '<div class="wa-status">'+checked+'<button class="btn btn-sm refresh" data-action="wa-refresh">Check now</button></div>';
     }
 
+    var routed = [];
     var visible = STATE.waConversations.filter(function(c){
       var m = STATE.waMessages[c.phone];
       if(m && m.messageId && STATE.waHandled[m.messageId]) return false;
+      var job = openJobForPhone(c.phone);
+      if(job){ routed.push({c:c, job:job}); return false; } // goes to the customer's open job
       return true;
     });
     // keep the conversation you're replying to on screen, even once it's no longer "waiting"
@@ -2119,7 +2190,15 @@ import './platform.js?v=2026-11-27.59';
       );
     }).join('') : '<div class="panel"><div class="empty-note">Nothing waiting — new WhatsApp messages will show up here within a couple of minutes.</div></div>';
 
-    return head + statusRow + '<div class="wa-list">'+cards+'</div>';
+    var routedHtml = routed.length ? '<div class="panel wa-routed"><div class="section-label" style="margin-top:0;">Sent to open jobs ('+routed.length+')</div>' +
+      '<div class="hint" style="margin:0 0 8px;">These customers have a job that is not collected yet, so their WhatsApps go to that job (the card on the Job board is flagged). Once the job is collected, new messages show here again.</div>' +
+      routed.map(function(r){
+        var fresh = !!waUnseen(r.c.phone), m = STATE.waMessages[r.c.phone], more = openJobCountForPhone(r.c.phone) - 1;
+        return '<div class="wa-routed-row"><div><strong>'+escapeHtml(r.job.customerName||r.c.name||r.c.phone)+'</strong> <span class="hint" style="margin:0;">· '+escapeHtml(r.job.jobNumber||jobNo(r.job.id))+' '+escapeHtml(r.job.title||'')+(more>0?' (+'+more+' more open)':'')+' · '+relTime(r.c.last_message_date)+'</span>' +
+          (m && !m.error ? '<div class="wa-routed-body">'+escapeHtml(String(m.body||'').slice(0,160))+'</div>' : '') + '</div>' +
+          '<div>'+(fresh?'<span class="pay-chip pay-part">New</span> ':'')+'<button class="btn btn-sm" data-action="open-order" data-id="'+escapeHtml(r.job.id)+'">Open job</button></div></div>';
+      }).join('') + '</div>' : '';
+    return head + statusRow + '<div class="wa-list">'+cards+'</div>' + routedHtml;
   }
 
   function relTime(dateLike){

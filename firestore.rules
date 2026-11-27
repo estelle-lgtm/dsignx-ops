@@ -97,6 +97,11 @@ service cloud.firestore {
       allow read, write: if isStaff();
     }
 
+    // Which WhatsApp chats have been opened on a job (clears the "New WhatsApp" flag for everyone).
+    match /wa_seen/{phone} {
+      allow read, write: if isStaff();
+    }
+
     // Product catalogue (price list used on quotes and invoices).
     match /products/{id} {
       allow read, write: if isStaff();
