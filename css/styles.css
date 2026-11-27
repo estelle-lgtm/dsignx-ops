@@ -803,3 +803,12 @@ img{max-width:100%}
 .calc-ptable td.name{min-width:260px;}
 
 .calc-unit.wide input{padding-right:64px;}
+
+/* update 64: job hours shown next to the per-m² labour inputs */
+.calc-labour{display:grid; gap:10px;}
+.calc-lab-row{display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px; align-items:end;}
+@media (max-width:560px){ .calc-lab-row{grid-template-columns:minmax(0,1fr);} }
+.calc-auto{display:grid; gap:1px; background:#F2F3EF; border:1px dashed var(--line, #d9dcd2); border-radius:8px; padding:6px 10px;}
+.calc-auto .lbl{font-size:12px; color:var(--ink-soft); font-weight:500;}
+.calc-auto .v{font-size:17px; font-weight:700; color:#4E0928;}
+.calc-auto .s{font-size:12px; color:var(--ink-soft);}

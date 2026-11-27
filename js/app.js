@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-27.63';
+import './platform.js?v=2026-11-27.64';
 
 (function(){
   "use strict";
@@ -1999,7 +1999,7 @@ import './platform.js?v=2026-11-27.63';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-27.63</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-27.64</span></div>' +
       '</div>'
     );
   }
@@ -3609,7 +3609,12 @@ import './platform.js?v=2026-11-27.63';
         '<div><button type="button" class="btn btn-sm" data-action="calc-ex-add"'+(P.extras.length?'':' disabled')+'>+ Add item</button></div>' +
         '<p class="hint">Items charged per piece, such as banner stands, standoffs, badge pins or mixer sticks. Markup applies to them; wastage doesn’t.</p>' +
         '<div class="section-label">Labour &amp; design</div>' +
-        '<div class="calc-row">' + cField('Design time per m²', cUnit('calc-j-designM2','data-calcj="designM2"', j.designM2, 'hrs/m²', {wide:true})) + cField('Production &amp; fitting time per m²', cUnit('calc-j-prodM2','data-calcj="prodM2"', j.prodM2, 'hrs/m²', {wide:true})) + '</div>' +
+        '<div class="calc-labour">' +
+          '<div class="calc-lab-row">' + cField('Design time per m²', cUnit('calc-j-designM2','data-calcj="designM2"', j.designM2, 'hrs/m²', {wide:true})) +
+            '<div class="calc-auto"><span class="lbl">Design time for this job</span><span class="v">'+(r.area>0 ? cfx(r.designH,2)+' hrs' : '—')+'</span><span class="s">'+(r.area>0 ? cfx(r.area,2)+' m² × '+cfx(r.designM2,4)+' = '+cR(r.design) : 'Enter the size')+'</span></div></div>' +
+          '<div class="calc-lab-row">' + cField('Production &amp; fitting time per m²', cUnit('calc-j-prodM2','data-calcj="prodM2"', j.prodM2, 'hrs/m²', {wide:true})) +
+            '<div class="calc-auto"><span class="lbl">Production &amp; fitting for this job</span><span class="v">'+(r.area>0 ? cfx(r.prodH,2)+' hrs' : '—')+'</span><span class="s">'+(r.area>0 ? cfx(r.area,2)+' m² × '+cfx(r.prodM2,4)+' = '+cR(r.labour) : 'Enter the size')+'</span></div></div>' +
+        '</div>' +
         (function(){ var dM2 = r.designM2*cnum(P.labour.design), pM2 = r.prodM2*cnum(P.labour.prod);
           return '<p class="hint">Design: '+cfx(r.designM2,4)+' hrs/m² × '+cR(cnum(P.labour.design))+'/hr = <b>'+cR(dM2)+'/m²</b> · production &amp; fitting: '+cfx(r.prodM2,4)+' hrs/m² × '+cR(cnum(P.labour.prod))+'/hr = <b>'+cR(pM2)+'/m²</b> · together <b>'+cR(dM2+pM2)+'/m²</b>' +
             (r.area>0 ? '<br>For this job ('+cfx(r.area,2)+' m²): design '+cfx(r.designH,2)+' hrs = '+cR(r.design)+', production &amp; fitting '+cfx(r.prodH,2)+' hrs = '+cR(r.labour) : '') +
