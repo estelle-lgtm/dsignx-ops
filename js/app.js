@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-27.58';
+import './platform.js?v=2026-11-27.59';
 
 (function(){
   "use strict";
@@ -1766,8 +1766,71 @@ import './platform.js?v=2026-11-27.58';
 
 
   /* ============================ render: shell ============================ */
+  /* ---- keep the screen steady while data arrives (update 59) ----
+   * Live updates (new WhatsApp messages, jobs, receipts, the Xero sync writing back to jobs and
+   * receipts) redraw the screen. Without this, every redraw dropped the cursor out of the box you were
+   * typing in, scrolled windows back to the top and could lose text that was not saved yet.
+   * Before each redraw we note the box with the cursor (its text, cursor position) and how far every
+   * scrolled area is scrolled; afterwards we put it all back — as long as you are still on the same screen. */
+  function uiViewKey(){
+    return [STATE.tab, STATE.openOrderId, STATE.viewCustomerId, STATE.msgOpenId, STATE.inboxReply && STATE.inboxReply.phone,
+      STATE.newOrderOpen, STATE.quoteModalOrderId, STATE.invoiceModalOrderId, !!STATE.receiptForm, !!STATE.msgForm, !!STATE.customerForm,
+      !!STATE.creditForm, !!STATE.allocForm, !!STATE.custTxPreview, !!STATE.stmtOpen].join('|');
+  }
+  function uiScrollKey(el, seen){
+    var k = el.tagName + (el.id ? '#'+el.id : '.' + String(el.className||'').trim().split(/\s+/).join('.'));
+    seen[k] = (seen[k]||0) + 1;
+    return k + '@' + seen[k];
+  }
+  var TEXT_TYPES = /^(text|search|email|tel|url|password|number|)$/;
+  function uiCapture(app){
+    var st = {view:uiViewKey(), winY:window.scrollY, scrolls:{}, focus:null};
+    var a = document.activeElement;
+    if(a && a !== document.body && app.contains(a) && a.id && (a.tagName==='TEXTAREA' || (a.tagName==='INPUT' && TEXT_TYPES.test(a.type||'')))){
+      var f = {id:a.id, value:a.value, def:a.defaultValue, s:null, e:null};
+      try { f.s = a.selectionStart; f.e = a.selectionEnd; } catch(err){}
+      st.focus = f;
+    }
+    var seen = {}, all = app.getElementsByTagName('*');
+    for(var i = 0; i < all.length; i++){
+      var el = all[i], k = uiScrollKey(el, seen);
+      if(el.scrollTop > 0 || el.scrollLeft > 0) st.scrolls[k] = [el.scrollTop, el.scrollLeft, el.scrollHeight - el.clientHeight - el.scrollTop < 4];
+    }
+    return st;
+  }
+  function uiRestore(app, st){
+    if(!st || st.view !== uiViewKey()) return;
+    var keys = Object.keys(st.scrolls);
+    if(keys.length){
+      var seen = {}, all = app.getElementsByTagName('*');
+      for(var i = 0; i < all.length; i++){
+        var el = all[i], k = uiScrollKey(el, seen), v = st.scrolls[k];
+        if(!v) continue;
+        // a chat that was scrolled to the newest message stays at the bottom when a message arrives
+        el.scrollTop = (v[2] && /chat|log|thread/i.test(k)) ? el.scrollHeight : v[0];
+        el.scrollLeft = v[1];
+      }
+    }
+    if(Math.abs(window.scrollY - st.winY) > 2) window.scrollTo(window.scrollX, st.winY);
+    var f = st.focus;
+    if(f){
+      var n = document.getElementById(f.id);
+      if(n && (n.tagName==='TEXTAREA' || n.tagName==='INPUT')){
+        // text typed but not yet saved anywhere is put back — unless the app itself changed the box (e.g. cleared it after sending)
+        if(n.value !== f.value && n.defaultValue === f.def) n.value = f.value;
+        if(document.activeElement !== n){ try { n.focus({preventScroll:true}); } catch(err){ n.focus(); } }
+        if(f.s != null && n.value === f.value){ try { n.setSelectionRange(f.s, f.e); } catch(err){} }
+      }
+    }
+  }
   function render(){
     var app = document.getElementById('app');
+    var ui = null;
+    try { ui = uiCapture(app); } catch(err){ ui = null; }
+    renderNow(app);
+    try { uiRestore(app, ui); } catch(err){}
+  }
+  function renderNow(app){
     var ph = STATE.auth.phase;
     if(ph!=='unlocked' && ph!=='demo'){
       app.innerHTML = renderAuthScreen();
@@ -1866,7 +1929,7 @@ import './platform.js?v=2026-11-27.58';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-27.58</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-27.59</span></div>' +
       '</div>'
     );
   }
