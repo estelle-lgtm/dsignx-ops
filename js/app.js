@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-27.60';
+import './platform.js?v=2026-11-27.62';
 
 (function(){
   "use strict";
@@ -1362,6 +1362,10 @@ import './platform.js?v=2026-11-27.60';
       STATE.waHandled = map;
       render();
     }, function(){});
+    db.doc('calculator/prices').onSnapshot(function(snap){
+      // while the owner is still typing, their own unsaved changes win over the copy coming back from the server
+      if(snap.exists && Date.now() - _calcEditAt > 2500){ STATE.calcPrices = calcMergePrices(snap.data()); render(); }
+    }, function(){});
     db.collection('wa_seen').onSnapshot(function(qs){
       var map = {};
       qs.docs.forEach(function(d){ map[d.id] = d.data(); });
@@ -1883,6 +1887,7 @@ import './platform.js?v=2026-11-27.60';
         if(n.value !== f.value && n.defaultValue === f.def) n.value = f.value;
         if(document.activeElement !== n){ try { n.focus({preventScroll:true}); } catch(err){ n.focus(); } }
         if(f.s != null && n.value === f.value){ try { n.setSelectionRange(f.s, f.e); } catch(err){} }
+        else if(f.s == null){ var nv = n.value; n.value = ''; n.value = nv; } // number boxes: keep the cursor at the end
       }
     }
   }
@@ -1994,7 +1999,7 @@ import './platform.js?v=2026-11-27.60';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-27.60</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-27.62</span></div>' +
       '</div>'
     );
   }
@@ -3285,7 +3290,414 @@ import './platform.js?v=2026-11-27.60';
       STATE.quoteFrom = y+'-'+m+'-01'; STATE.quoteTo = y+'-'+m+'-'+String(new Date(y, d.getMonth()+1, 0).getDate()).padStart(2,'0'); }
     render();
   }
+  /* ============================ m² calculator (update 61, Maizey price list update 62) ============================
+   * Costs a job per m² from the price list (substrates per sheet, vinyl/laminate per roll, liquid laminate and
+   * doming per m², ink, printer, sundries, extras per item, labour), and turns the result into a quotation.
+   * The price list is shared (Firestore calculator/prices); only the owner can add, change or remove materials
+   * and rates. Each person's current job inputs stay in their own browser. */
+  var CALC_KEY = 'dsignx-calc-job-v1';
+  var CALC_VERSION = 2;
+  var CALC_EX = ' – example price';
+  var CALC_DEFAULTS = {
+    substrates:[
+      {id:'mz-abs09',name:'ABS sheet white 0.9mm',w:2500,l:1250,price:246.72,src:'Maizey BSW0.925001250 · last bought 27 Oct 2026'},
+      {id:'mz-abs3',name:'ABS sheet white 3mm',w:2500,l:1250,price:822.39,src:'Maizey BSW325001250 · last bought 5 Nov 2026'},
+      {id:'mz-crom',name:'Cromadek Polar white 0.6mm',w:2450,l:1225,price:482.25,src:'Maizey DSPW0.624501225 · last bought 27 Oct 2026'},
+      {id:'mz-mfoam',name:'M-Foam PVC sheet white 5mm',w:2450,l:2000,price:306.03,src:'Maizey TSW0524401220 · last bought 27 Oct 2026'},
+      {id:'mz-plexi',name:'Plexiglas GS clear 3mm (cut to size, per m²)',w:1000,l:1000,price:648.50,src:'Maizey CSC03305020301 · R648.50 per m² · last bought 18 Aug 2026'},
+      {id:'s1',name:'ACM 3mm (Alucobond-type)'+CALC_EX,w:2440,l:1220,price:780,src:'Not on Maizey invoices'},
+      {id:'s2',name:'Correx 5mm'+CALC_EX,w:2440,l:1220,price:165,src:'Not on Maizey invoices'}
+    ],
+    media:[
+      {id:'mz-m112p',name:'Grafiprint M112P white gloss 100mic (print)',w:1370,l:50,price:2522.00,src:'Maizey VMGM112P1370/050 · R50.44/m · last bought 10 Nov 2026'},
+      {id:'mz-m113ht',name:'Grafiprint M113HT white matt 100mic, clear HT adhesive (print)',w:1370,l:50,price:3355.50,src:'Maizey VMMM113HT1370/050 · R67.11/m · last bought 29 Sep 2026'},
+      {id:'mz-sunshade',name:'Sunshade white perf, black back 180mic (one-way vision)',w:1370,l:50,price:3034.00,src:'Maizey VPWM1370/050 · R60.68/m · last bought 9 Nov 2026'},
+      {id:'mz-p2000',name:'DM P2000 reflective white 1240mm (printable)',w:1240,l:1,price:81.24,src:'Maizey VRDMP20001240/47 · per metre · last bought 29 Sep 2026'},
+      {id:'mz-p180',name:'Grafitack P180 black 610mm (cut vinyl)',w:610,l:50,price:1522.50,src:'Maizey GP180610 · R30.45/m promotion price · last bought 29 Sep 2026',warn:true},
+      {id:'mz-avery',name:'Avery 736-01 copper metallic 1230mm (cut vinyl)',w:1230,l:1,price:236.87,src:'Maizey AD736011230 · per metre · last bought 2 Sep 2026'},
+      {id:'mz-tflex',name:'Turbo-Flex 4920 gold metallic 500mm (heat transfer)',w:500,l:1,price:142.55,src:'Maizey PTF4920500/25 · per metre · last bought 18 Aug 2026'},
+      {id:'mz-tprint',name:'Poli-Flex Turbo Print 4036 white matt 100mic (heat transfer)',w:600,l:25,price:1406.91,src:'Maizey VPUT4036100F0500 · 600mm × 25m roll · last bought 27 Aug 2026'},
+      {id:'m2',name:'Polymeric gloss white (print)'+CALC_EX,w:1370,l:50,price:3200,src:'Not on Maizey invoices'},
+      {id:'m3',name:'Cast wrap vinyl (print)'+CALC_EX,w:1520,l:25,price:4800,src:'Not on Maizey invoices'}
+    ],
+    laminates:[
+      {id:'mz-scp02',name:'Grafityp SCP02 stone chip protection film 240mic',w:1000,l:1,price:464.57,src:'Maizey ACSCP021000 · per metre · last bought 23 Sep 2026'},
+      {id:'l1',name:'Monomeric gloss laminate'+CALC_EX,w:1370,l:50,price:1600,src:'Not on Maizey invoices'},
+      {id:'l2',name:'Monomeric matte laminate'+CALC_EX,w:1370,l:50,price:1650,src:'Not on Maizey invoices'},
+      {id:'l3',name:'Cast laminate (wraps)'+CALC_EX,w:1520,l:25,price:4200,src:'Not on Maizey invoices'},
+      {id:'mz-g200',type:'liquid',name:'Liquid laminate G200',size:2000,ml:100,price:694.74,src:'Maizey COATFLEXG200 · 2L tin · last bought 27 Aug 2026 · 100 ml/m² is an estimate, please check',warn:true},
+      {id:'mz-resin',type:'liquid',name:'Doming resin flexible T & TSA',size:200,ml:1500,price:317.73,src:'Maizey TRRESINFLEXIBLEVT · 4×50ml pack · last bought 10 Nov 2026 · 1,500 ml/m² (about 1.5mm dome) is an estimate, please check',warn:true}
+    ],
+    extras:[
+      {id:'mz-banner',name:'Roll-up banner stand V22 economy',unit:'each',price:536.25,src:'Maizey DPBV22ECO · last bought 23 Sep 2026'},
+      {id:'mz-standoff',name:'Standoff 20mm hollow, 19Ø (2–12mm panel)',unit:'each',price:6.84,src:'Maizey SFHDH1920H201E · last bought 18 Aug 2026'},
+      {id:'mz-badge',name:'Badge pin 38mm moulded plastic S/A',unit:'each',price:3.52,src:'Maizey RPBPS1018 · last bought 11 Aug 2026'},
+      {id:'mz-mixer',name:'Mixer sticks version T (nozzle fit)',unit:'each',price:10.89,src:'Maizey TRMIXERS · Nov price (was R10.49) · last bought 10 Nov 2026'},
+      {id:'mz-clean',name:'Roland cleaning kit (100ml liquid + sticks)',unit:'kit',price:529.05,src:'Maizey CLEANINGKITROLAD · Aug–Sep price (R465.00 on 27 Oct)'},
+      {id:'mz-squeegee',name:'Lamin8 felt squeegee',unit:'each',price:129.00,src:'Maizey TFTA50 · last bought 15 Sep 2026'}
+    ],
+    ink:{price:3383.13,ml:12},
+    printer:{price:280000,years:5,maint:18000,m2:3000},
+    tape:{w:1220,l:100,price:950},
+    fluid:{shampooPrice:95,bottleMl:500,shampooMl:50,waterMl:2000,ml:30},
+    other:6,
+    labour:{design:450,prod:350,min:350}
+  };
+  var CALC_LISTS = ['substrates','media','laminates','extras'];
+  var CALC_JOB_DEFAULT = {name:'',w:'',h:'',qty:1,sub:'',vin:'',lam:'',print:true,tape:false,fluid:false,other:true,waste:10,markup:100,designH:0,prodH:0,useMin:true,vat:null,split:true,extras:[]};
+  function calcClone(o){ return JSON.parse(JSON.stringify(o)); }
+  function calcPrices(){
+    if(!STATE.calcPrices) STATE.calcPrices = calcClone(CALC_DEFAULTS);
+    return STATE.calcPrices;
+  }
+  // Saved price list → current list. A list saved before the Maizey update (no version) keeps its rates
+  // (labour, printer, tape, consumables, ink usage) and the owner's own added items, but takes the new
+  // Maizey materials, extras and fluid mix.
+  function calcMergePrices(d){
+    d = d || {};
+    var out = calcClone(CALC_DEFAULTS);
+    if(Number(d.version) >= CALC_VERSION){
+      Object.keys(d).forEach(function(k){
+        if(k==='version' || k==='updatedAt') return;
+        if(Array.isArray(d[k])) out[k] = d[k];
+        else if(d[k] && typeof d[k]==='object' && out[k]) Object.assign(out[k], d[k]);
+        else if(k in out) out[k] = d[k];
+      });
+    } else {
+      ['labour','printer','tape'].forEach(function(k){ if(d[k] && typeof d[k]==='object') Object.assign(out[k], d[k]); });
+      if(d.other!=null) out.other = d.other;
+      if(d.ink && d.ink.ml!=null) out.ink.ml = d.ink.ml;
+      if(d.fluid && d.fluid.ml!=null) out.fluid.ml = d.fluid.ml;
+      CALC_LISTS.forEach(function(k){ (Array.isArray(d[k]) ? d[k] : []).forEach(function(x){ if(x && String(x.id).charAt(0)==='x') out[k].push(x); }); });
+    }
+    CALC_LISTS.forEach(function(k){ if(!Array.isArray(out[k])) out[k] = calcClone(CALC_DEFAULTS[k]); });
+    return out;
+  }
+  function calcJob(){
+    if(!STATE.calcJob){
+      var j = calcClone(CALC_JOB_DEFAULT);
+      try { var raw = localStorage.getItem(CALC_KEY); if(raw) Object.assign(j, JSON.parse(raw)); } catch(e){}
+      if(j.vat===null) j.vat = isVatVendor();
+      if(!Array.isArray(j.extras)) j.extras = [];
+      STATE.calcJob = j;
+    }
+    return STATE.calcJob;
+  }
+  function calcSaveJob(){ try { localStorage.setItem(CALC_KEY, JSON.stringify(STATE.calcJob)); } catch(e){} }
+  var _calcSaveT = null, _calcEditAt = 0;
+  function calcSavePrices(){
+    if(!isOwnerRole()) return;
+    _calcEditAt = Date.now();
+    clearTimeout(_calcSaveT);
+    _calcSaveT = setTimeout(function(){
+      if(STATE.isLive && STATE.db){
+        var data = calcClone(STATE.calcPrices); data.version = CALC_VERSION; data.updatedAt = new Date().toISOString();
+        STATE.db.doc('calculator/prices').set(data).catch(function(){ toast('Could not save the price list — check your connection'); });
+      }
+    }, 700);
+  }
+  function cnum(v){ var n = parseFloat(String(v==null?'':v).replace(/\s/g,'').replace(',', '.')); return isFinite(n) ? n : 0; }
+  function cR(n){ return money(isFinite(n) ? n : 0); }
+  function cfx(n, d){ d = d==null ? 2 : d; return (isFinite(n)?n:0).toLocaleString('en-ZA',{minimumFractionDigits:d, maximumFractionDigits:d}); }
+  function sheetRate(s){ var a = cnum(s.w)/1000*cnum(s.l)/1000; return a>0 ? cnum(s.price)/a : 0; }
+  function rollRate(s){ var a = cnum(s.w)/1000*cnum(s.l); return a>0 ? cnum(s.price)/a : 0; }
+  function isLiquid(x){ return !!x && x.type==='liquid'; }
+  function liquidRate(x){ return cnum(x.size)>0 ? cnum(x.price)/cnum(x.size)*cnum(x.ml) : 0; }
+  function lamRate(x){ return isLiquid(x) ? liquidRate(x) : rollRate(x); }
+  function inkRate(P){ return cnum(P.ink.price)/1000*cnum(P.ink.ml); }
+  function prnRate(P){ var p = P.printer; var yr = (cnum(p.years)>0 ? cnum(p.price)/cnum(p.years) : 0) + cnum(p.maint); return cnum(p.m2)>0 ? yr/cnum(p.m2) : 0; }
+  function fluidPerL(P){ var f = P.fluid, mix = (cnum(f.shampooMl)+cnum(f.waterMl))/1000; return (cnum(f.bottleMl)>0 && mix>0) ? cnum(f.shampooPrice)/cnum(f.bottleMl)*cnum(f.shampooMl)/mix : 0; }
+  function fluidRate(P){ return fluidPerL(P)/1000*cnum(P.fluid.ml); }
+  function calcFind(list, id){ return (list||[]).find(function(x){ return x.id===id; }) || null; }
+  function calcVatRate(){ return Number(STATE.config.vatRate) || 15; }
+
+  function calcRun(){
+    var P = calcPrices(), j = calcJob();
+    var piece = cnum(j.w)/1000 * cnum(j.h)/1000;
+    var qty = Math.max(0, Math.round(cnum(j.qty)));
+    var area = piece*qty, wf = 1 + cnum(j.waste)/100, billed = area*wf;
+    var sub = calcFind(P.substrates, j.sub), vin = calcFind(P.media, j.vin), lam = calcFind(P.laminates, j.lam);
+    var sunParts = [], sun = 0;
+    if(j.tape){ sun += rollRate(P.tape); sunParts.push('tape'); }
+    if(j.fluid){ sun += fluidRate(P); sunParts.push('fluid'); }
+    if(j.other){ sun += cnum(P.other); sunParts.push('consumables'); }
+    var rows = [
+      {c:'c1', name:'Substrate', dt: sub ? sub.name+' · '+cnum(sub.w)+'×'+cnum(sub.l)+' mm sheet' : 'None', rate: sub ? sheetRate(sub) : 0},
+      {c:'c2', name:'Vinyl / media', dt: vin ? vin.name+' · '+cnum(vin.w)+' mm roll' : 'None', rate: vin ? rollRate(vin) : 0},
+      {c:'c3', name:'Laminate', dt: lam ? (isLiquid(lam) ? lam.name+' · '+cfx(cnum(lam.ml),0)+' ml/m²' : lam.name) : 'None', rate: lam ? lamRate(lam) : 0},
+      {c:'c4', name:'Ink', dt: j.print ? cfx(cnum(P.ink.ml),0)+' ml/m² at '+cR(cnum(P.ink.price))+'/L' : 'Not printed', rate: j.print ? inkRate(P) : 0},
+      {c:'c5', name:'Printer', dt: j.print ? 'Write-off, service & heads' : 'Not printed', rate: j.print ? prnRate(P) : 0},
+      {c:'c6', name:'Sundries', dt: sunParts.length ? sunParts.join(', ') : 'None', rate: sun}
+    ];
+    var raw = rows.reduce(function(a,r){ return a + r.rate; }, 0);
+    var cost = raw*billed;
+    var exLines = (j.extras||[]).map(function(e, i){ var it = calcFind(P.extras, e.id), q = Math.max(0, cnum(e.qty)); return {i:i, it:it, q:q, amt: it ? q*cnum(it.price) : 0}; });
+    var extras = exLines.reduce(function(a,x){ return a + x.amt; }, 0);
+    var mk = cnum(j.markup)/100, markup = (cost + extras)*mk;
+    var designH = Math.max(0, cnum(j.designH)), prodH = Math.max(0, cnum(j.prodH));
+    var design = designH*cnum(P.labour.design), labour = prodH*cnum(P.labour.prod);
+    var subtotal = cost + extras + markup + design + labour, minCharge = cnum(P.labour.min);
+    var has = area>0 || design>0 || labour>0 || extras>0;
+    var minTop = (j.useMin && has && minCharge>subtotal) ? minCharge - subtotal : 0;
+    var excl = subtotal + minTop, vatRate = calcVatRate();
+    var vat = j.vat ? excl*vatRate/100 : 0;
+    return {piece:piece, qty:qty, area:area, wf:wf, billed:billed, rows:rows, raw:raw, costM2:raw*wf, cost:cost, exLines:exLines, extras:extras, mk:mk, markup:markup,
+      designH:designH, prodH:prodH, design:design, labour:labour, minTop:minTop, minCharge:minCharge, has:has, excl:excl, vat:vat, incl:excl+vat, vatRate:vatRate,
+      sub:sub, vin:vin, lam:lam, sellM2: area>0 ? excl/area : 0,
+      sheets: sub ? billed/(cnum(sub.w)/1000*cnum(sub.l)/1000) : 0,
+      vinM: vin && cnum(vin.w)>0 ? billed/(cnum(vin.w)/1000) : 0, lamM: lam && !isLiquid(lam) && cnum(lam.w)>0 ? billed/(cnum(lam.w)/1000) : 0,
+      lamMl: isLiquid(lam) ? billed*cnum(lam.ml) : 0};
+  }
+  function calcMaterials(r){ return [r.sub && r.sub.name, r.vin && r.vin.name, r.lam && r.lam.name].filter(Boolean).join(' + ') + (calcJob().print && (r.sub||r.vin) ? ' · printed' : ''); }
+  function calcExtrasList(r){ return r.exLines.filter(function(x){ return x.it && x.q>0; }).map(function(x){ return cfx(x.q, x.q%1?2:0)+' × '+x.it.name; }).join(', '); }
+
+  // Quotation lines from the calculator. Materials, machine, markup and any minimum top-up go on the
+  // product line; each extra (with markup), design and production/fitting get their own lines — or
+  // everything goes in one line if chosen.
+  function calcQuoteLines(r){
+    var j = calcJob(), P = calcPrices(), lines = [];
+    var title = String(j.name||'').trim() || 'Signage';
+    var size = cnum(j.w) && cnum(j.h) ? cnum(j.w)+' × '+cnum(j.h)+' mm' : '';
+    var spec = [size, calcMaterials(r)].filter(Boolean).join(' · ');
+    if(j.split){
+      var extraLines = r.exLines.filter(function(x){ return x.it && x.q>0; }).map(function(x){
+        return {description:x.it.name, note:'', qty:x.q, unitPrice:round2(cnum(x.it.price)*(1+r.mk))};
+      });
+      var mainTotal = round2(r.cost*(1+r.mk) + r.minTop);
+      if(r.qty>0 && r.area>0) lines.push({description:title, note:spec, qty:r.qty, unitPrice:round2(mainTotal/r.qty)});
+      else if(r.minTop>0) lines.push({description:'Minimum charge', note:'', qty:1, unitPrice:round2(r.minTop)});
+      lines = lines.concat(extraLines);
+      if(r.design>0) lines.push({description:'Design', note:cfx(r.designH,2)+' hrs', qty:r.designH, unitPrice:round2(cnum(P.labour.design))});
+      if(r.labour>0) lines.push({description:'Production & fitting', note:cfx(r.prodH,2)+' hrs', qty:r.prodH, unitPrice:round2(cnum(P.labour.prod))});
+    } else {
+      var q = r.qty>0 && r.area>0 ? r.qty : 1;
+      var inc = [calcExtrasList(r), r.design>0 ? 'design' : '', r.labour>0 ? 'production & fitting' : ''].filter(Boolean);
+      lines.push({description:title, note:spec + (inc.length ? (spec ? ' · ' : '')+'includes '+inc.join(', ') : ''), qty:q, unitPrice:round2(r.excl/q)});
+    }
+    return lines;
+  }
+  function calcCreateQuote(){
+    var r = calcRun();
+    if(!r.has){ toast('Enter the job size, extras or labour first'); return; }
+    var j = calcJob(), lines = calcQuoteLines(r);
+    var sum = round2(lines.reduce(function(a,li){ return a + lineNet(li); }, 0));
+    STATE.newQuotePrefill = {title:String(j.name||'').trim() || 'Quotation', lines:lines, vat:!!j.vat && isVatVendor(), excl:sum, fromCalc:true, category:'signage'};
+    STATE.newQuoteOpen = true;
+    render();
+    var nq = document.getElementById('nqCustomer'); if(nq) nq.focus();
+  }
+  function calcText(kind){
+    var r = calcRun(), j = calcJob(), P = calcPrices(), ex = calcExtrasList(r);
+    if(kind==='client') return [
+      'DsignX – Quote estimate', j.name ? 'Job: '+j.name : null,
+      r.area>0 ? 'Size: '+cnum(j.w)+' × '+cnum(j.h)+' mm × '+r.qty+' = '+cfx(r.area,2)+' m²' : null,
+      calcMaterials(r) ? 'Material: '+calcMaterials(r) : null,
+      ex ? 'Includes: '+ex : null,
+      (r.design+r.labour>0) ? 'Includes design, production and fitting' : null,
+      'Price: '+cR(r.excl)+' excl. VAT' + (r.area>0 ? ' ('+cR(r.sellM2)+'/m²)' : ''),
+      j.vat ? 'VAT '+r.vatRate+'%: '+cR(r.vat) : null, j.vat ? 'Total: '+cR(r.incl)+' incl. VAT' : null
+    ].filter(Boolean).join('\n');
+    return [
+      'COSTING – '+(j.name || 'job'),
+      'Size: '+cnum(j.w)+' × '+cnum(j.h)+' mm × '+r.qty+' = '+cfx(r.area,3)+' m² (+'+cfx(cnum(j.waste),0)+'% wastage = '+cfx(r.billed,3)+' m²)'
+    ].concat(r.rows.map(function(x){ return x.name+': '+cR(x.rate)+'/m² ('+x.dt+')'; })).concat([
+      'Cost per m²: '+cR(r.raw)+' raw, '+cR(r.costM2)+' incl. wastage',
+      'Material & machine cost: '+cR(r.cost)
+    ]).concat(r.exLines.filter(function(x){ return x.it && x.q>0; }).map(function(x){ return 'Extra: '+cfx(x.q, x.q%1?2:0)+' × '+x.it.name+' @ '+cR(cnum(x.it.price))+' = '+cR(x.amt); })).concat([
+      'Markup '+cfx(cnum(j.markup),0)+'% on materials'+(r.extras>0?' & extras':'')+': '+cR(r.markup),
+      'Design: '+cfx(r.designH,2)+' hrs × '+cR(cnum(P.labour.design))+' = '+cR(r.design),
+      'Production & fitting: '+cfx(r.prodH,2)+' hrs × '+cR(cnum(P.labour.prod))+' = '+cR(r.labour),
+      r.minTop>0 ? 'Minimum charge top-up: '+cR(r.minTop)+' (minimum '+cR(r.minCharge)+')' : null,
+      'Sell excl. VAT: '+cR(r.excl) + (r.area>0 ? ' ('+cR(r.sellM2)+'/m²)' : ''),
+      j.vat ? 'Total incl. VAT: '+cR(r.incl) : null
+    ]).filter(Boolean).join('\n');
+  }
+  function calcCopy(kind){
+    var text = calcText(kind), label = kind==='client' ? 'Client quote' : 'Costing';
+    var fail = function(){ STATE.calcCopyText = text; render(); toast('Copying is blocked here — select the text below and copy it'); };
+    try { navigator.clipboard.writeText(text).then(function(){ STATE.calcCopyText = ''; toast(label+' copied'); render(); }, fail); } catch(e){ fail(); }
+  }
+
+  /* ---- input handling ---- */
+  function calcOnInput(t){
+    var k = t.getAttribute('data-calcj');
+    if(k){ var j = calcJob(); j[k] = t.type==='checkbox' ? t.checked : t.value; calcSaveJob(); render(); return true; }
+    var exf = t.getAttribute('data-calcex');
+    if(exf){ var jj = calcJob(), row = jj.extras[Number(t.getAttribute('data-i'))]; if(row){ row[exf] = t.value; calcSaveJob(); render(); } return true; }
+    if(!isOwnerRole()) return false;
+    var P = calcPrices(), path = t.getAttribute('data-calcpath');
+    if(path){ var ab = path.split('.'); if(ab[1]) P[ab[0]][ab[1]] = t.value; else P[ab[0]] = t.value; calcSavePrices(); render(); return true; }
+    var kind = t.getAttribute('data-calckind');
+    if(kind){ var it = calcFind(P[kind], t.getAttribute('data-calcid')); if(it){ it[t.getAttribute('data-calcf')] = t.value; calcSavePrices(); render(); } return true; }
+    return false;
+  }
+  function calcJobExtraAdd(){
+    var j = calcJob(), P = calcPrices();
+    j.extras.push({id: P.extras[0] ? P.extras[0].id : '', qty:1}); calcSaveJob(); render();
+    var el = document.getElementById('calc-ex-'+(j.extras.length-1)+'-id'); if(el) el.focus();
+  }
+  function calcJobExtraDel(i){ var j = calcJob(); j.extras.splice(i, 1); calcSaveJob(); render(); }
+  function calcAdd(kind){
+    if(!isOwnerRole()) return;
+    var P = calcPrices(), id = 'x'+Math.random().toString(36).slice(2,9), list = kind;
+    var tpl = kind==='substrates' ? {name:'New substrate', w:2440, l:1220, price:0}
+      : kind==='extras' ? {name:'New item', unit:'each', price:0}
+      : kind==='liquids' ? {type:'liquid', name:'New liquid', size:1000, ml:100, price:0}
+      : {name: kind==='media' ? 'New vinyl' : 'New laminate', w:1370, l:50, price:0};
+    if(kind==='liquids') list = 'laminates';
+    P[list].push(Object.assign({id:id}, tpl)); calcSavePrices(); render();
+    var el = document.getElementById('calc-'+list+'-'+id+'-name'); if(el){ el.focus(); el.select(); }
+  }
+  function calcDel(kind, id){
+    if(!isOwnerRole()) return;
+    var P = calcPrices(), it = calcFind(P[kind], id); if(!it) return;
+    if(!confirm('Remove “'+it.name+'” from the price list?')) return;
+    P[kind] = P[kind].filter(function(x){ return x.id!==id; }); calcSavePrices(); render();
+  }
+  function calcReset(){
+    if(!isOwnerRole()) return;
+    if(!confirm('Replace all prices and rates with the Maizey price list? This cannot be undone.')) return;
+    STATE.calcPrices = calcClone(CALC_DEFAULTS); calcSavePrices(); render(); toast('Maizey prices restored');
+  }
+
+  /* ---- views ---- */
+  function cUnit(id, attr, val, unit, opts){
+    opts = opts || {};
+    return '<span class="calc-unit"><input type="text" id="'+id+'" '+attr+' value="'+escapeHtml(val==null?'':val)+'" inputmode="decimal" autocomplete="off"'+(opts.ro?' readonly':'')+'><em>'+unit+'</em></span>';
+  }
+  function cField(label, inner){ return '<label class="calc-f">'+label+inner+'</label>'; }
+  function cChk(id, k, on, label){ return '<label class="calc-chk"><input type="checkbox" id="'+id+'" data-calcj="'+k+'"'+(on?' checked':'')+'> '+label+'</label>'; }
+  function renderCalculator(){
+    var view = STATE.calcView || 'job';
+    var head = '<div class="topline"><div><h1>m² calculator</h1><div class="sub">Cost a job per m² and turn it into a quotation</div></div>' +
+      '<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;"><div class="seg" role="tablist">' +
+        '<button type="button" class="'+(view==='job'?'on':'')+'" data-action="calc-view" data-v="job">Cost a job</button>' +
+        '<button type="button" class="'+(view==='prices'?'on':'')+'" data-action="calc-view" data-v="prices">Price list &amp; rates</button>' +
+      '</div><button class="btn" data-action="calc-close">&larr; Back to quotes</button></div></div>';
+    return head + (view==='prices' ? renderCalcPrices() : renderCalcJob());
+  }
+  function renderCalcJob(){
+    var P = calcPrices(), j = calcJob(), r = calcRun();
+    var opt = function(list, none, cur){ return '<option value="">'+none+'</option>' + list.map(function(x){ return '<option value="'+escapeHtml(x.id)+'"'+(x.id===cur?' selected':'')+'>'+escapeHtml(x.name)+'</option>'; }).join(''); };
+    var exRows = (j.extras||[]).map(function(e, i){
+      var line = r.exLines[i] || {amt:0};
+      var o = '<option value="">Choose an item…</option>' + P.extras.map(function(x){ return '<option value="'+escapeHtml(x.id)+'"'+(x.id===e.id?' selected':'')+'>'+escapeHtml(x.name)+' · '+cR(cnum(x.price))+'/'+escapeHtml(x.unit||'each')+'</option>'; }).join('');
+      return '<div class="calc-exrow"><select id="calc-ex-'+i+'-id" data-calcex="id" data-i="'+i+'" aria-label="Extra item '+(i+1)+'">'+o+'</select>' +
+        cUnit('calc-ex-'+i+'-qty', 'data-calcex="qty" data-i="'+i+'"', e.qty, 'qty') +
+        '<span class="calc-examt">'+cR(line.amt)+'</span><button type="button" class="btn btn-ghost btn-sm" data-action="calc-ex-del" data-i="'+i+'" aria-label="Remove extra item">Remove</button></div>';
+    }).join('');
+    var form =
+      '<div class="panel calc-form">' +
+        '<div class="section-label">Job</div>' +
+        cField('Job / client name', '<input type="text" id="calc-j-name" data-calcj="name" value="'+escapeHtml(j.name||'')+'" placeholder="e.g. Shopfront sign – Kroonstad Spar">') +
+        '<div class="calc-row">' + cField('Width', cUnit('calc-j-w','data-calcj="w"', j.w, 'mm')) + cField('Height', cUnit('calc-j-h','data-calcj="h"', j.h, 'mm')) + cField('Quantity', cUnit('calc-j-qty','data-calcj="qty"', j.qty, 'pcs')) + '</div>' +
+        '<p class="hint">'+(r.area>0 ? '<b>'+cfx(r.piece,3)+' m²</b> per piece × '+r.qty+' = <b>'+cfx(r.area,3)+' m²</b> · '+cfx(r.billed,3)+' m² with '+cfx(cnum(j.waste),0)+'% wastage' : 'Enter a width, height and quantity to see the area.')+'</p>' +
+        '<div class="section-label">Materials</div>' +
+        '<div class="calc-row">' +
+          cField('Substrate', '<select id="calc-j-sub" data-calcj="sub">'+opt(P.substrates,'None (vinyl only)',j.sub)+'</select><span class="calc-rate">'+(r.sub ? cR(sheetRate(r.sub))+' / m²' : '')+'</span>') +
+          cField('Vinyl / print media', '<select id="calc-j-vin" data-calcj="vin">'+opt(P.media,'None',j.vin)+'</select><span class="calc-rate">'+(r.vin ? cR(rollRate(r.vin))+' / m²' : '')+'</span>') +
+          cField('Laminate', '<select id="calc-j-lam" data-calcj="lam">'+opt(P.laminates,'None',j.lam)+'</select><span class="calc-rate">'+(r.lam ? cR(lamRate(r.lam))+' / m²' : '')+'</span>') +
+        '</div>' +
+        '<div class="calc-toggles">' + cChk('calc-j-print','print',j.print,'Printed (ink + printer)') + cChk('calc-j-tape','tape',j.tape,'Application / lifting tape') + cChk('calc-j-fluid','fluid',j.fluid,'Application fluid') + cChk('calc-j-other','other',j.other,'Other consumables') + '</div>' +
+        '<div class="section-label">Extras &amp; hardware</div>' +
+        '<div class="calc-exlist">'+(exRows || '<p class="hint" style="margin:0;">No extras on this job.</p>')+'</div>' +
+        '<div><button type="button" class="btn btn-sm" data-action="calc-ex-add"'+(P.extras.length?'':' disabled')+'>+ Add item</button></div>' +
+        '<p class="hint">Items charged per piece, such as banner stands, standoffs, badge pins or mixer sticks. Markup applies to them; wastage doesn’t.</p>' +
+        '<div class="section-label">Labour &amp; design</div>' +
+        '<div class="calc-row">' + cField('Design time', cUnit('calc-j-designH','data-calcj="designH"', j.designH, 'hrs')) + cField('Production &amp; fitting time', cUnit('calc-j-prodH','data-calcj="prodH"', j.prodH, 'hrs')) + '</div>' +
+        '<p class="hint">Design at <b>'+cR(cnum(P.labour.design))+'</b>/hr = '+cR(r.design)+' · production &amp; fitting at <b>'+cR(cnum(P.labour.prod))+'</b>/hr = '+cR(r.labour)+'</p>' +
+        '<div class="section-label">Pricing</div>' +
+        '<div class="calc-row">' + cField('Wastage &amp; offcuts', cUnit('calc-j-waste','data-calcj="waste"', j.waste, '%')) + cField('Markup on materials', cUnit('calc-j-markup','data-calcj="markup"', j.markup, '%')) + '</div>' +
+        '<div class="calc-toggles">' + cChk('calc-j-min','useMin',j.useMin,'Apply minimum charge ('+cR(r.minCharge)+')') + cChk('calc-j-vat','vat',j.vat,'Add VAT ('+r.vatRate+'%)') + '</div>' +
+        '<p class="hint">Wastage is added to every material, ink and printer cost. Markup applies to materials, extras and machine cost only, because labour and design are charged at the hourly rates. If the job comes in under the minimum charge, the price is raised to the minimum before VAT.</p>' +
+      '</div>';
+    var bar = r.raw>0 ? r.rows.filter(function(x){ return x.rate>0; }).map(function(x){ return '<i class="calc-'+x.c+'" style="width:'+(x.rate/r.raw*100)+'%"></i>'; }).join('') : '';
+    var legend = r.rows.map(function(x){ return '<li class="'+(x.rate>0?'':'off')+'"><span class="sw calc-'+x.c+'"></span><span class="nm">'+x.name+'<span class="dt">'+escapeHtml(x.dt)+'</span></span><span class="rt">'+cR(x.rate)+'<span class="pc">'+(r.raw>0 ? cfx(x.rate/r.raw*100,0) : 0)+'%</span></span></li>'; }).join('');
+    var t = [['Cost per m² incl. wastage', cR(r.costM2)], ['Material &amp; machine cost', r.has ? cR(r.cost) : '—']];
+    if(r.extras>0) t.push(['Extras &amp; hardware', cR(r.extras)]);
+    t.push(['Markup '+cfx(cnum(j.markup),0)+'% on materials'+(r.extras>0?' &amp; extras':''), r.has ? cR(r.markup) : '—'],
+      ['Design '+cfx(r.designH,2)+' hrs', r.has ? cR(r.design) : '—'], ['Production &amp; fitting '+cfx(r.prodH,2)+' hrs', r.has ? cR(r.labour) : '—']);
+    if(r.minTop>0) t.push(['Minimum charge top-up (min '+cR(r.minCharge)+')', cR(r.minTop)]);
+    t.push(['Price excl. VAT', r.has ? cR(r.excl) : '—']);
+    if(j.vat) t.push(['VAT '+r.vatRate+'%', r.has ? cR(r.vat) : '—']);
+    var usage = [];
+    if(r.has && r.sub) usage.push('Substrate: about <b>'+cfx(r.sheets,2)+'</b> sheets of '+cnum(r.sub.w)+'×'+cnum(r.sub.l)+' mm ('+Math.ceil(r.sheets-1e-9)+' to cut from)');
+    if(r.has && r.vin) usage.push('Vinyl: about <b>'+cfx(r.vinM,2)+' m</b> off a '+cnum(r.vin.w)+' mm roll');
+    if(r.has && r.lam && isLiquid(r.lam)) usage.push(escapeHtml(r.lam.name)+': about <b>'+cfx(r.lamMl,0)+' ml</b>'+(cnum(r.lam.size)>0 ? ' ('+cfx(r.lamMl/cnum(r.lam.size),2)+' of a '+cfx(cnum(r.lam.size),0)+' ml pack)' : ''));
+    else if(r.has && r.lam) usage.push('Laminate: about <b>'+cfx(r.lamM,2)+' m</b> off a '+cnum(r.lam.w)+' mm roll');
+    r.exLines.filter(function(x){ return x.it && x.q>0; }).forEach(function(x){ usage.push('Extra: <b>'+cfx(x.q, x.q%1?2:0)+'</b> × '+escapeHtml(x.it.name)); });
+    var lines = r.has ? calcQuoteLines(r) : [];
+    var proof =
+      '<div class="panel calc-proof">' +
+        '<div class="calc-big"><span class="lbl">'+(j.vat ? 'Job total incl. VAT' : 'Job total excl. VAT')+'</span><span class="val">'+(r.has ? cR(r.incl) : '—')+'</span>' +
+          '<span class="sub">'+(r.area>0 ? cR(r.sellM2)+' per m² excl. VAT · '+cfx(r.area,2)+' m²' : (r.has ? 'No print area · extras, labour and design only' : 'Enter the job size to price it'))+'</span></div>' +
+        '<div class="section-label" style="display:flex; justify-content:space-between;">Cost per m² <span style="color:var(--ink);">'+cR(r.raw)+'</span></div>' +
+        '<div class="calc-bar" aria-hidden="true">'+bar+'</div><ul class="calc-legend">'+legend+'</ul>' +
+        '<dl class="calc-totals">' + t.map(function(x){ return '<div><dt>'+x[0]+'</dt><dd>'+x[1]+'</dd></div>'; }).join('') + '<div class="strong"><dt>'+(j.vat ? 'Total incl. VAT' : 'Total excl. VAT')+'</dt><dd>'+(r.has ? cR(r.incl) : '—')+'</dd></div></dl>' +
+        (usage.length ? '<div class="calc-usage">'+usage.map(function(u){ return '<span>'+u+'</span>'; }).join('')+'</div>' : '') +
+        '<div class="section-label" style="margin-top:4px;">Quotation lines</div>' +
+        (lines.length ? '<div class="calc-lines">'+lines.map(function(li){ return '<div><span>'+escapeHtml(li.description)+(li.note?'<small>'+escapeHtml(li.note)+'</small>':'')+'</span><span>'+cfx(li.qty, li.qty%1?2:0)+' × '+cR(li.unitPrice)+'</span></div>'; }).join('')+'</div>' : '<div class="hint" style="margin:0;">Price the job first.</div>') +
+        '<label class="calc-chk" style="margin-top:6px;"><input type="checkbox" id="calc-j-split" data-calcj="split"'+(j.split?' checked':'')+'> Extras, design and labour on separate lines</label>' +
+        (j.vat && !isVatVendor() ? '<div class="hint">No VAT number is set up under Settings, so the quotation is made without VAT.</div>' : '') +
+        '<div class="calc-btns"><button class="btn btn-primary" data-action="calc-quote"'+(r.has?'':' disabled')+'>Create quotation</button>' +
+          '<button class="btn btn-sm" data-action="calc-copy" data-k="client">Copy client quote</button><button class="btn btn-sm" data-action="calc-copy" data-k="cost">Copy costing</button></div>' +
+        (STATE.calcCopyText ? '<textarea class="calc-fallback" id="calc-fallback" readonly>'+escapeHtml(STATE.calcCopyText)+'</textarea>' : '') +
+      '</div>';
+    return '<div class="calc-grid">'+form+proof+'</div>';
+  }
+  function renderCalcPrices(){
+    var P = calcPrices(), own = isOwnerRole(), ro = own ? '' : ' readonly';
+    var src = function(x){ return x.src ? '<span class="calc-src'+(x.warn?' warn':'')+'">'+escapeHtml(x.src)+'</span>' : ''; };
+    var inp = function(kind, x, f, label){ return '<input type="text" inputmode="decimal" autocomplete="off" id="calc-'+kind+'-'+x.id+'-'+f+'" data-calckind="'+kind+'" data-calcid="'+escapeHtml(x.id)+'" data-calcf="'+f+'" value="'+escapeHtml(x[f]==null?'':x[f])+'" aria-label="'+label+'"'+ro+'>'; };
+    var nameInp = function(kind, x){ return '<input type="text" autocomplete="off" id="calc-'+kind+'-'+x.id+'-name" data-calckind="'+kind+'" data-calcid="'+escapeHtml(x.id)+'" data-calcf="name" value="'+escapeHtml(x.name)+'" aria-label="Name"'+ro+'>'; };
+    var del = function(kind, x){ return own ? '<button class="btn btn-ghost btn-sm" data-action="calc-del" data-kind="'+kind+'" data-id="'+escapeHtml(x.id)+'" aria-label="Remove '+escapeHtml(x.name)+'">Remove</button>' : ''; };
+    var addBtn = function(kind, label){ return own ? '<button class="btn btn-sm" data-action="calc-add" data-kind="'+kind+'">'+label+'</button>' : ''; };
+    var table = function(kind, title, sheet, addLabel, note){
+      var rows = P[kind].filter(function(x){ return !isLiquid(x); }).map(function(x){
+        return '<tr><td class="name">'+nameInp(kind, x)+src(x)+'</td><td>'+inp(kind,x,'w','Width in mm')+'</td><td>'+inp(kind,x,'l',sheet?'Length in mm':'Length in metres')+'</td><td>'+inp(kind,x,'price','Price in rand')+'</td>' +
+          '<td class="num rate"><strong>'+cR(sheet ? sheetRate(x) : rollRate(x))+'</strong></td><td>'+del(kind,x)+'</td></tr>';
+      }).join('');
+      return '<div class="panel"><div class="panel-head"><h2>'+title+'</h2>'+addBtn(kind, addLabel)+'</div>' + (note ? '<p class="hint" style="margin:-4px 0 8px;">'+note+'</p>' : '') +
+        '<div class="tbl-wrap"><table class="calc-ptable"><thead><tr><th>Name</th><th>'+(sheet?'Sheet width (mm)':'Roll width (mm)')+'</th><th>'+(sheet?'Sheet length (mm)':'Roll length (m)')+'</th><th>'+(sheet?'Price per sheet (R)':'Price per roll (R)')+'</th><th class="num">R / m²</th><th></th></tr></thead><tbody>'+(rows || '<tr><td colspan="6" class="empty-note">None yet.</td></tr>')+'</tbody></table></div>';
+    };
+    var liquids = P.laminates.filter(isLiquid).map(function(x){
+      return '<tr><td class="name">'+nameInp('laminates', x)+src(x)+'</td><td>'+inp('laminates',x,'size','Pack size in ml')+'</td><td>'+inp('laminates',x,'ml','Millilitres used per square metre')+'</td><td>'+inp('laminates',x,'price','Price per pack in rand')+'</td>' +
+        '<td class="num rate"><strong>'+cR(liquidRate(x))+'</strong></td><td>'+del('laminates',x)+'</td></tr>';
+    }).join('');
+    var extras = P.extras.map(function(x){
+      return '<tr><td class="name">'+nameInp('extras', x)+src(x)+'</td><td style="width:130px;"><input type="text" autocomplete="off" id="calc-extras-'+x.id+'-unit" data-calckind="extras" data-calcid="'+escapeHtml(x.id)+'" data-calcf="unit" value="'+escapeHtml(x.unit||'')+'" aria-label="Unit"'+ro+'></td><td style="width:170px;">'+inp('extras',x,'price','Price in rand')+'</td><td style="width:90px;">'+del('extras',x)+'</td></tr>';
+    }).join('');
+    var pin = function(id, path, label, unit){ var ab = path.split('.'); var v = ab[1] ? P[ab[0]][ab[1]] : P[ab[0]]; return cField(label, cUnit(id, 'data-calcpath="'+path+'"', v, unit, {ro:!own})); };
+    var line = function(label, v, per){ return '<div class="calc-resline"><span>'+label+'</span><span>'+cR(v)+' / '+(per||'m²')+'</span></div>'; };
+    return (own ? '<p class="hint" style="margin:0 0 12px;">Prices are <b>Maizey supplier prices excl. VAT</b>, taken from invoices dated August to November 2026. Where a price changed, the higher one is used. Lines marked <b>example price</b> are not bought from Maizey, so update them with your own supplier’s price. Changes save automatically and are used by everyone’s calculator.</p>'
+                : '<div class="panel" style="padding:10px 14px;"><span class="hint" style="margin:0;">Only the owner can add, change or remove materials and rates.</span></div>') +
+      table('substrates', 'Substrates (per sheet)', true, '+ Add substrate') + '</div>' +
+      table('media', 'Vinyl &amp; print media (per roll)', false, '+ Add vinyl', 'Media bought by the metre is entered as a 1 m length at the price per metre, so the R / m² works out the same.') + '</div>' +
+      table('laminates', 'Laminates &amp; protection film (per roll)', false, '+ Add laminate') +
+        '<div class="panel-head" style="margin-top:14px;"><h2>Liquid laminate &amp; doming (per m²)</h2>'+addBtn('liquids', '+ Add liquid')+'</div>' +
+        '<p class="hint" style="margin:-4px 0 8px;">Cost per m² = price ÷ pack size × ml used per m². Set the ml per m² to what you actually use; the starting figures are estimates.</p>' +
+        '<div class="tbl-wrap"><table class="calc-ptable"><thead><tr><th>Name</th><th>Pack size (ml)</th><th>Used per m² (ml)</th><th>Price per pack (R)</th><th class="num">R / m²</th><th></th></tr></thead><tbody>'+(liquids || '<tr><td colspan="6" class="empty-note">None yet.</td></tr>')+'</tbody></table></div>' +
+      '</div>' +
+      '<div class="panel"><div class="panel-head"><h2>Extras &amp; hardware (per item)</h2>'+addBtn('extras', '+ Add item')+'</div>' +
+        '<div class="tbl-wrap"><table class="calc-ptable"><thead><tr><th>Name</th><th>Unit</th><th>Price per unit (R)</th><th></th></tr></thead><tbody>'+(extras || '<tr><td colspan="4" class="empty-note">None yet.</td></tr>')+'</tbody></table></div></div>' +
+      '<div class="panel"><div class="section-label">Labour, design &amp; minimum charge</div><div class="calc-row">' +
+        pin('calc-p-lab-design','labour.design','Design rate per hour','R') + pin('calc-p-lab-prod','labour.prod','Production &amp; fitting rate per hour','R') + pin('calc-p-lab-min','labour.min','Minimum job charge (excl. VAT)','R') +
+      '</div><p class="hint">Production &amp; fitting covers weeding, laminating, mounting, cutting and installation. Set the rates to what you charge clients per hour, not what you pay staff.</p></div>' +
+      '<div class="calc-two">' +
+        '<div class="panel"><div class="section-label">Ink</div><div class="calc-row">'+pin('calc-p-ink-price','ink.price','Ink price per litre','R')+pin('calc-p-ink-ml','ink.ml','Ink used per m²','ml')+'</div><p class="hint">Roland TR2 ink for the VG2-540/640 is R1,353.25 excl. VAT per cartridge from Maizey, the same for every colour. At 400 ml a cartridge that is R3,383.13 per litre. Eco-solvent typically uses about 8–15 ml/m² depending on print mode and coverage; check your RIP’s ink report for a real figure.</p>'+line('Ink cost', inkRate(P))+'</div>' +
+        '<div class="panel"><div class="section-label">Printer</div><div class="calc-row">'+pin('calc-p-prn-price','printer.price','Purchase price','R')+pin('calc-p-prn-years','printer.years','Write off over','yrs')+pin('calc-p-prn-maint','printer.maint','Service, heads &amp; power / year','R')+pin('calc-p-prn-m2','printer.m2','Printed per year','m²')+'</div><p class="hint">(Purchase price ÷ years + yearly running costs) ÷ m² printed per year.</p>'+line('Printer cost', prnRate(P))+'</div>' +
+        '<div class="panel"><div class="section-label">Application / lifting tape</div><div class="calc-row">'+pin('calc-p-tape-w','tape.w','Roll width','mm')+pin('calc-p-tape-l','tape.l','Roll length','m')+pin('calc-p-tape-price','tape.price','Price per roll','R')+'</div>'+line('Tape cost', rollRate(P.tape))+'</div>' +
+        '<div class="panel"><div class="section-label">Application fluid &amp; other</div><p class="hint" style="margin:0 0 8px;">Your mix: Johnson’s baby shampoo in water.</p><div class="calc-row">'+pin('calc-p-fluid-sp','fluid.shampooPrice','Shampoo bottle price','R')+pin('calc-p-fluid-bottle','fluid.bottleMl','Bottle size','ml')+pin('calc-p-fluid-sml','fluid.shampooMl','Shampoo per mix','ml')+pin('calc-p-fluid-wml','fluid.waterMl','Water per mix','ml')+'</div>' +
+          line('Mixed fluid per litre', fluidPerL(P), 'L') +
+          '<div class="calc-row" style="margin-top:10px;">'+pin('calc-p-fluid-ml','fluid.ml','Fluid used per m²','ml')+pin('calc-p-other','other','Other consumables per m²','R')+'</div>' +
+          '<p class="hint">The R95 bottle price is an estimate for a 500 ml bottle; enter what you pay. Other consumables covers blades, squeegee felts, gloves, rags and cleaner.</p>'+line('Fluid cost', fluidRate(P))+'</div>' +
+      '</div>' +
+      '<p class="hint">Not added: Poli-Flex Reflective 3M Scotchlite (misprinted on invoice SI05312062, no readable price) and Strato suspended 210×420 (on back order, not priced).</p>' +
+      (own ? '<div style="margin-top:12px;"><button class="btn btn-ghost" data-action="calc-reset">Reset to Maizey prices</button></div>' : '');
+  }
+
   function renderQuotesTab(){
+    if(STATE.calcOpen) return renderCalculator();
     var list = STATE.orders.filter(function(o){ return o.quoteOnly || (o.quoteAmount!==null && o.quoteAmount!==undefined && o.quoteAmount!==''); });
     if(STATE.quoteFilter==='quoteonly') list = list.filter(function(o){ return o.quoteOnly; });
     if(STATE.quoteFilter==='pending') list = list.filter(function(o){ return !o.invoiced; });
@@ -3332,7 +3744,7 @@ import './platform.js?v=2026-11-27.60';
 
     return (
       '<div class="topline"><div><h1>Quotes &amp; invoicing</h1><div class="sub">Quote a customer without opening a job, or export selected jobs as a Xero-ready invoice CSV</div></div>' + exampleBadge() +
-        '<button class="btn btn-primary" data-action="open-new-quote">+ New quotation</button>' +
+        '<div style="display:flex; gap:8px; flex-wrap:wrap;"><button class="btn" data-action="calc-open">m² calculator</button><button class="btn btn-primary" data-action="open-new-quote">+ New quotation</button></div>' +
       '</div>' +
       '<div class="filterbar" style="margin-bottom:14px;">' +
         '<button class="chip-toggle '+(STATE.quoteFilter==='all'?'active':'')+'" data-action="quote-filter" data-filter="all">All</button>' +
@@ -3717,17 +4129,19 @@ import './platform.js?v=2026-11-27.60';
       '<button class="btn btn-ghost btn-sm" data-action="open-quote" data-id="'+o.id+'">Edit quotation</button></div>';
   }
   function renderNewQuoteModal(){
+    var pf = STATE.newQuotePrefill;
     var dl = STATE.customers.map(function(c){ return '<option value="'+escapeHtml(c.name)+'">'; }).join('');
-    var catOpts = CATEGORIES.map(function(c){ return '<option value="'+c.key+'">'+c.label+'</option>'; }).join('');
+    var catOpts = CATEGORIES.map(function(c){ return '<option value="'+c.key+'"'+(pf && pf.category===c.key?' selected':'')+'>'+c.label+'</option>'; }).join('');
     return (
       '<div class="overlay" data-action="close-modal-bg">' +
         '<div class="modal" role="dialog" aria-modal="true" aria-label="New quotation" style="max-width:480px;">' +
           '<div class="modal-head"><h2>New quotation</h2><button class="modal-close" data-action="close-new-quote" aria-label="Close">&times;</button></div>' +
           '<div class="hint" style="margin:-8px 0 14px;">Quote a customer without opening a job. If they accept, use “Convert to job” to put it on the job board.</div>' +
+          (pf ? '<div class="calc-prefill"><strong>From the m² calculator</strong> · '+pf.lines.length+' line'+(pf.lines.length===1?'':'s')+' · '+money(pf.excl)+' excl. VAT'+(pf.vat?' (VAT added on the quote)':'')+'<div class="hint" style="margin:4px 0 0;">Choose the customer; you can still change the lines on the next screen.</div></div>' : '') +
           '<div class="field"><label for="nqCustomer">Customer name</label><input type="text" id="nqCustomer" list="nqCustomerNames" autocomplete="off" placeholder="e.g. Riaan Pretorius"><datalist id="nqCustomerNames">'+dl+'</datalist></div>' +
           '<div class="field"><label for="nqPhone">Phone number (for WhatsApp)</label><input type="tel" id="nqPhone" placeholder="Filled in for existing customers"></div>' +
           '<div class="field-row">' +
-            '<div class="field"><label for="nqTitle">What is it for?</label><input type="text" id="nqTitle" placeholder="e.g. A1 banners x4"></div>' +
+            '<div class="field"><label for="nqTitle">What is it for?</label><input type="text" id="nqTitle" placeholder="e.g. A1 banners x4" value="'+escapeHtml(pf ? pf.title : '')+'"></div>' +
             '<div class="field"><label for="nqCategory">Category</label><select id="nqCategory">'+catOpts+'</select></div>' +
           '</div>' +
           '<div class="modal-foot">' +
@@ -3744,6 +4158,7 @@ import './platform.js?v=2026-11-27.60';
     var c = findCustomerByName(el.value||''); if(c && c.phone) ph.value = c.phone;
   }
   function submitNewQuote(){
+    var pf = STATE.newQuotePrefill;
     var name = (document.getElementById('nqCustomer').value||'').trim();
     if(!name){ toast('Add a customer name first'); return; }
     var phone = (document.getElementById('nqPhone').value||'').trim();
@@ -3754,13 +4169,14 @@ import './platform.js?v=2026-11-27.60';
     cp.then(function(cust){
       return persistOrder({
         quoteOnly:true, status:'quote', customerId:cust.id, customerName:cust.name, phone:phone || cust.phone || '',
-        category:category, title:title, description:'', qty:1, quoteAmount:0, lineItems:[{description:title, qty:1, unitPrice:0}],
+        category:category, title:title, description:'', qty:1, quoteAmount:pf ? pf.excl : 0, lineItems:pf ? pf.lines.map(function(li){ return Object.assign({}, li); }) : [{description:title, qty:1, unitPrice:0}],
+        quoteVatEnabled: pf ? !!pf.vat : true, fromCalculator: !!pf,
         invoiced:false, invoiceNumber:'', dueDate:'', notes:'', source:'Quotation', attachmentIds:[],
         designerId:null, designerName:'', technicianId:null, technicianName:'', technician2Id:null, technician2Name:'',
         createdAt:todayIso(), updatedAt:todayIso()
       });
     }).then(function(o){
-      STATE.newQuoteOpen = false;
+      STATE.newQuoteOpen = false; STATE.newQuotePrefill = null; STATE.calcOpen = false;
       if(STATE.orders.indexOf(o)<0 && !STATE.orders.find(function(x){ return x.id===o.id; })) STATE.orders.unshift(o);
       openQuoteModal(o.id);
     }).catch(function(){ toast('Could not create the quotation — try again'); });
@@ -4057,7 +4473,7 @@ import './platform.js?v=2026-11-27.60';
         render();
       }
       else if(action==='close-order'){ STATE.openOrderId = null; render(); }
-      else if(action==='close-modal-bg'){ if(e.target===el && STATE.newQuoteOpen){ STATE.newQuoteOpen = false; render(); } else if(e.target===el && STATE.receiptForm){ STATE.receiptForm = null; render(); } else if(e.target===el && STATE.creditForm){ STATE.creditForm = null; render(); } else if(e.target===el && STATE.msgForm){ STATE.msgForm = null; render(); } else if(e.target===el && STATE.allocForm){ STATE.allocForm = null; render(); } else if(e.target===el){ STATE.openOrderId=null; STATE.newOrderOpen=false; STATE.newOrderPrefill=null; STATE.newTeamOpen=false; STATE.quoteModalOrderId=null; STATE.quoteDraft=null; STATE.invoiceModalOrderId=null; STATE.invoiceDraft=null; render(); } }
+      else if(action==='close-modal-bg'){ if(e.target===el && STATE.newQuoteOpen){ STATE.newQuoteOpen = false; STATE.newQuotePrefill = null; render(); } else if(e.target===el && STATE.receiptForm){ STATE.receiptForm = null; render(); } else if(e.target===el && STATE.creditForm){ STATE.creditForm = null; render(); } else if(e.target===el && STATE.msgForm){ STATE.msgForm = null; render(); } else if(e.target===el && STATE.allocForm){ STATE.allocForm = null; render(); } else if(e.target===el){ STATE.openOrderId=null; STATE.newOrderOpen=false; STATE.newOrderPrefill=null; STATE.newTeamOpen=false; STATE.quoteModalOrderId=null; STATE.quoteDraft=null; STATE.invoiceModalOrderId=null; STATE.invoiceDraft=null; render(); } }
       else if(action==='open-add-team'){ if(isOwnerRole()){ STATE.newTeamOpen = true; render(); } }
       else if(action==='close-new-team'){ STATE.newTeamOpen = false; render(); }
       else if(action==='submit-new-team'){ submitNewTeamMember(); }
@@ -4151,8 +4567,18 @@ import './platform.js?v=2026-11-27.60';
       else if(action==='cf-type'){ if(STATE.customerForm){ STATE.customerForm.draft.type = el.getAttribute('data-type'); STATE.customerForm.errors = {}; render(); } }
       else if(action==='cf-add-contact'){ var cd = STATE.customerForm && STATE.customerForm.draft; if(cd && cd.contacts.length < MAX_EXTRA_CONTACTS){ cd.contacts.push(blankPerson()); render(); var ni = cd.contacts.length-1; setTimeout(function(){ var x = document.getElementById('cfc'+ni+'f'); if(x) x.focus(); }, 0); } }
       else if(action==='cf-remove-contact'){ var rd = STATE.customerForm && STATE.customerForm.draft; if(rd){ rd.contacts.splice(Number(el.getAttribute('data-i')), 1); render(); } }
-      else if(action==='open-new-quote' && canAccess('quotes')){ STATE.newQuoteOpen = true; render(); var nq = document.getElementById('nqCustomer'); if(nq) nq.focus(); }
-      else if(action==='close-new-quote'){ STATE.newQuoteOpen = false; render(); }
+      else if(action==='calc-open'){ STATE.calcOpen = true; STATE.calcView = STATE.calcView || 'job'; render(); window.scrollTo(0,0); }
+      else if(action==='calc-close'){ STATE.calcOpen = false; render(); }
+      else if(action==='calc-view'){ STATE.calcView = el.getAttribute('data-v'); render(); }
+      else if(action==='calc-quote'){ calcCreateQuote(); }
+      else if(action==='calc-copy'){ calcCopy(el.getAttribute('data-k')); }
+      else if(action==='calc-add'){ calcAdd(el.getAttribute('data-kind')); }
+      else if(action==='calc-del'){ calcDel(el.getAttribute('data-kind'), el.getAttribute('data-id')); }
+      else if(action==='calc-reset'){ calcReset(); }
+      else if(action==='calc-ex-add'){ calcJobExtraAdd(); }
+      else if(action==='calc-ex-del'){ calcJobExtraDel(Number(el.getAttribute('data-i'))); }
+      else if(action==='open-new-quote' && canAccess('quotes')){ STATE.newQuotePrefill = null; STATE.newQuoteOpen = true; render(); var nq = document.getElementById('nqCustomer'); if(nq) nq.focus(); }
+      else if(action==='close-new-quote'){ STATE.newQuoteOpen = false; STATE.newQuotePrefill = null; render(); }
       else if(action==='submit-new-quote'){ submitNewQuote(); }
       else if(action==='quote-convert' && canAccess('quotes')){ convertQuoteToJob(el.getAttribute('data-id')); }
       else if(action==='quote-filter'){ STATE.quoteFilter = el.getAttribute('data-filter'); render(); }
@@ -4275,6 +4701,7 @@ import './platform.js?v=2026-11-27.60';
       if(e.target.id==='iVatEnabled'){ STATE.invoiceDraft.vatEnabled = e.target.checked; refreshInvoiceTotals(); }
     };
     app.oninput = function(e){
+      if(e.target.getAttribute && (e.target.getAttribute('data-calcj') || e.target.getAttribute('data-calcex') || e.target.getAttribute('data-calcpath') || e.target.getAttribute('data-calckind'))){ if(calcOnInput(e.target)) return; }
       var cfp = e.target.getAttribute && e.target.getAttribute('data-cf');
       if(cfp && STATE.customerForm){ setDraftPath(cfp, e.target.value); if(cfp==='name' && STATE.customerForm.errors && STATE.customerForm.errors.name){ STATE.customerForm.errors.name = null; e.target.classList.remove('invalid'); } return; }
       if(e.target.id==='boardSearch' && STATE.boardQuery!==e.target.value){ STATE.boardQuery = e.target.value; render(); focusEl('boardSearch'); }

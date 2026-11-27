@@ -97,6 +97,12 @@ service cloud.firestore {
       allow read, write: if isStaff();
     }
 
+    // m² calculator price list: everyone on the team can use it; only the owner changes materials and rates.
+    match /calculator/{id} {
+      allow read: if isTeam();
+      allow write: if isOwner();
+    }
+
     // Which WhatsApp chats have been opened on a job (clears the "New WhatsApp" flag for everyone).
     match /wa_seen/{phone} {
       allow read, write: if isStaff();
