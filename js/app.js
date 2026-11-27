@@ -1,5 +1,5 @@
 /* DsignX Ops — application script (loaded as an ES module so it runs after platform.js is ready). */
-import './platform.js?v=2026-11-26.57';
+import './platform.js?v=2026-11-27.58';
 
 (function(){
   "use strict";
@@ -1786,6 +1786,7 @@ import './platform.js?v=2026-11-26.57';
       (STATE.newQuoteOpen && canAccess('quotes') ? renderNewQuoteModal() : '') +
       (STATE.newTeamOpen && isOwnerRole() ? renderNewTeamModal() : '') +
       (STATE.customerForm && canAccess('customers') ? renderCustomerForm() : '') +
+      renderCustTxPreview() +
       (STATE.quoteModalOrderId && canAccess('quotes') ? renderQuoteModal() : '') +
       (STATE.invoiceModalOrderId && canAccess('quotes') ? renderInvoiceModal() : '') +
       (STATE.receiptForm && !isTechnician() ? renderReceiptModal() : '') +
@@ -1865,7 +1866,7 @@ import './platform.js?v=2026-11-26.57';
         '<div class="brand"><div class="brand-mark"><img src="'+LOGO_MARK_DATA_URL+'" alt="DsignX"></div><div class="brand-text"><div class="name">DsignX</div><div class="tag">Ops</div></div></div>' +
         '<ul class="navlist">' + items + '</ul>' +
         viewerPill +
-        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-26.57</span></div>' +
+        '<div class="sidebar-foot">Signage &middot; printing &middot; sublimation<br>Kroonstad, South Africa<br><span style="opacity:.6;">Version 2026-11-27.58</span></div>' +
       '</div>'
     );
   }
@@ -2912,7 +2913,7 @@ import './platform.js?v=2026-11-26.57';
     }).join('');
     var period = d.from && d.to ? fullDate(d.from)+' – '+fullDate(d.to) : d.from ? 'From '+fullDate(d.from) : d.to ? 'Up to '+fullDate(d.to) : 'All transactions';
     return '<div class="panel">' +
-      '<div class="panel-head"><h2>Transactions</h2><div style="display:flex; gap:6px; flex-wrap:wrap;"><button class="btn btn-sm" data-action="cust-tx-csv"'+(d.rows.length?'':' disabled')+'>Download CSV</button><button class="btn btn-primary btn-sm" data-action="cust-tx-pdf">Download PDF</button></div></div>' +
+      '<div class="panel-head"><h2>Transactions</h2><div style="display:flex; gap:6px; flex-wrap:wrap;"><button class="btn btn-sm" data-action="cust-tx-csv"'+(d.rows.length?'':' disabled')+'>Download CSV</button><button class="btn btn-sm" data-action="cust-tx-view">View PDF</button><button class="btn btn-primary btn-sm" data-action="cust-tx-pdf">Download PDF</button></div></div>' +
       '<div class="qdate-bar" style="margin-bottom:10px;">' +
         '<label class="qdate-f">From <input type="date" id="custTxFrom" value="'+escapeHtml(d.from)+'"></label>' +
         '<label class="qdate-f">To <input type="date" id="custTxTo" value="'+escapeHtml(d.to)+'"></label>' +
@@ -2943,9 +2944,35 @@ import './platform.js?v=2026-11-26.57';
     var csv = '﻿' + lines.map(function(r){ return r.map(csvCell).join(','); }).join('\r\n');
     saveBlob(new Blob([csv], {type:'text/csv;charset=utf-8'}), custTxFileName(c, d, 'csv'));
   }
-  function downloadCustTxPdf(){
-    var c = STATE.customers.find(function(x){ return x.id===STATE.viewCustomerId; }); if(!c) return;
-    if(!window.jspdf || !window.jspdf.jsPDF){ toast('PDF tools are still loading — try again in a moment'); return; }
+  function downloadCustTxPdf(){ var b = buildCustTxPdf(); if(b) saveBlob(b.blob, b.filename); }
+  // View: shows the PDF inside the app, with Download and Open in new tab.
+  function viewCustTxPdf(){
+    var b = buildCustTxPdf(); if(!b) return;
+    closeCustTxPreview(true);
+    STATE.custTxPreview = {url:URL.createObjectURL(b.blob), blob:b.blob, filename:b.filename};
+    render();
+  }
+  function closeCustTxPreview(silent){
+    var pv = STATE.custTxPreview; if(!pv) return;
+    try { URL.revokeObjectURL(pv.url); } catch(e){}
+    STATE.custTxPreview = null; if(!silent) render();
+  }
+  function renderCustTxPreview(){
+    var pv = STATE.custTxPreview; if(!pv) return '';
+    return '<div class="overlay">' +
+      '<div class="modal pdf-view" role="dialog" aria-modal="true" aria-label="Transactions PDF">' +
+        '<div class="modal-head"><h2>'+escapeHtml(pv.filename)+'</h2><button class="modal-close" data-action="cust-tx-close" aria-label="Close">&times;</button></div>' +
+        '<iframe class="pdf-frame" src="'+escapeHtml(pv.url)+'" title="Transactions PDF"></iframe>' +
+        '<div class="modal-foot" style="display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; margin-top:10px;">' +
+          '<a class="btn" style="text-decoration:none;" href="'+escapeHtml(pv.url)+'" target="_blank" rel="noopener">Open in new tab</a>' +
+          '<button class="btn btn-primary" data-action="cust-tx-pdf-save">Download PDF</button>' +
+          '<button class="btn btn-ghost" data-action="cust-tx-close">Close</button>' +
+        '</div>' +
+      '</div></div>';
+  }
+  function buildCustTxPdf(){
+    var c = STATE.customers.find(function(x){ return x.id===STATE.viewCustomerId; }); if(!c) return null;
+    if(!window.jspdf || !window.jspdf.jsPDF){ toast('PDF tools are still loading — try again in a moment'); return null; }
     var d = customerTxData(c), cfg = STATE.config;
     var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
     var L = 15, R = 195, W = R - L;
@@ -3029,7 +3056,7 @@ import './platform.js?v=2026-11-26.57';
     font('normal', 7.6); color(GREY);
     doc.text(doc.splitTextToSize('Debit = invoices; credit = payments, deposits and credit notes. A negative balance means the customer is in credit. Allocations of an overpayment are listed for reference; the money is counted when it was received.', W), L, y);
     footer();
-    saveBlob(doc.output('blob'), custTxFileName(c, d, 'pdf'));
+    return {blob:doc.output('blob'), filename:custTxFileName(c, d, 'pdf')};
   }
 
   function renderCustomersTab(){
@@ -3798,6 +3825,9 @@ import './platform.js?v=2026-11-26.57';
       else if(action==='cust-tx-range'){ setCustTxRange(el.getAttribute('data-r')); }
       else if(action==='cust-tx-csv'){ downloadCustTxCsv(); }
       else if(action==='cust-tx-pdf'){ downloadCustTxPdf(); }
+      else if(action==='cust-tx-view'){ viewCustTxPdf(); }
+      else if(action==='cust-tx-pdf-save'){ if(STATE.custTxPreview) saveBlob(STATE.custTxPreview.blob, STATE.custTxPreview.filename); }
+      else if(action==='cust-tx-close'){ closeCustTxPreview(); }
       else if(action==='xero-fix-round'){ xeroFixRound(); }
       else if(action==='xero-skip-check'){ xeroSkipCheck(); }
       else if(action==='xero-skip-send'){ xeroSkipSend(); }
